@@ -3,9 +3,14 @@ from swat_toolkit.core.txinout import TxInOut
 
 import pandas as pd
 
+
+
 txinout = TxInOut('data/TxtInOut')
-
 pcp = txinout.get_weather_file('pcp')
+print(pd.read_csv(pcp))
 
+cop = r'D:\SWAT-model\ArcSWAT\SWAT\ht_caupha\caupha\Scenarios\Default\TxtInOut\pcp1.pcp'
 
-print(txinout.get_hru_file('hru', 1))
+Weather.copy(cop, txinout.directory)
+pcp = txinout.get_weather_file('pcp')
+print(pd.read_csv(pcp))

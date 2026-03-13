@@ -2,8 +2,9 @@ import shutil
 from pathlib import Path
 
 class Weather:
-    def __init__(self):
-        pass
 
-    def replace(self, path, txinout):
-        shutil.copy2(Path(path), txinout)
+    @staticmethod
+    def copy(pcp_in, pcp_out):
+        dest = Path(pcp_out)
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pcp_in, pcp_out)
