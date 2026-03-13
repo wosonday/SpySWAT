@@ -8,4 +8,4 @@ txinout = TxInOut('data/TxtInOut')
 pcp = txinout.get_weather_file('pcp')
 
 
-print(pd.read_csv(pcp))
+print(txinout.get_hru_file('hru', 1))

@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 from typing import List
 
 
-@dataclass
 class SWATFileMapping:
     WATERSHED_MAPPING = {
         'bsn': ['basins.bsn'],
@@ -26,6 +24,7 @@ class SWATFileMapping:
         'sep': '{:09d}.sep',
         'swq': '{:09d}.swq',
     }
+
     HRU_MAPPING = {
         'hru': '{:09d}.hru',  # 000010001.hru
         'mgt': '{:09d}.mgt',  # 000010001.mgt
@@ -33,10 +32,12 @@ class SWATFileMapping:
         'chm': '{:09d}.chm',
         'gw': '{:09d}.gw',
     }
+
     RESERVOIR_MAPPING = {
         'res': '{:09d}.res',
         'wtr': '{:09d}.wtr',
     }
+
     OUTPUT_MAPPING = {
         'std': ['output.std', 'input.std'],
         'rch': ['output.rch'],
@@ -89,6 +90,7 @@ class SWATFileMapping:
                 return swat_param
         return None
 
+
     @staticmethod
     def _get_watershed_file(ext: str) -> List[str]:
         """Lấy tên file watershed level
@@ -100,6 +102,7 @@ class SWATFileMapping:
         ['file.cio']
         """
         return SWATFileMapping.WATERSHED_MAPPING.get(ext, [])
+
 
     @staticmethod
     def _get_indexed_file(ext: str, index: int) -> str:
@@ -115,6 +118,7 @@ class SWATFileMapping:
         template = SWATFileMapping.INDEXED_MAPPING.get(ext)
         return template.format(index) if template else ""
 
+
     @staticmethod
     def _get_subbasin_file(ext: str, subbasin_id: int) -> str:
         """Lấy tên file subbasin level
@@ -129,23 +133,15 @@ class SWATFileMapping:
         template = SWATFileMapping.SUBBASIN_MAPPING.get(ext)
         return template.format(subbasin_id) if template else ""
 
+
     @staticmethod
     def _get_hru_file(ext: str, subbasin_num: int, hru_num: int) -> str:
-        """Lấy tên file HRU level
-        Args:
-            ext: Extension (.hru, .mgt, etc.)
-            subbasin_num: Số subbasin (1-9999)
-            hru_num: Số HRU trong subbasin (1-9999)
-        >>> SWATFileMapping.get_hru_file('hru', 1, 1)
-        '000010001.hru'
-        >>> SWATFileMapping.get_hru_file('sol', 155, 1)
-        '001550001.sol'
-        """
         template = SWATFileMapping.HRU_MAPPING.get(ext)
         if template:
             hru_id = subbasin_num * 10000 + hru_num
             return template.format(hru_id)
-        return ""
+        return template
+
 
     @staticmethod
     def _get_reservoir_file(ext: str, reservoir_id: int) -> str:
