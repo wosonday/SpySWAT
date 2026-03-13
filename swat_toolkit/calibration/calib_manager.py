@@ -1,7 +1,9 @@
 # swat_toolkit/calibration/manager.py
+from typing import Dict
+import pandas as pd
 
 class CalibrationManager:
-    def __init__(self, project: SWATProject):
+    def __init__(self, project):
         self.project = project
         self._backup_dir = project.project_dir / "_calib_backup"
 

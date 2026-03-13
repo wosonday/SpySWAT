@@ -1,18 +1,9 @@
-"""
-SWAT Multi-File Output Parser
-=====================================================
-Class-based structure for SWAT output files:
-- output.rch (Reach)
-- output.hru (Hydrologic Response Unit)
-- output.sub (Subbasin)
-- output.sed (Sediment routing )
-"""
-
 import pandas as pd
 from typing import List, Dict, Tuple, Optional, Union
 from pathlib import Path
 from abc import ABC, abstractmethod
-from src.utils.logger import Logger
+
+from swat_toolkit.utils.logger import Logger
 
 logger = Logger.get_logger(__name__)
 
@@ -26,39 +17,27 @@ class SWATColumnMapping(ABC):
         pass
 
     @classmethod
-    def get_colspecs(cls) -> List[Tuple[int, int]]:
-        """Trả về list colspecs"""
-        mapping = cls.get_mapping()
-        return [mapping[col]['colspec'] for col in mapping.keys()]
+    def get_colspec(cls, key: str) -> Tuple[int, int]:
+        if key not in cls._MAPPING:
+            raise KeyError(f"Key '{key}' doesn't exist.")
+        return cls._MAPPING[key]["colspec"]
+
+    @classmethod
+    def get_muti_colspecs(cls, columns: List) -> List[Tuple[int, int]]:
+        return [cls.get_colspec(col) for col in columns]
+
+    @classmethod
+    def get_all_colspecs(cls) -> List[Tuple[int, int]]:
+        return [cls._MAPPING[col]["colspec"] for col in cls._MAPPING]
 
     @classmethod
     def get_column_names(cls) -> List[str]:
-        """Trả về list tên cột"""
         return list(cls.get_mapping().keys())
-
-    @classmethod
-    def get_dtypes(cls) -> Dict[str, str]:
-        """Trả về dictionary dtypes"""
-        mapping = cls.get_mapping()
-        return {col: mapping[col]['dtype'] for col in mapping.keys()}
-
-    @classmethod
-    def get_columns_by_category(cls, category: str) -> List[str]:
-        """Lấy cột theo category"""
-        mapping = cls.get_mapping()
-        return [col for col, info in mapping.items()
-                if info['category'] == category]
 
     @classmethod
     def get_column_info(cls, column_name: str) -> Optional[Dict]:
         """Lấy thông tin chi tiết về cột"""
         return cls.get_mapping().get(column_name, None)
-
-    @classmethod
-    def get_categories(cls) -> List[str]:
-        """Trả về list categories"""
-        mapping = cls.get_mapping()
-        return list(set(info['category'] for info in mapping.values()))
 
 
 # ============================================================================
@@ -128,7 +107,6 @@ class ReachMapping(SWATColumnMapping):
 
 # HRU MAPPING
 class HRUMapping(SWATColumnMapping):
-
     _MAPPING = {
         'LULC': {'colspec': (0, 4), 'dtype': 'str', 'description': 'Land use/land cover code', 
                  'unit': '-', 'category': 'identifier'},
@@ -223,7 +201,6 @@ class HRUMapping(SWATColumnMapping):
         'QTILE': {'colspec': (772, 782), 'dtype': 'float', 'description': 'Tile drainage', 
                   'unit': 'mm', 'category': 'drainage'},
     }
-
     @classmethod
     def get_mapping(cls) -> Dict:
         return cls._MAPPING
@@ -231,7 +208,6 @@ class HRUMapping(SWATColumnMapping):
 
 # SUBBASIN MAPPING (SUB)
 class SubbasinMapping(SWATColumnMapping):
-
     _MAPPING = {
         'SUB': {'colspec': (6, 10), 'dtype': 'int', 'description': 'Subbasin number', 
                 'unit': '-', 'category': 'identifier'},
@@ -284,7 +260,6 @@ class SubbasinMapping(SWATColumnMapping):
 
 # SUBBASIN MAPPING (SUB)
 class WatoutMapping(SWATColumnMapping):
-
     _MAPPING =   {
         "YEAR":    {"colspec": (0, 5),   "dtype": "int",   "description": "Year",
                     "unit": "-",   "category": "time"},
@@ -321,7 +296,7 @@ class SWATOutputFileReader:
                  skip_header = None):
         self.filepath = Path(filepath)
         self.file_type = file_type.lower()
-        self.skip_header = skip_header or self.DEFAULT_SKIP_HEADER.get(self.file_type, 9)
+        self.skip_header = self.DEFAULT_SKIP_HEADER.get(self.file_type)
 
         if self.file_type not in self.MAPPING_CLASSES:
             raise logger.exception(f"Unsupported file type: {self.file_type}")
@@ -350,11 +325,6 @@ class SWATOutputFileReader:
         if self.data is None:
             self.read()
         return self.data
-
-    def get_columns_by_category(self, category: str) -> List[str]:
-        """Lấy cột theo category"""
-        return self.mapping_class.get_columns_by_category(category)
-
 
     def _convert_dtypes(self):
         dtypes = self.mapping_class.get_dtypes()
@@ -401,84 +371,3 @@ class SWATOutputFileReader:
 
         self._convert_dtypes()
         return self.data
-
-if __name__ == "__main__":
-
-    print("=" * 80)
-    print("SWAT MULTI-FILE PARSER - EXAMPLES")
-    print("=" * 80)
-
-    print("\nExample 1: Load một file cụ thể")
-    print("-" * 80)
-    print("""
-# Load HRU file
-reader_hru = SWATFileReader('TxtInOut/output.hru', file_type='hru')
-df_hru = reader_hru.read()
-print(df_hru.head())
-
-# Lấy nitrogen columns
-n_cols = reader_hru.get_columns_by_category('nitrogen')
-df_nitrogen = df_hru[n_cols]
-    """)
-
-    print("\nExample 2: Load nhiều files với MultiFileProcessor")
-    print("-" * 80)
-    print("""
-# Khởi tạo processor với thư mục TxtInOut
-processor = SWATMultiFileProcessor('TxtInOut')
-
-# Load tất cả files
-processor.load_all(['rch', 'hru', 'sub'])
-
-# Access data
-df_rch = processor.get_data('rch')
-df_hru = processor.get_data('hru')
-df_sub = processor.get_data('sub')
-
-# Compare water balance
-balance = processor.compare_water_balance()
-print(balance)
-    """)
-
-    print("\nExample 3: Phân tích chi tiết HRU")
-    print("-" * 80)
-    print("""
-# Load HRU file
-reader = SWATFileReader('TxtInOut/output.hru', 'hru')
-reader.read()
-
-# Filter theo HRU
-df_hru1 = reader.get_data()
-df_hru1 = df_hru1[df_hru1['HRU'] == 1]
-
-# Lấy hydrology data
-hydro_cols = ['HRU', 'MON', 'PRECIP', 'ET', 'SURQ_GEN', 'LATQ', 'GW_Q', 'WYLD']
-df_hydro = df_hru1[hydro_cols]
-
-# Tính water balance
-df_hru1['WATER_BALANCE'] = (df_hru1['PRECIP'] - df_hru1['ET'] - 
-                              df_hru1['WYLD'] - df_hru1['PERC'])
-    """)
-
-    print("\nExample 4: Export tất cả files")
-    print("-" * 80)
-    print("""
-processor = SWATMultiFileProcessor('TxtInOut')
-processor.load_all(['rch', 'hru', 'sub'])
-
-# Export to CSV
-processor.export_all('output_csv', format='csv')
-
-# Export to Parquet (efficient for large files)
-processor.export_all('output_parquet', format='parquet')
-    """)
-
-    print("\n" + "=" * 80)
-    print("SUPPORTED FILE TYPES")
-    print("=" * 80)
-    print("""
-✓ output.rch - Reach/channel routing (50 columns)
-✓ output.hru - Hydrologic Response Units (43 columns)  
-✓ output.sub - Subbasin (21 columns)
-✗ output.sed - Sediment routing (coming soon)
-    """)

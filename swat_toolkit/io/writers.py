@@ -1,0 +1,138 @@
+"""
+File writing utilities for SWAT
+"""
+import re
+import pandas as pd
+from typing import Dict
+import logging
+
+from swat_toolkit.io.readers import ReadFileLine
+from swat_toolkit.utils.data_info import DATAParameter
+
+
+logger = logging.getLogger(__name__)
+
+class HRUWriter(ReadFileLine):
+    """
+        >>> writer = HRUWriter("000010001.hru")
+        >>> writer.update_param({'CN2': 75}, param_file)
+        >>> writer.save()
+    """
+
+    def __init__(self, hru_file: str):
+        super().__init__()
+        self.hru_file = hru_file
+        self.lines = self._read_file(hru_file)
+
+    def __getitem__(self, i: int) -> str:
+        return self.lines[i]
+
+    def __repr__(self):
+        return f"HRUWriter(file='{self.hru_file}', lines={len(self.lines)})"
+
+    # ==================== Update Methods ====================
+
+    def update_param(self, param_dict: Dict, param_file):
+        for pname, value in param_dict.items():
+            param = param_file.get(pname)
+            self._update(param, value)
+
+    def update_by_df(self, df: pd.DataFrame, param_file):
+        row = df.iloc[0]
+        param_dict = {col: row[col]
+                      for col in df.columns
+                      if pd.notna(row[col])}
+
+        self.update_param(param_dict, param_file)
+
+    def convert_name_param(self, old_name: str, new_name: str, param_file):
+        old_param = param_file.get(old_name)
+
+        new_param = DATAParameter(
+                name=new_name,
+                ext=old_param.ext,
+                line=old_param.line,
+                start=old_param.start,
+                end=old_param.end,
+                round=old_param.round,
+                vmin=old_param.vmin,
+                vmax=old_param.vmax
+        )
+
+        return new_param
+
+    def save(self):
+        with open(self.hru_file, "w", encoding='utf-8') as f:
+            f.writelines(self.lines)
+        logger.debug(f"Saved changes to {self.hru_file}")
+
+    # ==================== Private Methods ====================
+
+    def _update(self, param: DATAParameter, new_value: float):
+        # Check min/max bounds
+        new_value = self._min_max_check(param, new_value)
+
+        # Get current line
+        line = self.lines[param.line]
+
+        # Format value
+        value_str = f"{new_value:.{param.round}f}"
+        value_str = value_str.rjust(param.end - param.start)
+
+        # Replace value in line
+        new_line = (
+                line[:param.start] +
+                value_str +
+                line[param.end:]
+        )
+
+        self.lines[param.line] = new_line
+
+    def _min_max_check(self, param: DATAParameter, new_value: float) -> float:
+        """Ensure value is within bounds"""
+        return max(param.vmin, min(new_value, param.vmax))
+
+
+class SoilLayerWriter(HRUWriter):
+    """
+    Writer for soil layer parameters in .sol files
+
+    Examples:
+        >>> writer = SoilLayerWriter("000010001.sol")
+        >>> layers = writer.read_layers(10)
+        >>> writer.update_layers('SOL_BD', [1.3, 1.4, 1.5])
+        >>> writer.save()
+    """
+
+    def __init__(self, sol_file: str):
+        super().__init__(sol_file)
+
+    def read_layers(self, line_idx: int) -> list:
+        values = re.findall(r"[-+]?\d*\.\d+|\d+", self.lines[line_idx])
+        return [float(v) for v in values]
+
+    def update_layers(self, param_key: str, new_values: list):
+        idx = self._find_param_line(param_key)
+
+        if idx is None:
+            logger.warning(f"Parameter '{param_key}' not found in file")
+            return
+
+        # Get prefix (e.g., "SOL_BD:")
+        prefix = self.lines[idx].split(":")[0] + ":"
+
+        # Format values
+        value_str = "".join(f"{v:12.3f}" for v in new_values)
+
+        # Update line
+        self.lines[idx] = f"{prefix}{value_str}\n"
+
+    def _find_param_line(self, param_key: str) -> int:
+        from .mappings import SWATFileMapping
+
+        for i, line in enumerate(self.lines):
+            key = SWATFileMapping.convert_sol_key(line)
+            if key == param_key:
+                return i
+
+        return None

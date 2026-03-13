@@ -1,0 +1,393 @@
+"""
+Statistical analysis for SWAT model evaluation
+"""
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Optional, Tuple, Union
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class SWATAnalysis:
+    """
+        >>> analysis = project.analysis
+        >>> stats = analysis.calculate_statistics(obs, sim)
+        >>> print(f"NSE: {stats['nse']:.3f}")
+    """
+
+    def __init__(self, project):
+        self.project = project
+
+    # ==================== Statistical Metrics ====================
+
+    def calculate_statistics(
+            self,
+            observed: Union[pd.Series, np.ndarray],
+            simulated: Union[pd.Series, np.ndarray],
+            metrics: Optional[List[str]] = None,
+            remove_nan: bool = True
+    ) -> Dict[str, float]:
+        # Convert to numpy arrays
+        obs = np.array(observed)
+        sim = np.array(simulated)
+
+        # Remove NaN values
+        if remove_nan:
+            mask = ~(np.isnan(obs) | np.isnan(sim))
+            obs = obs[mask]
+            sim = sim[mask]
+
+        if len(obs) == 0:
+            logger.warning("No valid data points after removing NaN")
+            return {m: np.nan for m in (metrics or self._get_all_metrics())}
+
+        # Default metrics
+        if metrics is None:
+            metrics = ['nse', 'r2', 'rmse', 'pbias', 'kge']
+
+        results = {}
+
+        # Calculate each metric
+        metric_functions = {
+            'nse': self._nash_sutcliffe,
+            'r2': self._r_squared,
+            'rmse': self._rmse,
+            'mae': self._mae,
+            'pbias': self._pbias,
+            'rsr': self._rsr,
+            'kge': self._kling_gupta,
+            'mape': self._mape,
+            'correlation': self._correlation
+        }
+
+        for metric in metrics:
+            if metric in metric_functions:
+                try:
+                    results[metric] = metric_functions[metric](obs, sim)
+                except Exception as e:
+                    logger.error(f"Error calculating {metric}: {e}")
+                    results[metric] = np.nan
+            else:
+                logger.warning(f"Unknown metric: {metric}")
+                results[metric] = np.nan
+
+        return results
+
+    def evaluate_performance(
+            self,
+            observed: Union[pd.Series, np.ndarray],
+            simulated: Union[pd.Series, np.ndarray]
+    ) -> Dict[str, str]:
+        """
+        ─É├ính gi├í hiß╗çu suß║Ñt m├┤ h├¼nh theo ti├¬u chuß║⌐n Moriasi et al. (2007)
+
+        Returns:
+            Dictionary vß╗¢i rating cho tß╗½ng metric
+        """
+        stats = self.calculate_statistics(observed, simulated)
+
+        ratings = {}
+
+        # NSE ratings
+        nse = stats.get('nse', np.nan)
+        if nse > 0.75:
+            ratings['nse'] = 'Very Good'
+        elif nse > 0.65:
+            ratings['nse'] = 'Good'
+        elif nse > 0.50:
+            ratings['nse'] = 'Satisfactory'
+        elif nse > 0.40:
+            ratings['nse'] = 'Acceptable'
+        else:
+            ratings['nse'] = 'Unsatisfactory'
+
+        # PBIAS ratings
+        pbias = abs(stats.get('pbias', np.nan))
+        if pbias < 10:
+            ratings['pbias'] = 'Very Good'
+        elif pbias < 15:
+            ratings['pbias'] = 'Good'
+        elif pbias < 25:
+            ratings['pbias'] = 'Satisfactory'
+        else:
+            ratings['pbias'] = 'Unsatisfactory'
+
+        # RSR ratings
+        rsr = stats.get('rsr', np.nan)
+        if rsr <= 0.50:
+            ratings['rsr'] = 'Very Good'
+        elif rsr <= 0.60:
+            ratings['rsr'] = 'Good'
+        elif rsr <= 0.70:
+            ratings['rsr'] = 'Satisfactory'
+        else:
+            ratings['rsr'] = 'Unsatisfactory'
+
+        return ratings
+
+    # ==================== Time Series Analysis ====================
+
+    def compare_time_series(
+            self,
+            observed_name: str,
+            output_variable: str,
+            reach_id: Optional[int] = None,
+            hru_id: Optional[int] = None,
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
+            obs_column: str = 'value',
+            date_column: str = 'date'
+    ) -> Tuple[pd.Series, pd.Series]:
+        """
+        So s├ính time series giß╗»a observed v├á simulated
+
+        Args:
+            observed_name: T├¬n dataset observed ─æ├ú load
+            output_variable: T├¬n biß║┐n trong SWAT output
+            reach_id: Reach ID (for reach output)
+            hru_id: HRU ID (for HRU output)
+            start_date: Ng├áy bß║»t ─æß║ºu
+            end_date: Ng├áy kß║┐t th├║c
+            obs_column: T├¬n cß╗Öt chß╗⌐a gi├í trß╗ï observed
+            date_column: T├¬n cß╗Öt chß╗⌐a date
+
+        Returns:
+            Tuple (observed_series, simulated_series)
+        """
+        # Get observed data
+        obs_data = self.project.get_observed_data(observed_name)
+        obs_df = obs_data.df.copy()
+
+        # Filter by date
+        if start_date or end_date:
+            obs_df = obs_data.filter_by_date(start_date, end_date, date_column)
+
+        # Get simulated data
+        if reach_id is not None:
+            sim_df = self.project.output.read_reach(reach_id=reach_id)
+        elif hru_id is not None:
+            sim_df = self.project.output.read_hru(hru_id=hru_id)
+        else:
+            raise ValueError("Must specify either reach_id or hru_id")
+
+        if output_variable not in sim_df.columns:
+            raise ValueError(f"Variable '{output_variable}' not found in output")
+
+        # Align time series (assuming MON column represents time)
+        # This is simplified - you may need more sophisticated alignment
+        obs_series = obs_df[obs_column]
+        sim_series = sim_df[output_variable]
+
+        # Ensure same length
+        min_len = min(len(obs_series), len(sim_series))
+        obs_series = obs_series.iloc[:min_len]
+        sim_series = sim_series.iloc[:min_len]
+
+        return obs_series, sim_series
+
+    def monthly_statistics(
+            self,
+            observed: pd.Series,
+            simulated: pd.Series,
+            months: Optional[pd.Series] = None
+    ) -> pd.DataFrame:
+        """
+        T├¡nh statistics theo tß╗½ng th├íng
+
+        Args:
+            observed: Observed data
+            simulated: Simulated data
+            months: Month labels (1-12)
+
+        Returns:
+            DataFrame with monthly statistics
+        """
+        if months is None:
+            # Assume sequential monthly data
+            months = pd.Series(range(1, len(observed) + 1)) % 12
+            months = months.replace(0, 12)
+
+        results = []
+
+        for month in range(1, 13):
+            mask = (months == month)
+            obs_month = observed[mask]
+            sim_month = simulated[mask]
+
+            if len(obs_month) > 0:
+                stats = self.calculate_statistics(obs_month, sim_month)
+                stats['month'] = month
+                results.append(stats)
+
+        return pd.DataFrame(results)
+
+    # ==================== Batch Analysis ====================
+
+    def batch_statistics(
+            self,
+            param_ranges: Dict[str, Tuple[float, float]],
+            n_samples: int = 100,
+            sampling_method: str = 'lhs',
+            observed_name: Optional[str] = None,
+            output_variable: str = 'FLOW_OUTcms',
+            reach_id: int = 1
+    ) -> pd.DataFrame:
+        """
+        Chß║íy batch simulation v├á t├¡nh statistics
+
+        Args:
+            param_ranges: {param_name: (min, max)}
+            n_samples: Sß╗æ l╞░ß╗úng mß║½u
+            sampling_method: 'lhs' (Latin Hypercube) or 'grid' or 'random'
+            observed_name: T├¬n observed dataset
+            output_variable: Biß║┐n output ─æß╗â ─æ├ính gi├í
+            reach_id: Reach ID
+
+        Returns:
+            DataFrame with parameter values and statistics
+        """
+        # Generate parameter samples
+        param_samples = self._generate_samples(
+                param_ranges, n_samples, sampling_method
+        )
+
+        results = []
+
+        # Get observed data if provided
+        obs_series = None
+        if observed_name:
+            obs_data = self.project.get_observed_data(observed_name)
+            obs_series = obs_data.df.iloc[:, 1]  # Assume 2nd column is value
+
+        logger.info(f"Starting batch run: {n_samples} simulations")
+
+        for i, params in enumerate(param_samples):
+            try:
+                # Update parameters
+                self.project.update_parameters(params)
+
+                # Run simulation
+                self.project.run(clear_output_cache=True)
+
+                # Get simulated output
+                sim_df = self.project.output.read_reach(reach_id=reach_id)
+                sim_series = sim_df[output_variable]
+
+                # Calculate statistics if observed data available
+                result = params.copy()
+                result['run_id'] = i + 1
+
+                if obs_series is not None:
+                    stats = self.calculate_statistics(obs_series, sim_series)
+                    result.update(stats)
+                else:
+                    # Just record mean and std
+                    result['mean'] = sim_series.mean()
+                    result['std'] = sim_series.std()
+
+                results.append(result)
+
+                if (i + 1) % 10 == 0:
+                    logger.info(f"Completed {i + 1}/{n_samples} runs")
+
+            except Exception as e:
+                logger.error(f"Error in run {i + 1}: {e}")
+                continue
+
+        logger.info(f"Batch run completed: {len(results)} successful runs")
+        return pd.DataFrame(results)
+
+    # ==================== Private Statistical Methods ====================
+
+    def _nse(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        numerator = np.sum((obs - sim) ** 2)
+        denominator = np.sum((obs - np.mean(obs)) ** 2)
+        return 1 - (numerator / denominator)
+
+    def _r_squared(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        correlation = np.corrcoef(obs, sim)[0, 1]
+        return correlation ** 2
+
+    def _rmse(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        return np.sqrt(np.mean((obs - sim) ** 2))
+
+    def _mae(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        return np.mean(np.abs(obs - sim))
+
+    def _pbias(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        return 100 * np.sum(obs - sim) / np.sum(obs)
+
+    def _rsr(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        rmse = self._rmse(obs, sim)
+        std_obs = np.std(obs)
+        return rmse / std_obs if std_obs > 0 else np.nan
+
+    def _kge(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        r = np.corrcoef(obs, sim)[0, 1]
+        alpha = np.std(sim) / np.std(obs)
+        beta = np.mean(sim) / np.mean(obs)
+        return 1 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+
+    def _mape(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        mask = obs != 0
+        return np.mean(np.abs((obs[mask] - sim[mask]) / obs[mask])) * 100
+
+    def _correlation(self, obs: np.ndarray, sim: np.ndarray) -> float:
+        return np.corrcoef(obs, sim)[0, 1]
+
+    def _get_all_metrics(self) -> List[str]:
+        return ['nse', 'r2', 'rmse', 'mae', 'pbias', 'rsr', 'kge', 'mape', 'correlation']
+
+    # ==================== Sampling Methods ====================
+
+    def _generate_samples(
+            self,
+            param_ranges: Dict[str, Tuple[float, float]],
+            n_samples: int,
+            method: str = 'lhs'
+    ) -> List[Dict]:
+        """
+        Generate parameter samples
+
+        Args:
+            param_ranges: {param_name: (min, max)}
+            n_samples: Number of samples
+            method: 'lhs', 'random', or 'grid'
+
+        Returns:
+            List of parameter dictionaries
+        """
+        param_names = list(param_ranges.keys())
+        n_params = len(param_names)
+
+        if method == 'lhs':
+            # Latin Hypercube Sampling
+            from scipy.stats import qmc
+            sampler = qmc.LatinHypercube(d=n_params)
+            samples = sampler.random(n=n_samples)
+
+        elif method == 'random':
+            # Random sampling
+            samples = np.random.random((n_samples, n_params))
+
+        elif method == 'grid':
+            # Grid sampling
+            n_per_dim = int(np.ceil(n_samples ** (1 / n_params)))
+            axes = [np.linspace(0, 1, n_per_dim) for _ in range(n_params)]
+            grid = np.meshgrid(*axes)
+            samples = np.column_stack([g.ravel() for g in grid])[:n_samples]
+
+        else:
+            raise ValueError(f"Unknown sampling method: {method}")
+
+        # Scale samples to parameter ranges
+        param_samples = []
+        for sample in samples:
+            params = {}
+            for i, pname in enumerate(param_names):
+                vmin, vmax = param_ranges[pname]
+                params[pname] = vmin + sample[i] * (vmax - vmin)
+            param_samples.append(params)
+
+        return param_samples
