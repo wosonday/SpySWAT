@@ -369,5 +369,5 @@ class SWATOutputFileReader:
             na_values=["", " ", "NA", "nan"],
             )
 
-        self._convert_dtypes()
+        # self._convert_dtypes()
         return self.data
