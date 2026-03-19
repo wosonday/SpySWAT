@@ -1,3 +1,1 @@
-from .data_info import DATAParameter, HRUInfo
-
-__all__ = ['DATAParameter', 'HRUInfo']
+from .data_info import DATAParameter, HRUInfofrom .output_mapping_info import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping__all__ = ['DATAParameter', 'HRUInfo',            'ReachMapping', 'HRUMapping', 'SubbasinMapping', 'WatoutMapping'           ]
