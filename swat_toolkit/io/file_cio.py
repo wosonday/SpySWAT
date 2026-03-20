@@ -1,10 +1,21 @@
+from typing import TYPE_CHECKING
 from swat_toolkit.io.readers import ReadFileLine
 
+if TYPE_CHECKING:
+    from swat_toolkit.core.txinout import TxInOut
 
 
 class FileCIO(ReadFileLine):
-    def __init__(self, filecio_path):
-        self.lines = self._read_file(filecio_path)
+    def __init__(self, txinout: "TxInOut"):
+        super().__init__()
+        self.txinout = txinout
+        file_path = self.txinout.get_output_file('.cio')
+
+        if file_path is not None:
+            self.lines = self._read_file(file_path)
+        else:
+            raise FileNotFoundError(f"{file_path} does not exist")
+
 
     def get_begin_year_sim(self):
         year_line = self.lines[8][12:16].strip()

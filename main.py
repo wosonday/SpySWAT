@@ -7,7 +7,7 @@ swat_param_path = r"D:\RSWAT\swatParam.txt"
 project = SWATProject(txinout_path, swat_exe_path, swat_param_path)
 
 # param11 = ['CN2']
-#
+
 # cn2 = project.read_param_values(param11)
 # print(cn2)
 
