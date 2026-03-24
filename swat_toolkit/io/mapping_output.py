@@ -37,7 +37,7 @@ class SWATReaderCache:
         }
 
 # GENERIC SWAT READER CLASS
-class SWATOutputFileReader:
+class OutputFileReader:
     MAPPING_CLASSES = { '.rch': ReachMapping, '.hru': HRUMapping,
                         '.sub': SubbasinMapping, '.dat': WatoutMapping }
 

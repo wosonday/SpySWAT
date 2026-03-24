@@ -9,12 +9,12 @@ class FileCIO(ReadFileLine):
     def __init__(self, txinout: "TxInOut"):
         super().__init__()
         self.txinout = txinout
-        file_path = self.txinout.get_output_file('.cio')
+        self.file_path = self.txinout.get_watershed_file('.cio')
 
-        if file_path is not None:
-            self.lines = self._read_file(file_path)
+        if self.file_path is not None:
+            self.lines = self._read_file(self.file_path)
         else:
-            raise FileNotFoundError(f"{file_path} does not exist")
+            raise FileNotFoundError(f"{self.file_path} does not exist")
 
 
     def get_begin_year_sim(self):

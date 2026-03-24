@@ -1,7 +1,7 @@
 from typing import List
 
 
-class SWATFileMapping:
+class FileMapping:
     WATERSHED_MAPPING = {
         '.bsn': ['basins.bsn'],
         '.cio': ['file.cio'],
@@ -56,12 +56,12 @@ class SWATFileMapping:
         """Lấy tên file watershed level
         :arg
             ext: Extension (.bsn, .cio, etc.)
-        >>> SWATFileMapping._get_watershed_file('.bsn')
+        >>> FileMapping._get_watershed_file('.bsn')
         ['basins.bsn']
-        >>> SWATFileMapping._get_watershed_file('.cio')
+        >>> FileMapping._get_watershed_file('.cio')
         ['file.cio']
         """
-        return SWATFileMapping.WATERSHED_MAPPING.get(ext, [])
+        return FileMapping.WATERSHED_MAPPING.get(ext, [])
 
 
     @staticmethod
@@ -70,12 +70,12 @@ class SWATFileMapping:
         Args:
             ext: Extension (.pcp, .tmp, etc.)
             index: Số thứ tự (1, 2, 3, ...)
-        >>> SWATFileMapping._get_indexed_file('.pcp', 1)
+        >>> FileMapping._get_indexed_file('.pcp', 1)
         'pcp1.pcp'
-        >>> SWATFileMapping._get_indexed_file('.tmp', 3)
+        >>> FileMapping._get_indexed_file('.tmp', 3)
         'tmp3.tmp'
         """
-        template = SWATFileMapping.INDEXED_MAPPING.get(ext)
+        template = FileMapping.INDEXED_MAPPING.get(ext)
         return template.format(index) if template else ""
 
 
@@ -85,18 +85,18 @@ class SWATFileMapping:
         Args:
             ext: Extension (.sub, .rte, etc.)
             subbasin_id: ID subbasin (vd: 10001, 20001)
-        >>> SWATFileMapping._get_subbasin_file('.sub', 10001)
+        >>> FileMapping._get_subbasin_file('.sub', 10001)
         '000010001.sub'
-        >>> SWATFileMapping._get_subbasin_file('.rte', 20001)
+        >>> FileMapping._get_subbasin_file('.rte', 20001)
         '000020001.rte'
         """
-        template = SWATFileMapping.SUBBASIN_MAPPING.get(ext)
+        template = FileMapping.SUBBASIN_MAPPING.get(ext)
         return template.format(subbasin_id) if template else ""
 
 
     @staticmethod
     def _get_hru_file(ext: str, subbasin_num: int, hru_num: int) -> str:
-        template = SWATFileMapping.HRU_MAPPING.get(ext)
+        template = FileMapping.HRU_MAPPING.get(ext)
         if template:
             hru_id = subbasin_num * 10000 + hru_num
             return template.format(hru_id)
@@ -110,7 +110,7 @@ class SWATFileMapping:
             ext: Extension (res, wtr, etc.)
             reservoir_id: ID reservoir (vd: 1, 2, 3, ...)
         """
-        template = SWATFileMapping.RESERVOIR_MAPPING.get(ext)
+        template = FileMapping.RESERVOIR_MAPPING.get(ext)
         return template.format(reservoir_id) if template else ""
 
     @staticmethod
@@ -118,10 +118,10 @@ class SWATFileMapping:
         """Lấy tên output files
         :arg
             ext: Extension (std, rch, etc.)
-        >>> SWATFileMapping._get_output_file('.std')
+        >>> FileMapping._get_output_file('.std')
         ['output.std', 'input.std']
         """
-        return SWATFileMapping.OUTPUT_MAPPING.get(ext, [])
+        return FileMapping.OUTPUT_MAPPING.get(ext, [])
 
 
 

@@ -8,7 +8,7 @@ class HRUManager:
         self.txinout = txinout
         self.swat_param = swat_param
 
-    def read_param_values(self, param: list):
+    def read_muti_hru_param_values(self, param: list):
         param_ = self.swat_param.get_params(param)
         records = []
         for ext, param_dict in param_.items():
@@ -27,3 +27,7 @@ class HRUManager:
         df = pd.DataFrame(records)
         df_merged = df.sort_values(by="hru").groupby("hru").first().reset_index()
         return df_merged
+
+
+    def read_hru_param_values(self, param: str):
+        pass
