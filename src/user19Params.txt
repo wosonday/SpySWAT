@@ -1,0 +1,19 @@
+CN2.mgt	relative	-0.25	0.25	All	All	All	All
+ALPHA_BF.gw	replace	0	1	All	All	All	All
+GW_DELAY.gw	replace	0	500	All	All	All	All
+GWQMN.gw	replace	0	5000	All	All	All	All
+RCHRG_DP.gw	relative	0	1	All	All	All	All
+GW_REVAP.gw	relative	0.02	2	All	All	All	All
+LAT_TTIME.hru	relative	0	180	All	All	All	All
+OV_N.hru	relative	0.01	1	All	All	All	All
+ESCO.hru	relative	0	1	All	All	All	All
+SLSUBBSN.hru	relative	-0.25	0.25	All	All	All	All
+HRU_SLP.hru	relative	-0.25	0.25	All	All	All	All
+SOL_AWC.sol	relative	-0.5	0.5	All	All	All	All
+SOL_K.sol	relative	-0.25	0.25	All	All	All	All
+SOL_BD.sol	relative	-0.25	0.25	All	All	All	All
+CH_N2.rte	relative	0	0.3	All			
+CH_K2.rte	relative	0	500	All			
+ALPHA_BNK.rte	relative	0	1	All			
+SURLAG.bsn	relative	0.05	24				
+EPCO.bsn	relative	0	1				
