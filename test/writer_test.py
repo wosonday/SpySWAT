@@ -36,7 +36,7 @@ parametter = {
     "EPCO"      : (0.677, 'relative')
 }
 
-grouped = param.get_param_by_name(parametter)
+# grouped = param.get_param_by_name(parametter)
 
 values  = {k: v[0] for k, v in parametter.items()}
 methods = {k: v[1] for k, v in parametter.items()}
