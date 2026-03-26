@@ -16,7 +16,7 @@ class HRUManager:
         records = []
         for ext, param_dict in param_.items():
             if ext == '.bsn':
-                hrs = self.txinout.get_watershed_file(ext)
+                hrs = [self.txinout.get_watershed_file(ext)]
             else:
                 hrs = self.txinout.get_hru_file(ext)
             for hru in hrs:
