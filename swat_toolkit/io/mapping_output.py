@@ -9,20 +9,15 @@ logger = Logger.get_logger(__name__)
 
 
 class SWATReaderCache:
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._store: Dict[str, pd.DataFrame] = {}
-        return cls._instance
+    def __init__(self):
+        self._store: Dict[str, pd.DataFrame] = {}
 
     def get(self, key: str) -> Optional[pd.DataFrame]:
         df = self._store.get(key)
         return df.copy() if df is not None else None
 
     def set(self, key: str, df: pd.DataFrame):
-        self._store[key] = df  # Lưu bản gốc
+        self._store[key] = df.copy()
 
     def clear(self, key: str = None):
         if key:
@@ -30,11 +25,18 @@ class SWATReaderCache:
         else:
             self._store.clear()
 
+    def keys(self):
+        return self._store.keys()
+
     def info(self) -> Dict:
         return {
-            k: {'rows': len(df), 'memory_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2)}
+            k: {
+                'rows': len(df),
+                'memory_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2)
+            }
             for k, df in self._store.items()
         }
+
 
 # GENERIC SWAT READER CLASS
 class OutputFileReader:
@@ -44,7 +46,6 @@ class OutputFileReader:
     DEFAULT_SKIP_HEADER = { '.rch': 9, '.hru': 9, '.sub': 9, '.dat': 6 }
 
     def __init__(self, filepath: Union[str, Path],
-                 # file_type: str,
                  cache: Optional[SWATReaderCache] = None):
 
         self.filepath = Path(filepath)

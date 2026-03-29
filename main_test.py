@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 
 from swat_toolkit import SWATProject
 
-txinout_path = r'D:\Project\2025_IVCEES\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT\Bariverbasin\Scenarios\Default\TxtInOut'
+txinout_path = r'D:\Project\2025_IVCEES\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT\Bariverbasin\Scenarios\Default\TxtInOut'
 swat_exe_path = r"D:\RSWAT\_SWAT_RUN\swat_695.exe"
 swat_param_path = r"D:\RSWAT\swatParam.txt"
 
@@ -38,9 +38,9 @@ project = SWATProject(txinout_path, swat_exe_path, swat_param_path)
 
 # project.hru_manager.update_params(parametter)
 
-rch = project._output_manager.read_rch(['RCH',"MON",'FLOW_OUTcms'])
+rch = project.output_manager.read_rch('FLOW_OUTcms', reach_id=8)
 
-cungson = rch.loc[(rch['RCH'] == 8) & (rch['MON'] <= 366)]
+cungson = rch
 
 cungson.set_index(project.get_date_range(), inplace=True)
 
