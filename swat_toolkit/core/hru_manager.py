@@ -31,26 +31,35 @@ class HRUManager:
         df_merged = df.sort_values(by="hru").groupby("hru").first().reset_index()
         return df_merged
 
-    def update_params(self, param):
-        param_dict = self.swat_param.get_param_by_name(param)
+    def update_params(self, param, subbasin = None):
+        for param_name, values in param.items():
+            value = values[0]
+            method = values[1]
+            subbasin_filter = values[2] if len(values) > 2 else None
+            param_dict = self.swat_param.get_param_by_name({param_name: (value, method)})
 
-        for ext, ext_params in param_dict.items():
-            for hru_file in self.txinout.get_hru_file(ext):
-                writer = HRUWriter(hru_file)
+            for ext, ext_params in param_dict.items():
+                if subbasin_filter is None:
+                    hru_files = self.txinout.get_hru_file(ext)
+                else:
+                    hru_files = []
+                    for sub in subbasin_filter:
+                        hru_files += self.txinout.get_hru_file(ext, sub)
 
-                ext_param_list = []
-                new_values = {}
-
-                for param_name, value_and_method in ext_params.items():
-                    par_info = self.swat_param.get(param_name)
-                    value, method = value_and_method
-                    par_info.method = method
-                    ext_param_list.append(par_info)
-                    new_values[param_name] = value
-
-                writer.update_param(ext_param_list, new_values)
-                print(hru_file,': updated \n')
-                writer.save()
+                for hru_file in hru_files:
+                    writer = HRUWriter(hru_file)
+                    ext_param_list = []
+                    new_values = {}
+                    for pname, (val, mth) in ext_params.items():
+                        par_info = self.swat_param.get(pname)
+                        par_info.method = mth
+                        ext_param_list.append(par_info)
+                        new_values[pname] = val
+                    writer.update_param(ext_param_list, new_values)
+                    print('='* 20)
+                    print(f"{hru_file} [sub={subbasin_filter}]: updated")
+                    print(f"           {param_name} = {value}, [method={method}]\n")
+                    writer.save()
 
 
     def read_hru_param_values(self, param: str):
