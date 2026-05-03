@@ -1,5 +1,5 @@
-from swat_toolkit.io.weather import Weather
-from swat_toolkit.core.txinout import TxInOut
+from swat_calib.io import Weather
+from swat_calib.core import TxInOut
 
 import pandas as pd
 

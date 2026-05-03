@@ -1,72 +1,83 @@
 import pandas as pd
 import numpy as np
-from matplotlib import pyplot as plt
+from pathlib import Path
 
 from swat_toolkit import SWATProject
 
-txinout_path = r'D:\Project\2025_IVCEES\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT\Bariverbasin\Scenarios\Default\TxtInOut'
-swat_exe_path = r"D:\RSWAT\_SWAT_RUN\swat_695.exe"
+years = ['LUC1992', 'LUC2000', 'LUC2010', 'LUC2020']
+
+swat_exe_path = r"D:\RSWAT\_SWAT_RUN\swat_637_101.exe"
 swat_param_path = r"D:\RSWAT\swatParam.txt"
 
-cungson_obs = pd.read_csv(r"D:\DATA_STORAGE\_data\.dataall\Q_BA_0003\flow_date_flow2019\Q_BA_0003.csv",
-                          index_col='date', parse_dates=['date'])
-cungson_obs = cungson_obs.loc['1983-01-01': '2019-12-31']
-ankhe_obs = pd.read_csv(r"D:\DATA_STORAGE\_data\.dataall\Q_BA_0001\flow_date_flow2019\Q_BA_0001.csv",
-                          index_col='date', parse_dates=['date'])
-ankhe_obs = ankhe_obs.loc['1983-01-01': '2019-12-31']
-
-parametter = {
-    "CN2"       : (-0.249, 'relative'),
-    "ALPHA_BF"  : (0.506, 'replace'),
-    "GW_DELAY"  : (436.905, 'replace'),
-    "GWQMN"     : (3744.065, 'replace'),
-    "RCHRG_DP"  : (0.462, 'relative'),
-    "GW_REVAP"  : (1.989, 'relative'),
-    "LAT_TTIME" : (134.069, 'relative'),
-    "OV_N"      : (0.091, 'relative'),
-    "ESCO"      : (0.366, 'relative'),
-    "SLSUBBSN"  : (0.107, 'relative'),
-    "HRU_SLP"   : (0.203, 'relative'),
-    "SOL_AWC"   : (0.32, 'relative'),
-    "SOL_K"     : (0.243, 'relative'),
-    "SOL_BD"    : (0.138, 'relative'),
-    "CH_N2"     : (0.072, 'relative'),
-    "CH_K2"     : (407.968, 'relative'),
-    "ALPHA_BNK" : (0.112, 'relative'),
-    "SURLAG"    : (9.645, 'relative'),
-    "EPCO"      : (0.677, 'relative')
-}
-
-
-
-project = SWATProject(txinout_path, swat_exe_path, swat_param_path)
-
-project.hru_manager.update_params(parametter)
-
-rch = project.output_manager.read_rch('FLOW_OUTcms', reach_id=[8, 51])
-
-cungson = rch
-n_rch = cungson['RCH'].nunique()
-dates = project.get_date_range()
-dates_repeated = np.repeat(dates, n_rch)
-cungson['date'] = dates_repeated
-pivot_df = cungson.pivot(index='date', columns='RCH', values='FLOW_OUTcms')
-pivot_df = pivot_df.loc['1983-01-01': '2019-12-31']
-
-
-print(project.statistic.calculate_statistics(pivot_df[8], cungson_obs['discharge']))
-print(project.statistic.calculate_statistics(pivot_df[51], ankhe_obs['discharge']))
-print(pivot_df)
-
-fig, ax = plt.subplots()
-
-ax.plot(pivot_df.index, pivot_df[51], color='red', label='Simulated', alpha=0.6)
-ax.plot(ankhe_obs.index, ankhe_obs['discharge'], alpha=0.6, label='Observed')
-
-fig.legend()
-ax.grid()
-fig.suptitle("An Khe Station")
-plt.show()
+# for year in years:
+#     if year == 'LUC1992':
+#         txinout_path = r'D:\Project\2026_Nafosted-VLU\SWAT\MATHY_RUN\LUC1992\CPC_SWAT_First\CPC_TxtInOut\TxtInOut'
+#     else:
+#         txinout_path = fr'D:\Project\2026_Nafosted-VLU\SWAT\{year}\SWAT\Scenarios\Default\TxtInOut'
+#
+#     working_folder = fr'D:\Project\2026_Nafosted-VLU\SWAT\LUC1992\{year}'
+#
+#
+#     param_user = pd.read_csv(r"G:\My Drive\_MATHY-NLU\project\2026_NAFOSTED-VLU\best_param_flow_all.csv")
+#
+#     param_user = param_user.sort_values(by='TIME')
+#     par1 = param_user.loc[param_user['TIME'] == 1]
+#     par2 = param_user.loc[param_user['TIME'] == 2]
+#     par3 = param_user.loc[param_user['TIME'] == 3]
+#
+#     project = SWATProject(txinout_path, working_folder, swat_exe_path, swat_param_path)
+#     project.WorkingFolder.setup(overwrite=True)
+#
+#     w1 = project.worker(1)
+#     w1.HRU.update_by_df(par1, param_name='PARAM', method='method', value='MIN', sub='SUBBASIN')
+#     w1.HRU.update_by_df(par2, param_name='PARAM', method='method', value='MIN', sub='SUBBASIN')
+#     w1.HRU.update_by_df(par3, param_name='PARAM', method='method', value='MIN', sub='SUBBASIN')
+#
+#     w1.run()
+#
+#     rch = [49,51,55,57,61,66,73,77]
+#     out = w1.Output.read_rch("FLOW_OUTcms", rch, freq='MS')
+#     date_range = project.get_date_range(freq='MS')
+#
+#
+#     values = out['FLOW_OUTcms'].to_numpy()
+#     matrix = values.reshape(-1, len(rch))
+#     df1 = pd.DataFrame(matrix, index=date_range, columns=rch)
+#     df1.to_csv(Path(working_folder) / f'{year}.csv')
 
 
 
+for year in years:
+    txinout_path = fr'D:\Project\2026_Nafosted-VLU\SWAT\LUC1992\{year}\TxInOut1'
+    working_folder = fr'D:\Project\2026_Nafosted-VLU\SWAT\LUC1992\{year}\SEDIMENT'
+    param_user = pd.read_csv(r"G:\My Drive\_MATHY-NLU\project\2026_NAFOSTED-VLU\best_param_sediment.csv")
+
+
+
+    pars = [1,2,3]
+    out_df = pd.DataFrame()
+    x = 1
+    for par in pars:
+        project = SWATProject(txinout_path, working_folder, swat_exe_path, swat_param_path)
+        project.WorkingFolder.setup(overwrite=True)
+        w1 = project.worker(1)
+        print(year, "|", par)
+        par1 = param_user.loc[param_user['TIME'] == par]
+        w1.HRU.update_by_df(par1, param_name='PARAM', method='method', value='MIN', sub='SUBBASIN')
+        w1.run()
+
+        if par == 1:
+            rch = [51,55,73]
+        elif par == 2:
+            rch = [57]
+        elif par == 3:
+            rch = [77]
+
+        out = w1.Output.read_rch("SED_OUTtons", rch, freq='MS')
+        date_range = project.get_date_range(freq='MS')
+
+        values = out['SED_OUTtons'].to_numpy()
+        matrix = values.reshape(-1, len(rch))
+        df1 = pd.DataFrame(matrix, index=date_range, columns=rch)
+        out_df = out_df.merge(df1, left_index=True, right_index=True, how='outer')
+    out_df.to_csv(Path(working_folder) / f'{year}.csv')

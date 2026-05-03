@@ -1,6 +1,6 @@
-from swat_toolkit.io.parameters import SWATParam
-from swat_toolkit.core.txinout import TxInOut
-from swat_toolkit.io.readers import HRURead
+from swat_calib.io import SWATParam
+from swat_calib.core import TxInOut
+from swat_calib.io import HRURead
 import pandas as pd
 
 

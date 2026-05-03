@@ -95,7 +95,7 @@ class FileMapping:
 
 
     @staticmethod
-    def _get_hru_file(ext: str, subbasin_num: int, hru_num: int) -> str:
+    def _get_hru_file(ext: str, subbasin_num: int, hru_num: int) -> str | None:
         template = FileMapping.HRU_MAPPING.get(ext)
         if template:
             hru_id = subbasin_num * 10000 + hru_num
@@ -122,7 +122,6 @@ class FileMapping:
         ['output.std', 'input.std']
         """
         return FileMapping.OUTPUT_MAPPING.get(ext, [])
-
 
 
 if __name__ == "__main__":

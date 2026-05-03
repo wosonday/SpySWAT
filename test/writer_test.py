@@ -1,7 +1,7 @@
-from swat_toolkit.io.writers import HRUWriter
-from swat_toolkit.io.parameters import SWATParam
-from swat_toolkit.core.txinout import TxInOut
-from swat_toolkit.run.run import SWATRun
+from swat_calib.io import HRUWriter
+from swat_calib.io import SWATParam
+from swat_calib.core import TxInOut
+from swat_calib.run import SWATRun
 
 
 scenarios = ['history', 'ssp245','ssp340', 'ssp585']

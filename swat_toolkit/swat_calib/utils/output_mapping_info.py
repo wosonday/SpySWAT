@@ -1,7 +1,7 @@
 from typing import List, Dict, Tuple, Optional
 from abc import ABC, abstractmethod
 
-from swat_toolkit.utils.logger import Logger
+from swat_toolkit.logger import Logger
 
 logger = Logger.get_logger(__name__)
 
@@ -10,6 +10,8 @@ logger = Logger.get_logger(__name__)
 
 # BASE ABSTRACT CLASS: SWATColumnMapping
 class SWATColumnMapping(ABC):
+
+    _MAPPING = None
 
     @classmethod
     @abstractmethod
@@ -55,7 +57,7 @@ class ReachMapping(SWATColumnMapping):
                 'unit': '-', 'category': 'identifier'},
         'MON': {'colspec': (21, 26), 'dtype': 'int', 'description': 'Month',
                 'unit': '-', 'category': 'time'},
-        'AREAkm2': {'colspec': (28, 40), 'dtype': 'float', 'description': 'Drainage area',
+        'AREAkm2': {'colspec': (27, 38), 'dtype': 'float', 'description': 'Drainage area',
                     'unit': 'km²', 'category': 'area'},
         'FLOW_INcms': {'colspec': (39, 50), 'dtype': 'float', 'description': 'Flow into reach',
                        'unit': 'cms', 'category': 'hydrology'},

@@ -1,6 +1,9 @@
-from swat_toolkit.utils import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping
+import numpy as np
+
+from swat_toolkit.swat_calib.utils import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping
+from swat_toolkit.logger import Logger
+from swat_toolkit.swat_calib.io.readers import ReadFileLine
 import pandas as pd
-from swat_toolkit.utils.logger import Logger
 from pathlib import Path
 from typing import List, Optional, Union, Dict
 
@@ -60,14 +63,14 @@ class OutputFileReader:
             raise ValueError(f"Unsupported file type: {self.file_type}")
         self.mapping_class = self.MAPPING_CLASSES[self.file_type]
 
-        self.data: Optional[pd.DataFrame] = None
+        self.data: pd.DataFrame = pd.DataFrame()
 
     def __repr__(self):
         status = "loaded" if self.data is not None else "not loaded"
         rows = len(self.data) if self.data is not None else 0
         return f"SWATFileReader(type='{self.file_type}', rows={rows}, status='{status}')"
 
-    def read(self, columns: List[str] = None) -> pd.DataFrame:
+    def read(self, columns: Optional[List[str]| str | None] = None) -> pd.DataFrame:
         # full cache
         if columns is None:
             cached = self._cache.get(self._cache_key)
@@ -86,25 +89,20 @@ class OutputFileReader:
         self._cache.set(col_key, df)
         return df.copy()
 
-
-    def get_data(self) -> pd.DataFrame:
-        if self.data is None:
-            self.read()
-        return self.data
-
-
     def __read_all(self) -> pd.DataFrame:
-        self.data = pd.read_fwf(
+        cols = self.mapping_class.get_column_names()
+        print(cols)
+        result = ReadFileLine._read_file(
             self.filepath,
-            colspecs=self.mapping_class.get_all_colspecs(),
-            names=self.mapping_class.get_column_names(),
-            skiprows=self.skip_header,
-            na_values=['', ' ', 'NA', 'nan']
-        )
+            colspecs    =self.mapping_class.get_all_colspecs(),
+            skiprows    =self.skip_header, #type: ignore
+            )
+        arr = np.array(list(result.values())).T
+        self.data = pd.DataFrame(arr, columns=cols, dtype=np.float32)
         print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")
         return self.data
 
-    def __read_by_col(self, columns: List[str]) -> pd.DataFrame:
+    def __read_by_col(self, columns: Optional[List[str]| str]) -> pd.DataFrame:
         colspecs = []
         names = []
         for c in columns:
@@ -115,13 +113,13 @@ class OutputFileReader:
             colspecs.append(info["colspec"])
             names.append(c)
 
-        self.data = pd.read_fwf(
+        result = ReadFileLine._read_file(
             self.filepath,
-            colspecs=colspecs,
-            names=names,
-            skiprows=self.skip_header,
-            na_values=["", " ", "NA", "nan"],
+            colspecs    =colspecs,
+            skiprows    =self.skip_header, #type: ignore
             )
-
+        arr = np.array(list(result.values())).T
+        self.data = pd.DataFrame(arr, columns=names, dtype=np.float32)
+        print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")
         return self.data
 
