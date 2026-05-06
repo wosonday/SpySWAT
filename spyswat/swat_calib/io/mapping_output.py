@@ -1,8 +1,8 @@
 import numpy as np
 
-from swat_toolkit.swat_calib.utils import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping
-from swat_toolkit.logger import Logger
-from swat_toolkit.swat_calib.io.readers import ReadFileLine
+from spyswat.swat_calib.utils import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping
+from spyswat.logger import Logger
+from spyswat.swat_calib.io.readers import ReadFileLine
 import pandas as pd
 from pathlib import Path
 from typing import List, Optional, Union, Dict

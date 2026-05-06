@@ -1,10 +1,10 @@
 from collections import defaultdict
 
-from swat_toolkit.swat_calib.io.parameters import SWATParam
-from swat_toolkit.swat_calib.core.txinout import TxInOut
-from swat_toolkit.swat_calib.io.readers import HRURead
-from swat_toolkit.swat_calib.io.writers import HRUWriter
-from swat_toolkit.logger import Logger
+from spyswat.swat_calib.io.parameters import SWATParam
+from spyswat.swat_calib.core.txinout import TxInOut
+from spyswat.swat_calib.io.readers import HRURead
+from spyswat.swat_calib.io.writers import HRUWriter
+from spyswat.logger import Logger
 import pandas as pd
 
 Logger.init(log_dir="logs", log_file="run.log", level="WARNING")

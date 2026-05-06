@@ -1,0 +1,1 @@
+import logging__version__ = '0.1.0'__author__ = 'Sondayyyy'from spyswat.swat_project import SWATProject__all__ = [    'SWATProject']logging.getLogger(__name__).addHandler(logging.NullHandler())logging.getLogger('matplotlib').setLevel(logging.WARNING)

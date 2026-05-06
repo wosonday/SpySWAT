@@ -1,7 +1,7 @@
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from swat_toolkit import SWATProject
+from spyswat import SWATProject
 
 txinout_path = r'D:\Project\2025_IVCEES\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT_Ba_Basin\SWAT\Bariverbasin\Scenarios\Default\TxtInOut'
 swat_exe_path = r"D:\RSWAT\_SWAT_RUN\swat_695.exe"

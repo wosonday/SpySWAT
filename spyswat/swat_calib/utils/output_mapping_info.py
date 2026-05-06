@@ -1,7 +1,7 @@
 from typing import List, Dict, Tuple, Optional
 from abc import ABC, abstractmethod
 
-from swat_toolkit.logger import Logger
+from spyswat.logger import Logger
 
 logger = Logger.get_logger(__name__)
 

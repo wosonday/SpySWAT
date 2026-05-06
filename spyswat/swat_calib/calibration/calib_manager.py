@@ -1,4 +1,4 @@
-# swat_toolkit/calibration/manager.py
+# spyswat/calibration/manager.py
 from typing import Dict
 import pandas as pd
 

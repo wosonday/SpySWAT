@@ -2,9 +2,9 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from swat_toolkit.swat_calib.io.readers import ReadFileLine
+from spyswat.swat_calib.io.readers import ReadFileLine
 if TYPE_CHECKING:
-    from swat_toolkit.swat_calib.core.txinout import TxInOut
+    from spyswat.swat_calib.core.txinout import TxInOut
 
 
 class FileCIO(ReadFileLine):

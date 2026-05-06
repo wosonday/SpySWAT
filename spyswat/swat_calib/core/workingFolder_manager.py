@@ -3,10 +3,10 @@ import concurrent.futures
 from pathlib import Path
 from typing import Optional, Union, List
 
-from swat_toolkit.swat_calib.run import SWATRun
-from swat_toolkit.swat_calib.core import TxInOut, HRUManager
-from swat_toolkit.swat_calib.io import SWATParam
-from swat_toolkit.logger import Logger
+from spyswat.swat_calib.run import SWATRun
+from spyswat.swat_calib.core import TxInOut, HRUManager
+from spyswat.swat_calib.io import SWATParam
+from spyswat.logger import Logger
 
 Logger.init(log_dir="logs", log_file="run.log")
 logger = Logger.get_logger(__name__)

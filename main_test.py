@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from swat_toolkit import SWATProject
+from spyswat import SWATProject
 
 years = ['LUC1992', 'LUC2000', 'LUC2010', 'LUC2020']
 
