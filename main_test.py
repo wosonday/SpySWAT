@@ -41,7 +41,7 @@ swat_param_path = r"D:\RSWAT\swatParam.txt"
 #
 #
 #     values = out['FLOW_OUTcms'].to_numpy()
-#     matrix = values.reshape(-1, len(rch))
+#      = values.reshape(-1, len(rch))
 #     df1 = pd.DataFrame(matrix, index=date_range, columns=rch)
 #     df1.to_csv(Path(working_folder) / f'{year}.csv')
 
