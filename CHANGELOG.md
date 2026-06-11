@@ -5,6 +5,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.1] – 2026-06-11
+
+### Breaking Change — Mandatory `name.ext` parameter key format
+
+All parameter keys passed to `update_params()`, `update_by_df()`, `run_iteration()`,
+`run_batch()`, `glue_analysis()`, `analyze()`, and sensitivity methods **must** now
+include the file extension (e.g. `CN2.mgt`, `ALPHA_BF.gw`, `ESCO.hru`).
+
+Bare names such as `"CN2"` are rejected with a `ValueError`.
+
+**Why this change?** SWAT uses the same parameter names across multiple file types
+(e.g. `ESCO` exists in both `.hru` and `.bsn`). Without the extension, SpySWAT
+previously attempted a fuzzy lookup and silently wrote to whichever file matched first
+— potentially the wrong one. Requiring `name.ext` makes the target file unambiguous.
+
+#### Migration
+
+```python
+# Before (v0.2.0) — bare names
+param_ranges = {
+    "CN2":      (35, 98),
+    "ALPHA_BF": (0.0, 1.0),
+    "ESCO":     (0.01, 1.0),
+}
+project.HRU.update_params({
+    "CN2":      [(75.0, "v")],
+    "ALPHA_BF": [(0.05, "v")],
+})
+
+# After (v0.2.1) — name.ext required everywhere
+param_ranges = {
+    "CN2.mgt":      (35, 98),
+    "ALPHA_BF.gw":  (0.0, 1.0),
+    "ESCO.hru":     (0.01, 1.0),
+}
+project.HRU.update_params({
+    "CN2.mgt":      [(75.0, "v")],
+    "ALPHA_BF.gw":  [(0.05, "v")],
+})
+```
+
+Error message when a bare name is passed:
+
+```
+ValueError: Parameter key(s) ['CN2'] missing file extension.
+Use 'name.ext' format, e.g. 'CN2.mgt', 'ALPHA_BF.gw', 'ESCO.hru'.
+```
+
+When the extension is unknown, call `project.param_file.available_keys()` to list
+all registered `name.ext` keys from the param definition file.
+
+#### Changed files
+
+| File | Change |
+|------|--------|
+| `swat_calib/io/parameters.py` | `SWATParam.get()` — removed fuzzy fallback; raises `KeyError` for bare names with candidate suggestions |
+| `swat_calib/core/hru_manager.py` | Added `_validate_param_keys()` static method; called at the top of `update_params()` and `update_by_df()` |
+
+---
+
 ## [0.2.0] – 2026-06-11
 
 ### Summary
@@ -93,7 +153,6 @@ for traj_idx, trajectory in enumerate(trajectories):
 # Flatten all trajectory steps → run entire batch in parallel
 all_steps = [step for traj in trajectories for step in traj]
 all_scores = self._manager.run_batch(all_steps, ...)
-# Elementary Effects computed in post-processing from all_scores
 ```
 
 `n_trajectories × (n_params + 1)` steps now run fully in parallel.
@@ -137,16 +196,6 @@ project = SWATProject(
 
 #### 2. Calibration — `_manager` is no longer `None`
 
-```python
-# Before — crashed with AttributeError
-calib = SWATCalibration(project)
-calib.optimize(...)  # AttributeError: 'NoneType' has no attribute 'run_iteration'
-
-# After — works without any code change
-calib = SWATCalibration(project)
-calib.optimize(...)  # OK
-```
-
 No user code change required — the bug is fixed internally.
 
 #### 3. GLUE — call `setup_parallel()` before running many samples
@@ -162,23 +211,12 @@ result = calib.glue_analysis(param_ranges, obs, n_samples=1000)  # OK, parallel
 
 #### 4. Sensitivity — broken API is fixed, no code change needed
 
-```python
-# Before — crashed with AttributeError (3 methods did not exist on project)
-sens = SWATSensitivity(project)
-oat_df, idx = sens.one_at_a_time(param_ranges, observed_series=obs)  # AttributeError
-
-# After — works and runs in parallel
-sens = SWATSensitivity(project)
-oat_df, idx = sens.one_at_a_time(param_ranges, observed_series=obs)  # OK
-```
-
 No user code change required — the bug is fixed internally.
 
 #### 5. Sensitivity from GLUE results — new API, no extra SWAT runs
 
 ```python
 # Before — no way to do this
-# (had to run separate OAT/Morris = M additional SWAT runs)
 
 # After — compute sensitivity from existing GLUE results
 sensitivity = project.Statistic.sensitivity_from_results(
@@ -194,10 +232,8 @@ sensitivity = project.Statistic.sensitivity_from_results(
 # Before — 4 separate steps
 calib._manager.setup_parallel(overwrite=True)
 glue_result = calib.glue_analysis(param_ranges, obs, n_samples=1000)
-best_idx = glue_result["all_results"]["nse"].idxmax()
 best_params = ...
-sensitivity = project.Statistic.sensitivity_from_results(glue_result["all_results"])
-rating = project.Statistic.evaluate_performance(obs_aligned, sim_aligned)
+sensitivity = project.Statistic.sensitivity_from_results(...)
 
 # After — one call returns everything
 result = calib.analyze(param_ranges, obs, n_samples=1000, metric="nse")

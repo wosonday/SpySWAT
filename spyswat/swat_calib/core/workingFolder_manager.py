@@ -8,6 +8,7 @@ from spyswat.swat_calib.core import TxInOut, HRUManager
 from spyswat.swat_calib.io import SWATParam
 from spyswat.logger import Logger
 
+Logger.init(log_dir="logs", log_file="run.log")
 logger = Logger.get_logger(__name__)
 
 class WorkingFolderManager:

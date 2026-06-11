@@ -11,6 +11,7 @@
 - [Giới thiệu](#giới-thiệu)
 - [Cài đặt](#cài-đặt)
 - [Khởi tạo dự án](#khởi-tạo-dự-án)
+- [Định dạng tham số bắt buộc](#định-dạng-tham-số-bắt-buộc)
 - [Quy trình nhanh (Recommended)](#quy-trình-nhanh-recommended)
 - [Hiệu chỉnh tham số](#hiệu-chỉnh-tham-số)
 - [Kiểm định](#kiểm-định)
@@ -73,6 +74,40 @@ project = SWATProject(
 
 ---
 
+## Định dạng tham số bắt buộc
+
+> **⚠️ Kể từ v0.2.1, tất cả key tham số phải dùng định dạng `name.ext`.**
+
+Định dạng `name.ext` chỉ rõ cả tên tham số lẫn loại file SWAT cần cập nhật, tránh nhầm lẫn khi cùng tên tham số tồn tại ở nhiều loại file khác nhau.
+
+```python
+# ❌ Sai — bare name không còn được chấp nhận
+{"CN2": [(75.0, "v")]}
+
+# ✅ Đúng — luôn kèm phần mở rộng file
+{"CN2.mgt": [(75.0, "v")]}
+```
+
+Bảng tham chiếu nhanh:
+
+| Tham số | Key đúng | File SWAT |
+|---------|----------|-----------|
+| CN2 | `CN2.mgt` | `.mgt` (management) |
+| ALPHA_BF | `ALPHA_BF.gw` | `.gw` (groundwater) |
+| GW_DELAY | `GW_DELAY.gw` | `.gw` (groundwater) |
+| ESCO | `ESCO.hru` | `.hru` (HRU general) |
+| SOL_AWC | `SOL_AWC.sol` | `.sol` (soil) |
+| SURLAG | `SURLAG.bsn` | `.bsn` (basin) |
+
+Nếu dùng bare name, SpySWAT sẽ báo lỗi rõ ràng với gợi ý key đúng:
+
+```
+ValueError: Parameter key(s) ['CN2'] missing file extension.
+Use 'name.ext' format, e.g. 'CN2.mgt', 'ALPHA_BF.gw', 'ESCO.hru'.
+```
+
+---
+
 ## Quy trình nhanh (Recommended)
 
 Từ phiên bản 0.2.0, `SWATCalibration.analyze()` thực hiện toàn bộ workflow trong một lệnh:
@@ -93,12 +128,13 @@ project = SWATProject(
 
 obs = pd.read_csv("observed_flow.csv", index_col="date", parse_dates=True)["flow"]
 
+# Key phải dùng name.ext để xác định đúng file cần cập nhật
 param_ranges = {
-    "CN2":      (35, 98),
-    "ALPHA_BF": (0.0, 1.0),
-    "GW_DELAY": (30, 450),
-    "ESCO":     (0.01, 1.0),
-    "SOL_AWC":  (0.01, 0.5),
+    "CN2.mgt":      (35, 98),
+    "ALPHA_BF.gw":  (0.0, 1.0),
+    "GW_DELAY.gw":  (30, 450),
+    "ESCO.hru":     (0.01, 1.0),
+    "SOL_AWC.sol":  (0.01, 0.5),
 }
 
 calib = SWATCalibration(project)
@@ -145,7 +181,7 @@ calib = SWATCalibration(project)
 calib._manager.setup_parallel(overwrite=True)
 
 result = calib.glue_analysis(
-    param_ranges=param_ranges,
+    param_ranges=param_ranges,   # key dạng name.ext
     observed_series=obs,
     n_samples=1000,
     threshold=0.5,
@@ -182,7 +218,7 @@ from spyswat.swat_calib.calibration import CalibrationManager
 
 manager = CalibrationManager(project)
 score = manager.run_iteration(
-    param_dict={"CN2": [(75.0, "v")], "ALPHA_BF": [(0.5, "v")]},
+    param_dict={"CN2.mgt": [(75.0, "v")], "ALPHA_BF.gw": [(0.5, "v")]},
     observed=obs,
     metric="nse",
     reach_id=1
@@ -195,7 +231,7 @@ print(f"NSE = {score:.4f}")
 ## Kiểm định
 
 ```python
-# Áp dụng best params
+# best_params từ analyze() đã ở dạng name.ext, dùng trực tiếp
 best = result["best_params"]
 project.HRU.update_params(best)
 project.run()
@@ -228,10 +264,10 @@ sensitivity = project.Statistic.sensitivity_from_results(
     method="spearman"   # hoặc "prcc"
 )
 print(sensitivity)
-# parameter  sensitivity_index  rank
-# ALPHA_BF        0.83            1
-# CN2             0.61            2
-# GW_DELAY        0.45            3
+# parameter    sensitivity_index  rank
+# ALPHA_BF.gw       0.83            1
+# CN2.mgt           0.61            2
+# GW_DELAY.gw       0.45            3
 ```
 
 Hai phương pháp tính sensitivity:
@@ -248,7 +284,7 @@ from spyswat.swat_calib.analysis import SWATSensitivity
 
 sens = SWATSensitivity(project)
 oat_df, indices = sens.one_at_a_time(
-    param_ranges=param_ranges,
+    param_ranges=param_ranges,   # key dạng name.ext
     n_steps=10,
     observed_series=obs,
     metric="nse"
@@ -275,11 +311,12 @@ print(morris["morris_indices"])
 ### Cập nhật tham số HRU
 
 ```python
+# Key phải có phần mở rộng file để xác định đúng loại file cần ghi
 project.HRU.update_params({
-    "CN2":      [(75.0, "v")],    # v = set trực tiếp
-    "ALPHA_BF": [(0.5,  "v")],
-    "ESCO":     [(0.1,  "r")],    # r = nhân (1 + val)
-    "SOL_AWC":  [(0.05, "add")],  # add = cộng thêm
+    "CN2.mgt":      [(75.0, "v")],    # v = set trực tiếp
+    "ALPHA_BF.gw":  [(0.5,  "v")],
+    "ESCO.hru":     [(0.1,  "r")],    # r = nhân (1 + val)
+    "SOL_AWC.sol":  [(0.05, "add")],  # add = cộng thêm
 })
 ```
 
@@ -291,10 +328,21 @@ Ba phương thức cập nhật:
 | `r` / `relative` | `new = old × (1 + val)` | Thay đổi tương đối |
 | `add` | `new = old + val` | Cộng thêm |
 
+### Cập nhật nhiều pass (subbasin filter)
+
+```python
+project.HRU.update_params({
+    "CN2.mgt": [
+        (75.0, "v", [1, 2, 3]),   # subbasin 1-3: gán 75
+        (80.0, "v", [4, 5]),      # subbasin 4-5: gán 80
+    ]
+})
+```
+
 ### Đọc giá trị hiện tại
 
 ```python
-values = project.read_params_values(["CN2", "ALPHA_BF", "ESCO"])
+values = project.read_params_values(["CN2.mgt", "ALPHA_BF.gw", "ESCO.hru"])
 ```
 
 ---
@@ -374,9 +422,9 @@ project.WorkingFolder.setup(overwrite=True)
 worker_dirs = project.WorkingFolder.run_parallel(
     swat_exe="path/swat.exe",
     param_sets=[
-        {"CN2": [(70.0, "v")]},
-        {"CN2": [(75.0, "v")]},
-        {"CN2": [(80.0, "v")]},
+        {"CN2.mgt": [(70.0, "v")]},
+        {"CN2.mgt": [(75.0, "v")]},
+        {"CN2.mgt": [(80.0, "v")]},
     ]
 )
 
@@ -400,6 +448,8 @@ ESCO      .hru    9     3          12       3      0.01   1.0
 SOL_AWC   .sol    0     0          0        3      0.01   0.5
 ```
 
+Key khi dùng trong code = `name + ext`, ví dụ: `CN2.mgt`, `ALPHA_BF.gw`, `ESCO.hru`.
+
 ---
 
 ## API Reference
@@ -407,9 +457,9 @@ SOL_AWC   .sol    0     0          0        3      0.01   0.5
 ### SWATProject
 
 ```
-project.HRU.update_params(param_dict)
-project.HRU.update_by_df(df)
-project.read_params_values(param_list)
+project.HRU.update_params(param_dict)        # key phải dùng name.ext
+project.HRU.update_by_df(df)                 # cột param phải dùng name.ext
+project.read_params_values(param_list)        # list phải dùng name.ext
 project.run()
 project.get_date_range(freq='D')
 project.worker(index)
@@ -428,16 +478,16 @@ project.info()
 ```
 CalibrationManager(project)
   .setup_parallel(overwrite=False)
-  .run_iteration(param_dict, obs, metric, ...)
-  .run_batch(param_sets, obs, metric, ...)       # v0.2.0
+  .run_iteration(param_dict, obs, metric, ...)   # param_dict dùng name.ext
+  .run_batch(param_sets, obs, metric, ...)       # v0.2.0, param_sets dùng name.ext
 ```
 
 ### SWATCalibration
 
 ```
 SWATCalibration(project)
-  .analyze(param_ranges, obs, n_samples, ...)    # v0.2.0 – unified workflow
-  .glue_analysis(param_ranges, obs, n_samples)
+  .analyze(param_ranges, obs, n_samples, ...)    # v0.2.0, param_ranges dùng name.ext
+  .glue_analysis(param_ranges, obs, n_samples)   # param_ranges dùng name.ext
   .optimize(param_ranges, obs, method, ...)
 ```
 
@@ -445,8 +495,8 @@ SWATCalibration(project)
 
 ```
 SWATSensitivity(project)
-  .one_at_a_time(param_ranges, n_steps, obs)
-  .morris_method(param_ranges, n_trajectories)
+  .one_at_a_time(param_ranges, n_steps, obs)     # param_ranges dùng name.ext
+  .morris_method(param_ranges, n_trajectories)   # param_ranges dùng name.ext
 ```
 
 ---
@@ -460,4 +510,4 @@ SWATSensitivity(project)
 
 ---
 
-*SpySWAT v0.2.0 · [CHANGELOG](CHANGELOG.md) · [English](README_EN.md)*
+*SpySWAT v0.2.1 · [CHANGELOG](CHANGELOG.md) · [English](README_EN.md)*

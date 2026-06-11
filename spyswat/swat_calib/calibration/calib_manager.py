@@ -13,11 +13,11 @@ class CalibrationManager:
         self.project = project
         self._backup_dir: Path | None = None
 
-    def run_iteration(self, param_dict, observed, metric='nse',
+    def run_iteration(self, param_dict, observed, metric=None,
                       reach_id=1, output_variable='FLOW_OUTcms') -> float:
         self._backup_state()
         try:
-            # Dùng đúng API hiện có của HRUManager
+            # Using API of HRUManager
             self.project.HRU.update_params(param_dict)
             self.project.run()
 
@@ -52,72 +52,50 @@ class CalibrationManager:
         shutil.copytree(src, dst)
 
     def setup_parallel(self, overwrite: bool = False) -> None:
-        """Tạo worker directories cho parallel execution. Gọi một lần trước khi run_batch."""
+        """Create worker directories for parallel execution."""
         self.project.WorkingFolder.setup(overwrite=overwrite)
         logger.info(
             f"Parallel setup: {self.project.WorkingFolder.n_parallel} workers tại "
             f"{self.project.WorkingFolder.working_dir}"
         )
 
-    def run_batch(
-        self,
-        param_sets: List[dict],
-        observed: pd.Series,
-        metric: str = 'nse',
-        reach_id: int = 1,
-        output_variable: str = 'FLOW_OUTcms'
-    ) -> List[float]:
+    def run_batch(self, param_sets, observed, metrics=None,
+                  reach_id=1, output_variable='FLOW_OUTcms') -> pd.DataFrame:
         """
-        Chạy N bộ tham số song song, trả về N scores.
-
-        Tự động chia param_sets thành các chunk theo n_parallel.
-        Không cần backup/restore vì mỗi worker dùng thư mục riêng.
-
-        Args:
-            param_sets: Danh sách dict tham số, format: {'CN2': [(75.0, 'v')], ...}
-            observed:   Series quan trắc (index là DatetimeIndex)
-            metric:     'nse' | 'kge' | 'r2' | 'rmse' | 'pbias'
-            reach_id:   ID reach cần đọc
-            output_variable: Biến output SWAT
-
-        Returns:
-            Danh sách scores, cùng thứ tự với param_sets
+        Return DataFrame
         """
+        if metrics is None:
+            metrics = ['nse', 'kge', 'r2', 'rmse', 'pbias']
+
+        all_rows = []
         wf = self.project.WorkingFolder
-        if not wf.worker_dirs:
-            self.setup_parallel(overwrite=False)
-
         n_workers = wf.n_parallel
-        all_scores: List[float] = []
-        bad_score = float('-inf') if metric in ('nse', 'kge', 'r2') else float('inf')
 
         for chunk_start in range(0, len(param_sets), n_workers):
             chunk = param_sets[chunk_start: chunk_start + n_workers]
-            logger.info(
-                f"Batch [{chunk_start + 1}–{chunk_start + len(chunk)}] / {len(param_sets)}"
-            )
-
-            # Chạy SWAT song song cho chunk này
             wf.run_parallel(self.project.swat_exe.swat_exe_path, param_sets=chunk)
 
-            # Đọc output + tính score từng worker
-            for j in range(len(chunk)):
+            for j, params in enumerate(chunk):
+                row = {}
                 try:
                     w_proj = self.project.worker(j + 1)
                     sim = w_proj.Output.read_rch(
                         columns=['RCH', 'MON', output_variable],
                         reach_id=reach_id
-                    )[output_variable]
+                        )[output_variable]
                     obs_a, sim_a = self._align_series(observed, sim)
-                    score = w_proj.Statistic.calculate_statistics(
-                        obs_a, sim_a, metrics=[metric]
-                    )[metric]
-                except Exception as e:
-                    logger.warning(f"Worker {j + 1} failed: {e}")
-                    score = bad_score
-                all_scores.append(score)
 
-        return all_scores
+                    # Tính tất cả metric cùng lúc
+                    scores = w_proj.Statistic.calculate_statistics(
+                        obs_a, sim_a, metrics=metrics
+                        )
+                    row.update(scores)
+                except Exception as e:
+                    for m in metrics:
+                        row[m] = float('-inf')
+                all_rows.append(row)
+
+        return pd.DataFrame(all_rows)
 
     def _align_series(self, obs: pd.Series, sim: pd.Series):
         # Gắn date_range vào sim trước khi align

@@ -17,7 +17,7 @@ class SWATProject:
         ...     project_dir="D:/SWAT/my_project",
         ...     swat_exe="D:/SWAT/swat2012.exe"
         ... )
-        >>> project.HRU.update_params({'CN2': 75})
+        >>> project.HRU.update_params({'CN2.mgt': [(75, 'v')]})
         >>> project.run()
         >>> df = project.Output.read_rch()
     """
