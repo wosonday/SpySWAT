@@ -1,1 +1,99 @@
-import pandas as pdfrom pathlib import Pathfrom typing import Optionalimport logginglogger = logging.getLogger(__name__)class ObservedData:    """    Load and manage observed data for model comparison    Examples:        >>> obs = ObservedData("observed_flow.csv", parse_dates=['date'])        >>> print(obs.df.head())    """    def __init__(self, file_path: str, **kwargs):        """        Initialize observed data reader        Args:            file_path: Path to observed data file            **kwargs: Additional arguments for pd.read_csv        """        self.file_path = Path(file_path)        if not self.file_path.exists():            raise FileNotFoundError(f"Observed data file not found: {file_path}")        self.df = self.__read_file(file_path, **kwargs)        logger.info(f"Loaded observed data: {len(self.df)} records")    def __read_file(self, file_path: str, **kwargs) -> pd.DataFrame:        """        Read observed data file        Supports CSV, Excel, and fixed-width formats        """        file_path = Path(file_path)        suffix = file_path.suffix.lower()        try:            if suffix == '.csv':                df = pd.read_csv(file_path, **kwargs)            elif suffix in ['.xlsx', '.xls']:                df = pd.read_excel(file_path, **kwargs)            elif suffix == '.txt':                # Try fixed-width format first                try:                    df = pd.read_fwf(file_path, **kwargs)                except:                    # Fall back to CSV with whitespace delimiter                    df = pd.read_csv(file_path, sep=r'\s+', **kwargs)            else:                df = pd.read_csv(file_path, **kwargs)            return df        except Exception as e:            logger.error(f"Error reading {file_path}: {e}")            raise    def get_column(self, column_name: str) -> pd.Series:        """Get a specific column"""        if column_name not in self.df.columns:            raise KeyError(f"Column '{column_name}' not found")        return self.df[column_name]    def filter_by_date(            self,            start_date: Optional[str] = None,            end_date: Optional[str] = None,            date_column: str = 'date'    ) -> pd.DataFrame:        """        Filter data by date range        Args:            start_date: Start date (YYYY-MM-DD)            end_date: End date (YYYY-MM-DD)            date_column: Name of date column        Returns:            Filtered DataFrame        """        df = self.df.copy()        # Ensure date column is datetime        if not pd.api.types.is_datetime64_any_dtype(df[date_column]):            df[date_column] = pd.to_datetime(df[date_column])        if start_date:            df = df[df[date_column] >= pd.to_datetime(start_date)]        if end_date:            df = df[df[date_column] <= pd.to_datetime(end_date)]        return df    def __repr__(self):        return f"ObservedData(rows={len(self.df)}, cols={len(self.df.columns)})"
+import pandas as pd
+
+from pathlib import Path
+
+from typing import Optional
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+class ObservedData:
+    """
+    Load and manage observed data for model comparison
+    Examples:
+        >>> obs = ObservedData("observed_flow.csv", parse_dates=['date'])
+        >>> print(obs.df.head())
+    """
+    def __init__(self, file_path: str, **kwargs):
+        """
+        Initialize observed data reader
+        Args:
+            file_path: Path to observed data file
+            **kwargs: Additional arguments for pd.read_csv
+        """
+        self.file_path = Path(file_path)
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"Observed data file not found: {file_path}")
+
+
+        self.df = self.__read_file(file_path, **kwargs)
+        logger.info(f"Loaded observed data: {len(self.df)} records")
+
+
+
+    def __read_file(self, file_path: str, **kwargs) -> pd.DataFrame:
+        """
+        Read observed data file
+        Supports CSV, Excel, and fixed-width formats
+        """
+        file_path = Path(file_path)
+        suffix = file_path.suffix.lower()
+
+        try:
+            if suffix == '.csv':
+                df = pd.read_csv(file_path, **kwargs)
+            elif suffix in ['.xlsx', '.xls']:
+                df = pd.read_excel(file_path, **kwargs)
+            elif suffix == '.txt':
+                # Try fixed-width format first
+                try:
+                    df = pd.read_fwf(file_path, **kwargs)
+                except:
+                    # Fall back to CSV with whitespace delimiter
+                    df = pd.read_csv(file_path, sep=r'\s+', **kwargs)
+            else:
+                df = pd.read_csv(file_path, **kwargs)
+            return df
+
+        except Exception as e:
+            logger.error(f"Error reading {file_path}: {e}")
+            raise
+
+
+    def get_column(self, column_name: str) -> pd.Series:
+        """Get a specific column"""
+        if column_name not in self.df.columns:
+            raise KeyError(f"Column '{column_name}' not found")
+        return self.df[column_name]
+
+
+    def filter_by_date(
+            self,
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
+            date_column: str = 'date'
+    ) -> pd.DataFrame:
+        """
+        Filter data by date range
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            date_column: Name of date column
+        Returns:
+            Filtered DataFrame
+        """
+        df = self.df.copy()
+        # Ensure date column is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df[date_column]):
+            df[date_column] = pd.to_datetime(df[date_column])
+
+        if start_date:
+            df = df[df[date_column] >= pd.to_datetime(start_date)]
+        if end_date:
+            df = df[df[date_column] <= pd.to_datetime(end_date)]
+        return df
+
+    def __repr__(self):
+        return f"ObservedData(rows={len(self.df)}, cols={len(self.df.columns)})"
+

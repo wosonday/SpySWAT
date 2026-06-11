@@ -1,1 +1,131 @@
-import refrom typing import Optional, Dict, Tuple, Union, List, Callable, Iteratorfrom pathlib import Pathfrom spyswat.logger import Loggerfrom spyswat.swat_calib.utils.data_info import DATAParameterlogger = Logger.get_logger(__name__)class ReadFileLine:    @staticmethod    def _read_file(            file_path   : Path,            colspecs: Optional[Union[Tuple[int, int], List[Tuple[int, int]]]] = None,            skiprows    : int = 0,            dataframe   : bool = False,            first_line  : bool = False            ):        with open(file_path, 'r') as file:            if first_line:                return file.readline()            for _ in range(skiprows):                next(file, None)            if colspecs is None:                return list(file)            #if just tuple            if isinstance(colspecs, tuple):                start, end = colspecs                result = [line[start:end] for line in file]                if dataframe:                    import pandas as pd                    return pd.DataFrame(result)                return result            # if LIST Tuple            lines = list(file)            if isinstance(colspecs, list):                result = {i: [line[start:end].strip() for line in lines]                          for i, (start, end) in enumerate(colspecs)}                if dataframe:                    import pandas as pd                    return pd.DataFrame(result)                return result    @staticmethod    def _split_space(line: str):        return re.split(r'\s+', line)    @staticmethod    def _read_hru_attribute(line: str) -> Optional[Dict]:        pattern = (            r"Watershed HRU:(?P<Watershed>\d+)\s+"            r"Subbasin:(?P<Subbasin>\d+)\s+"            r"HRU:(?P<HRU>\d+)\s+"            r"Luse:(?P<Luse>[A-Za-z0-9_]+)\s+"            r"Soil:\s*(?P<Soil>[A-Za-z0-9\-_]+)\s+"            r"Slope:\s*(?P<Slope>[0-9\-]+)"        )        match = re.search(pattern, line)        if not match:            return None        return match.groupdict()class HRURead(ReadFileLine):    def __init__(self, file_path: str):        super().__init__()        self.hru_file = file_path        self.lines = self._read_file(file_path)    def get_value(self, param: DATAParameter):        line = self.lines[param.line]        value = line[param.start : param.end].strip()        return valueclass OutputReader:    def __init__(self, file_path: Union[str, Path], skiprows: int = 0):        self.file_path = Path(file_path)        self.skiprows = skiprows    # CORE: streaming reader    def lines(self) -> Iterator[str]:        with open(self.file_path, "r") as f:            for _ in range(self.skiprows):                next(f, None)            for line in f:                yield line    # SLICE layer    def slice(self, colspecs: Union[Tuple[int, int], List[Tuple[int, int]]],                    strip: bool = True) -> Iterator:        if isinstance(colspecs, tuple):            colspecs = [colspecs]        slices = [slice(s, e) for s, e in colspecs]        single = len(slices) == 1        for line in self.lines():            if strip:                line = line.rstrip("\n")            if single:                val = line[slices[0]]                yield val.strip() if strip else val            else:                row = tuple(line[s] for s in slices)                yield tuple(x.strip() for x in row) if strip else row    # FILTER layer    def filter(self, func: Callable) -> Iterator:        for line in self.lines():            if func(line):                yield line    # MAP layer    def map(self, func: Callable) -> Iterator:        for line in self.lines():            yield func(line)
+import re
+from typing import Optional, Dict, Tuple, Union, List, Callable, Iterator
+from pathlib import Path
+
+from spyswat.logger import Logger
+from spyswat.swat_calib.utils.data_info import DATAParameter
+
+logger = Logger.get_logger(__name__)
+
+
+
+class ReadFileLine:
+
+    @staticmethod
+    def _read_file(
+            file_path   : Path,
+            colspecs: Optional[Union[Tuple[int, int], List[Tuple[int, int]]]] = None,
+            skiprows    : int = 0,
+            dataframe   : bool = False,
+            first_line  : bool = False
+            ):
+
+        with open(file_path, 'r') as file:
+            if first_line:
+                return file.readline()
+
+            for _ in range(skiprows):
+                next(file, None)
+
+            if colspecs is None:
+                return list(file)
+
+            #if just tuple
+            if isinstance(colspecs, tuple):
+                start, end = colspecs
+                result = [line[start:end] for line in file]
+                if dataframe:
+                    import pandas as pd
+                    return pd.DataFrame(result)
+
+                return result
+
+            # if LIST Tuple
+            lines = list(file)
+            if isinstance(colspecs, list):
+                result = {i: [line[start:end].strip() for line in lines]
+                          for i, (start, end) in enumerate(colspecs)}
+                if dataframe:
+                    import pandas as pd
+                    return pd.DataFrame(result)
+
+                return result
+
+    @staticmethod
+    def _split_space(line: str):
+        return re.split(r'\s+', line)
+
+    @staticmethod
+    def _read_hru_attribute(line: str) -> Optional[Dict]:
+        pattern = (
+            r"Watershed HRU:(?P<Watershed>\d+)\s+"
+            r"Subbasin:(?P<Subbasin>\d+)\s+"
+            r"HRU:(?P<HRU>\d+)\s+"
+            r"Luse:(?P<Luse>[A-Za-z0-9_]+)\s+"
+            r"Soil:\s*(?P<Soil>[A-Za-z0-9\-_]+)\s+"
+            r"Slope:\s*(?P<Slope>[0-9\-]+)"
+        )
+
+        match = re.search(pattern, line)
+        if not match:
+            return None
+        return match.groupdict()
+
+
+class HRURead(ReadFileLine):
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.hru_file = file_path
+        self.lines = self._read_file(file_path)
+
+    def get_value(self, param: DATAParameter):
+        line = self.lines[param.line]
+        value = line[param.start : param.end].strip()
+        return value
+
+class OutputReader:
+
+    def __init__(self, file_path: Union[str, Path], skiprows: int = 0):
+        self.file_path = Path(file_path)
+        self.skiprows = skiprows
+
+    # CORE: streaming reader
+    def lines(self) -> Iterator[str]:
+        with open(self.file_path, "r") as f:
+            for _ in range(self.skiprows):
+                next(f, None)
+
+            for line in f:
+                yield line
+
+    # SLICE layer
+    def slice(self, colspecs: Union[Tuple[int, int], List[Tuple[int, int]]],
+                    strip: bool = True) -> Iterator:
+
+        if isinstance(colspecs, tuple):
+            colspecs = [colspecs]
+
+        slices = [slice(s, e) for s, e in colspecs]
+        single = len(slices) == 1
+
+        for line in self.lines():
+            if strip:
+                line = line.rstrip("\n")
+
+            if single:
+                val = line[slices[0]]
+                yield val.strip() if strip else val
+            else:
+                row = tuple(line[s] for s in slices)
+                yield tuple(x.strip() for x in row) if strip else row
+
+    # FILTER layer
+    def filter(self, func: Callable) -> Iterator:
+        for line in self.lines():
+            if func(line):
+                yield line
+
+    # MAP layer
+    def map(self, func: Callable) -> Iterator:
+        for line in self.lines():
+            yield func(line)

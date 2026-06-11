@@ -1,1 +1,90 @@
-from spyswat.swat_calib.io.readers import  ReadFileLinefrom spyswat.swat_calib.io.mapping_file import  FileMappingfrom spyswat.logger import Loggerfrom pathlib import PathLogger.init(log_dir="logs", log_file="run.log", level="WARNING")logger = Logger.get_logger(__name__)class TxInOut(ReadFileLine, FileMapping):    def __init__(self, txtinout_dir):        super().__init__()        self.directory = Path(txtinout_dir)        if not self.directory.exists():            raise FileNotFoundError(f"Directory does not exist: {self.directory!r}")        self.hru_info = self.__extract_hru_attr()        self.number_hru, self.number_sub = self.__count_hru()    def __repr__(self):        return f"FOLDER TxtInOut: {self.directory!r})"    #________________________________________________________    def get_hru_file(self, ext, subbasin_num: int = None, hru_num: int = None):        if ext == 'bsn' or ext == '.bsn':            return [self.get_watershed_file('.bsn')]        elif subbasin_num is None and hru_num is None:            return self.__get_hrus(ext)        elif subbasin_num is not None and hru_num is None:            return self.__get_hrus(ext, subbasin_num)        elif subbasin_num is None and hru_num is not None:            logger.warning("subbasin_num is required when hru_num is provided.")            return None        return self.directory / FileMapping._get_hru_file(ext, subbasin_num, hru_num)    def get_all_hru_files(self, ext: str) -> list[Path]:        return sorted(self.directory.glob(f"*{ext}"))    def get_resevoir(self, ext: str, reservoir_id: int):        paths = [self.directory / f for f in FileMapping._get_reservoir_file(ext, reservoir_id)]        return paths[0] if len(paths) == 1 else paths    def get_output_file(self, ext: str):        paths = [self.directory / f for f in FileMapping._get_output_file(ext)]        return paths[0] if len(paths) == 1 else paths    def get_watershed_file (self, ext: str):        paths = [self.directory / f for f in FileMapping._get_watershed_file(ext)]        return paths[0] if len(paths) == 1 else paths    def get_weather_file(self, ext: str, index: int = 1):        paths = self.directory / FileMapping._get_indexed_file(ext, index)        return paths    #________________________________________________________    def __count_hru(self):        hru_ids = {row['HRU'] for row in self.hru_info}        sub_ids = {row['Subbasin'] for row in self.hru_info}        return len(hru_ids), len(sub_ids)    def __extract_hru_attr(self):        hru_infos = []        for file in self.__get_hrus('.hru'):            line = self._read_file(file, first_line=True)            att = self._read_hru_attribute(line)            att = {"name": file.stem, **att}            hru_infos.append(att)        return hru_infos    def __get_hrus(self, ext: str, subbasin_num: int = None):        files = [            f for f in self.directory.glob(f"*{ext}")            if f.stem.isdigit()            ]        if subbasin_num is not None:            files = [f for f in files if int(f.stem) // 10000 == subbasin_num]        return files    def info(self):        print("\n === TxinOut Info ===")        print('=' * 60)        print("HRU info: ", self.hru_info)        print('=' * 60)        print("Number of HRU: ", self.number_hru)        print('=' * 60)        print("Number of subbasin: ", self.number_sub)
+from spyswat.swat_calib.io.readers import  ReadFileLine
+from spyswat.swat_calib.io.mapping_file import  FileMapping
+from spyswat.logger import Logger
+
+from pathlib import Path
+
+
+Logger.init(log_dir="logs", log_file="run.log", level="WARNING")
+logger = Logger.get_logger(__name__)
+
+
+class TxInOut(ReadFileLine, FileMapping):
+    def __init__(self, txtinout_dir):
+        super().__init__()
+
+        self.directory = Path(txtinout_dir)
+        if not self.directory.exists():
+            raise FileNotFoundError("Directory does not exist: " + repr(str(self.directory)))
+
+        self.hru_info = self.__extract_hru_attr()
+        self.number_hru, self.number_sub = self.__count_hru()
+
+    def __repr__(self):
+        return "FOLDER TxtInOut: " + repr(str(self.directory))
+
+    #________________________________________________________
+    def get_hru_file(self, ext, subbasin_num: int = None, hru_num: int = None):
+        if ext == 'bsn' or ext == '.bsn':
+            return [self.get_watershed_file('.bsn')]
+        elif subbasin_num is None and hru_num is None:
+            return self.__get_hrus(ext)
+        elif subbasin_num is not None and hru_num is None:
+            return self.__get_hrus(ext, subbasin_num)
+        elif subbasin_num is None and hru_num is not None:
+            logger.warning("subbasin_num is required when hru_num is provided.")
+            return None
+        return self.directory / FileMapping._get_hru_file(ext, subbasin_num, hru_num)
+
+    def get_all_hru_files(self, ext: str) -> list[Path]:
+        return sorted(self.directory.glob("*" + ext))
+
+    def get_resevoir(self, ext: str, reservoir_id: int):
+        paths = [self.directory / f for f in FileMapping._get_reservoir_file(ext, reservoir_id)]
+        return paths[0] if len(paths) == 1 else paths
+
+    def get_output_file(self, ext: str):
+        paths = [self.directory / f for f in FileMapping._get_output_file(ext)]
+        return paths[0] if len(paths) == 1 else paths
+
+    def get_watershed_file(self, ext: str):
+        paths = [self.directory / f for f in FileMapping._get_watershed_file(ext)]
+        return paths[0] if len(paths) == 1 else paths
+
+    def get_weather_file(self, ext: str, index: int = 1):
+        paths = self.directory / FileMapping._get_indexed_file(ext, index)
+        return paths
+    #________________________________________________________
+
+    def __count_hru(self):
+        hru_ids = {row['HRU'] for row in self.hru_info}
+        sub_ids = {row['Subbasin'] for row in self.hru_info}
+        return len(hru_ids), len(sub_ids)
+
+    def __extract_hru_attr(self):
+        hru_infos = []
+        for file in self.__get_hrus('.hru'):
+            line = self._read_file(file, first_line=True)
+            att = self._read_hru_attribute(line)
+            att = {"name": file.stem, **att}
+            hru_infos.append(att)
+        return hru_infos
+
+
+    def __get_hrus(self, ext: str, subbasin_num: int = None):
+        files = [
+            f for f in self.directory.glob("*" + ext)
+            if f.stem.isdigit()
+            ]
+        if subbasin_num is not None:
+            files = [f for f in files if int(f.stem) // 10000 == subbasin_num]
+        return files
+
+    def info(self):
+        print("\n === TxinOut Info ===")
+        print('=' * 60)
+        print("HRU info: ", self.hru_info)
+        print('=' * 60)
+        print("Number of HRU: ", self.number_hru)
+        print("Number of subbasins: ", self.number_sub)
+        print('=' * 60)

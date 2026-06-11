@@ -157,16 +157,17 @@ class SWATAnalysis:
             self,
             param_ranges: Dict[str, Tuple[float, float]],
             n_samples: int,
-            method: str = 'lhs'
-    ) -> List[Dict]:
+            method: str = 'lhs',
+            seed: Optional[int] = None
+    ) -> pd.DataFrame:
 
         param_names = list(param_ranges.keys())
         n_params = len(param_names)
 
         if method == 'lhs':
-            # Latin Hypercube Sampling
+            # Latin Hypercube Sampling — seed để tái lập kết quả
             from scipy.stats import qmc
-            sampler = qmc.LatinHypercube(d=n_params)
+            sampler = qmc.LatinHypercube(d=n_params, seed=seed)
             samples = sampler.random(n=n_samples)
 
         elif method == 'random':
@@ -266,6 +267,6 @@ class SWATAnalysis:
 
         result = pd.DataFrame(scores).sort_values('sensitivity_index', ascending=False)
         result['rank'] = range(1, len(result) + 1)
-        logger.info(f"Sensitivity ({method}): tham số nhạy nhất là '{result.iloc[0]['parameter']}'")
+        top_param = result.iloc[0]['parameter']
+        logger.info("Sensitivity " + method + ": top param = " + str(top_param))
         return result.reset_index(drop=True)
-

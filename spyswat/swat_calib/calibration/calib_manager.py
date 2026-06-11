@@ -66,6 +66,8 @@ class CalibrationManager:
         """
         if metrics is None:
             metrics = ['nse', 'kge', 'r2', 'rmse', 'pbias']
+        elif isinstance(metrics, str):
+            metrics = [metrics]
 
         all_rows = []
         wf = self.project.WorkingFolder
