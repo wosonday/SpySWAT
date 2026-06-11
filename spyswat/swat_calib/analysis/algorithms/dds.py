@@ -176,3 +176,76 @@ class DDS:
         row = dict(zip(self._names, x.tolist()))
         row["score"] = score
         return row
+
+
+# ---------------------------------------------------------------------------
+
+class DDSCalibration:
+    """
+    DDS backed by CalibrationManager — same interface as GLUE and ParallelDE.
+
+    Wraps the standalone DDS optimiser and wires CalibrationManager.run_iteration
+    as the objective function.
+
+    Parameters
+    ----------
+    manager : CalibrationManager
+        Infrastructure layer that owns run_iteration.
+
+    Usage
+    -----
+    >>> from spyswat.swat_calib.analysis.algorithms import DDSCalibration
+    >>>
+    >>> dds = DDSCalibration(manager)
+    >>> result = dds.run(param_ranges, obs, n_iterations=300, seed=42)
+
+    # Or via the SWATCalibration facade:
+    >>> calib.dds.run(param_ranges, obs, n_iterations=300, seed=42)
+    """
+
+    def __init__(self, manager) -> None:
+        self._manager = manager
+
+    def run(
+        self,
+        param_ranges: Dict[str, Tuple[float, float]],
+        observed_series,
+        n_iterations: int = 200,
+        r: float = 0.2,
+        seed: Optional[int] = None,
+        metric: str = "nse",
+        output_variable: str = "FLOW_OUTcms",
+        reach_id: int = 1,
+        maximize: bool = True,
+    ) -> dict:
+        """
+        Run DDS calibration.
+
+        Parameters
+        ----------
+        param_ranges    : dict  name -> (min, max)
+        observed_series : pd.Series  observed discharge with DatetimeIndex
+        n_iterations    : int   total evaluation budget (recommended >= 200)
+        r               : float perturbation size as fraction of range (0, 1]
+        seed            : int | None  random seed for reproducibility
+        metric          : str   objective metric; higher is better unless maximize=False
+        maximize        : bool  True for NSE/KGE/R2, False for RMSE/PBIAS
+
+        Returns
+        -------
+        dict with keys: best_params, best_score, history (pd.DataFrame)
+        """
+        def objective(params: dict) -> float:
+            return self._manager.run_iteration(
+                params, observed_series, metric, reach_id, output_variable
+            )
+
+        dds = DDS(
+            param_ranges  = param_ranges,
+            objective     = objective,
+            n_iterations  = n_iterations,
+            r             = r,
+            seed          = seed,
+            maximize      = maximize,
+        )
+        return dds.run()
