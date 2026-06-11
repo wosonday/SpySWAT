@@ -10,3 +10,5 @@ wheels/
 .venv
 data
 main_test.py
+main.py
+logs/
