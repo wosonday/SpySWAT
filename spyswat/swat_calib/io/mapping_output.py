@@ -1,3 +1,4 @@
+import re
 import numpy as np
 
 from spyswat.swat_calib.utils import ReachMapping, HRUMapping, SubbasinMapping, WatoutMapping
@@ -8,6 +9,13 @@ from pathlib import Path
 from typing import List, Optional, Union, Dict
 
 logger = Logger.get_logger(__name__)
+
+# Fortran drops 'E' when exponent has 3+ digits: '0.2746-139' → '0.2746E-139'
+_RE_MISSING_E = re.compile(r'([0-9])([+-]\d{2,})$')
+
+def _fix_fortran_exp(vals: list) -> list:
+    """Normalize Fortran fixed-width numbers with missing exponent 'E'."""
+    return [_RE_MISSING_E.sub(r'\1E\2', v) if v else v for v in vals]
 
 
 
@@ -97,6 +105,7 @@ class OutputFileReader:
             colspecs    =self.mapping_class.get_all_colspecs(),
             skiprows    =self.skip_header, #type: ignore
             )
+        result = {k: _fix_fortran_exp(v) for k, v in result.items()}
         arr = np.array(list(result.values())).T
         self.data = pd.DataFrame(arr, columns=cols, dtype=np.float32)
         print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")
@@ -118,6 +127,7 @@ class OutputFileReader:
             colspecs    =colspecs,
             skiprows    =self.skip_header, #type: ignore
             )
+        result = {k: _fix_fortran_exp(v) for k, v in result.items()}
         arr = np.array(list(result.values())).T
         self.data = pd.DataFrame(arr, columns=names, dtype=np.float32)
         print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")

@@ -118,3 +118,37 @@ class SWATProject:
     @property
     def WorkingFolder(self):
         return self._wf_manager
+
+    # ── Visualization ────────────────────────────────────────────────────
+
+    def fig_viewer(
+        self,
+        red_reaches=None,
+        output_path=None,
+        open_browser: bool = True,
+    ):
+        """
+        Build an interactive HTML viewer for fig.fig.
+
+        Args:
+            red_reaches:  List of hydrograph/reach IDs to highlight in red.
+            output_path:  Save path for HTML file.
+                          Default: working_dir / 'fig_viewer.html'.
+            open_browser: Open the viewer in default browser after saving.
+
+        Returns:
+            Path to the saved HTML file.
+
+        Example:
+            project.fig_viewer(red_reaches=[32, 33])
+        """
+        from spyswat.swat_calib.visualization import FigViewer
+
+        out = output_path or (self.txinout.directory / "fig_viewer.html")
+        viewer = FigViewer(self.txinout.directory)
+        return viewer.build(
+            red_reaches  = red_reaches,
+            output_path  = out,
+            open_browser = open_browser,
+        )
+
