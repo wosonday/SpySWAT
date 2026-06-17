@@ -39,7 +39,8 @@ def parse_float(value: str):
 
 
 def command_id(tokens: list[str]):
-    if len(tokens) >= 3 and tokens[0] != "transfer":
+    id_creating = {"subbasin", "route", "routres", "add", "reccnst"}
+    if len(tokens) >= 3 and tokens[0] in id_creating:
         return parse_int(tokens[2])
     return None
 
@@ -83,6 +84,7 @@ def parse_fig(path: Path, red_reaches: set[int]):
             "details": {},
             "red": False,
             "issue": "",
+            "issues": [],
         }
 
         try:
@@ -93,11 +95,15 @@ def parse_fig(path: Path, red_reaches: set[int]):
 
         if cmd["id"] is not None:
             id_to_index[cmd["id"]] = cmd["seq"]
-        if cmd["issue"]:
-            issues.append({"line": cmd["line"], "issue": cmd["issue"], "raw": cmd["raw"]})
-
         commands.append(cmd)
         i += 1
+
+    validate_commands(commands, issues)
+    for cmd in commands:
+        if cmd["issue"]:
+            add_issue(issues, cmd, cmd["issue"])
+        for issue in cmd["issues"]:
+            add_issue(issues, cmd, issue)
 
     edges = build_edges(commands, id_to_index)
     return {
@@ -107,6 +113,16 @@ def parse_fig(path: Path, red_reaches: set[int]):
         "issues": issues,
         "redReaches": sorted(red_reaches),
     }
+
+
+def add_issue(issues, cmd, message: str):
+    if message not in cmd["issues"]:
+        cmd["issues"].append(message)
+    cmd["issue"] = cmd["issues"][0]
+    cmd["red"] = True
+    entry = {"line": cmd["line"], "issue": message, "raw": cmd["raw"], "seq": cmd["seq"]}
+    if entry not in issues:
+        issues.append(entry)
 
 
 def enrich_command(cmd, red_reaches: set[int]):
@@ -127,6 +143,7 @@ def enrich_command(cmd, red_reaches: set[int]):
         src = parse_int(t[4])
         cmd["summary"] = f"route reservoir {res} from hydrograph {src}"
         cmd["details"] = {"reservoir": res, "input": src}
+        cmd["red"] = res in red_reaches or src in red_reaches
     elif kind == "add" and len(t) >= 5:
         a = parse_int(t[3])
         b = parse_int(t[4])
@@ -139,10 +156,16 @@ def enrich_command(cmd, red_reaches: set[int]):
         cmd["summary"] = f"constant point source {t[3]}"
     elif kind == "saveconc":
         cmd["summary"] = "save concentration output"
+        if len(t) >= 4:
+            cmd["details"] = {"input": parse_int(t[2]), "output": parse_int(t[3])}
     elif kind == "finish":
         cmd["summary"] = "finish"
     else:
         cmd["summary"] = " ".join(t[1:])
+
+    # Mark red nếu output hydrograph ID nằm trong red_reaches
+    if not cmd["red"] and cmd["id"] is not None and cmd["id"] in red_reaches:
+        cmd["red"] = True
 
 
 def enrich_transfer(cmd, red_reaches: set[int]):
@@ -200,6 +223,129 @@ def enrich_transfer(cmd, red_reaches: set[int]):
     )
     if dep_num in red_reaches or dest_num in red_reaches:
         cmd["red"] = True
+
+
+def validate_commands(commands, issues):
+    id_to_cmd = {}
+    seen_ids = {}
+    reaches = set()
+    reservoirs = set()
+
+    for cmd in commands:
+        cid = cmd.get("id")
+        if cid is not None:
+            if cid in seen_ids:
+                add_issue(
+                    issues,
+                    cmd,
+                    f"Duplicate command/hydrograph id {cid}; first seen at line {seen_ids[cid]['line']}.",
+                )
+            else:
+                seen_ids[cid] = cmd
+                id_to_cmd[cid] = cmd
+
+        details = cmd.get("details", {})
+        if cmd["kind"] in {"subbasin", "route"}:
+            reach = details.get("subbasin") if cmd["kind"] == "subbasin" else details.get("reach")
+            if reach is not None:
+                reaches.add(reach)
+        if cmd["kind"] == "routres":
+            reservoir = details.get("reservoir")
+            if reservoir is not None:
+                reservoirs.add(reservoir)
+
+    for cmd in commands:
+        details = cmd.get("details", {})
+        if cmd["kind"] in {"route", "routres"}:
+            check_hydrograph_ref(issues, cmd, details.get("input"), id_to_cmd)
+        elif cmd["kind"] == "saveconc":
+            check_hydrograph_ref(issues, cmd, details.get("input"), id_to_cmd)
+        elif cmd["kind"] == "add":
+            check_hydrograph_ref(issues, cmd, details.get("inputA"), id_to_cmd)
+            check_hydrograph_ref(issues, cmd, details.get("inputB"), id_to_cmd)
+        elif cmd["kind"] == "transfer":
+            validate_transfer_semantics(issues, cmd, commands, reaches, reservoirs)
+
+
+def check_hydrograph_ref(issues, cmd, ref, id_to_cmd):
+    if ref is None:
+        add_issue(issues, cmd, "Cannot parse input hydrograph reference.")
+        return
+    source = id_to_cmd.get(ref)
+    if source is None:
+        add_issue(issues, cmd, f"Input hydrograph id {ref} is not created by any previous command.")
+        return
+    if source["seq"] >= cmd["seq"]:
+        add_issue(
+            issues,
+            cmd,
+            f"Input hydrograph id {ref} is created later at line {source['line']}; FIG order may be invalid.",
+        )
+
+
+def validate_transfer_semantics(issues, cmd, commands, reaches, reservoirs):
+    details = cmd.get("details", {})
+    if not details:
+        return
+
+    command_code = details.get("commandCode")
+    dep_type = details.get("DEP_TYPE")
+    dep_num = details.get("DEP_NUM")
+    dest_type = details.get("DEST_TYPE")
+    dest_num = details.get("DEST_NUM")
+    trans_amt = details.get("TRANS_AMT")
+    trans_code = details.get("TRANS_CODE")
+
+    if command_code != 4:
+        add_issue(issues, cmd, f"Transfer command code should be 4, found {command_code}.")
+    if dep_type not in {1, 2}:
+        add_issue(issues, cmd, f"DEP_TYPE should be 1 reach or 2 reservoir, found {dep_type}.")
+    if dest_type not in {1, 2}:
+        add_issue(issues, cmd, f"DEST_TYPE should be 1 reach or 2 reservoir, found {dest_type}.")
+    if trans_code not in {1, 2, 3}:
+        add_issue(issues, cmd, f"TRANS_CODE should be 1, 2, or 3, found {trans_code}.")
+    if trans_amt is None:
+        add_issue(issues, cmd, "TRANS_AMT is not a valid number.")
+    elif trans_amt < 0:
+        add_issue(issues, cmd, f"TRANS_AMT should not be negative, found {trans_amt}.")
+
+    if dep_type == 1 and dep_num not in reaches:
+        add_issue(issues, cmd, f"DEP_NUM reach {dep_num} is not present as a subbasin/route reach.")
+    if dest_type == 1 and dest_num not in reaches:
+        add_issue(issues, cmd, f"DEST_NUM reach {dest_num} is not present as a subbasin/route reach.")
+    if dep_type == 2 and dep_num not in reservoirs:
+        add_issue(issues, cmd, f"DEP_NUM reservoir {dep_num} is not present in any routres command.")
+    if dest_type == 2 and dest_num not in reservoirs:
+        add_issue(issues, cmd, f"DEST_NUM reservoir {dest_num} is not present in any routres command.")
+
+    if dep_type == 1 and dest_type == 1:
+        warn_if_transfer_after_downstream_add(issues, cmd, commands, dep_num, dest_num)
+
+
+def warn_if_transfer_after_downstream_add(issues, cmd, commands, dep_reach, dest_reach):
+    source_route = None
+    for prior in commands[: cmd["seq"]]:
+        if prior["kind"] == "route" and prior.get("details", {}).get("reach") == dep_reach:
+            source_route = prior
+    if source_route is None:
+        return
+
+    source_id = source_route.get("id")
+    for prior in commands[: cmd["seq"]]:
+        if prior["kind"] != "add":
+            continue
+        inputs = {prior.get("details", {}).get("inputA"), prior.get("details", {}).get("inputB")}
+        if source_id in inputs and dest_reach in inputs:
+            add_issue(
+                issues,
+                cmd,
+                (
+                    f"Transfer from reach {dep_reach} to reach {dest_reach} appears after "
+                    f"add command line {prior['line']} already combines hydrograph {source_id} "
+                    f"with reach/hydrograph {dest_reach}. Put the transfer before that add."
+                ),
+            )
+            return
 
 
 def build_edges(commands, id_to_index):
@@ -561,19 +707,39 @@ function renderGraph() {{
   graphEl.setAttribute("height", h);
 
   const y = c => 28 + c.seq * 42;
+  const connected = new Set([active]);
+  const activeEdges = new Set();
+  data.edges.forEach((e, idx) => {{
+    if (e.from === active || e.to === active) {{
+      activeEdges.add(idx);
+      connected.add(e.from);
+      connected.add(e.to);
+    }}
+  }});
   let out = "";
-  for (const e of data.edges) {{
+  data.edges.forEach((e, idx) => {{
     const a = data.commands[e.from];
     const b = data.commands[e.to];
-    out += `<line x1="${{col(a)+72}}" y1="${{y(a)}}" x2="${{col(b)-18}}" y2="${{y(b)}}" stroke="#cbd5e1" stroke-width="1" />`;
-  }}
+    const hot = activeEdges.has(idx);
+    const isTransfer = e.type && e.type.startsWith("transfer");
+    const stroke = hot ? "#2563eb" : (isTransfer ? "#fca5a5" : "#cbd5e1");
+    const width = hot ? 3 : (isTransfer ? 2 : 1);
+    const opacity = hot ? 1 : (isTransfer ? 0.86 : 0.72);
+    const dash = isTransfer ? ' stroke-dasharray="6 4"' : "";
+    out += `<line x1="${{col(a)+72}}" y1="${{y(a)}}" x2="${{col(b)-18}}" y2="${{y(b)}}" stroke="${{stroke}}" stroke-width="${{width}}" opacity="${{opacity}}"${{dash}} />`;
+  }});
   for (const c of data.commands) {{
     const x = col(c);
     const yy = y(c);
     const fill = nodeColor(c);
+    const linked = connected.has(c.seq) && c.seq !== active;
+    const halo = linked ? `<circle cx="${{x}}" cy="${{yy}}" r="11" fill="#bfdbfe" opacity="0.78" />` : "";
+    const labelFill = linked || c.seq === active ? "#0f172a" : "#111827";
+    const labelWeight = linked || c.seq === active ? "700" : "400";
     out += `<g data-seq="${{c.seq}}" style="cursor:pointer">
+      ${{halo}}
       <circle cx="${{x}}" cy="${{yy}}" r="${{c.seq === active ? 8 : 6}}" fill="${{fill}}" />
-      <text x="${{x + 12}}" y="${{yy + 4}}" fill="#111827">${{c.seq + 1}} line ${{c.line}} ${{esc(c.kind)}} ${{esc(c.summary).slice(0, 54)}}</text>
+      <text x="${{x + 12}}" y="${{yy + 4}}" fill="${{labelFill}}" font-weight="${{labelWeight}}">${{c.seq + 1}} line ${{c.line}} ${{esc(c.kind)}} ${{esc(c.summary).slice(0, 54)}}</text>
     </g>`;
   }}
   graphEl.innerHTML = out;

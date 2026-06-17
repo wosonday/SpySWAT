@@ -12,4 +12,4 @@ workingF     = r"/mnt/d/Project/2026_MOETS/SWAT_Ba_Basin/workingFolder"
 
 project = SWATProject(txinout_resevoir_path, workingF , swat_exe, paramfile_path)
 
-project.fig_viewer(red_reaches=[32,33,37,38],open_browser=False)
+project.fig_viewer(red_reaches=[32,33,37,38],open_browser=False, output_path=txinout_resevoir_path)
