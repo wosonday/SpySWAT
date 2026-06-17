@@ -48,7 +48,7 @@ SpySWAT provides:
 ```bash
 pip install spyswat
 # or from source
-git clone https://github.com/yourname/spyswat
+git clone https://github.com/wosonday/SpySWAT.git
 pip install -e .
 ```
 

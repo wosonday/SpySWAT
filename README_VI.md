@@ -48,7 +48,7 @@ SpySWAT cung cấp:
 ```bash
 pip install spyswat
 # hoặc từ source:
-git clone https://github.com/yourname/spyswat
+git clone https://github.com/wosonday/SpySWAT.git
 pip install -e .
 ```
 
