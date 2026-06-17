@@ -61,7 +61,7 @@ class ParallelDE:
 
     def run(
         self,
-        param_ranges: Dict[str, Tuple[float, float]],
+        param_ranges: Dict[str, Tuple],
         observed_series: pd.Series,
         metric: str = "nse",
         output_variable: str = "FLOW_OUTcms",
@@ -73,6 +73,7 @@ class ParallelDE:
         strategy: str = "rand/1/bin",
         seed: Optional[int] = None,
         param_methods: Optional[Dict[str, str]] = None,
+        param_subbasins: Optional[Dict[str, list]] = None,
         tol: float = 1e-6,
         patience: int = 5,
     ) -> Dict:
@@ -81,23 +82,25 @@ class ParallelDE:
 
         Parameters
         ----------
-        param_ranges    : dict  name -> (min, max)
-        observed_series : pd.Series  observed discharge with DatetimeIndex
-        metric          : objective metric ('nse', 'kge', 'r2', ...)
+        param_ranges    : dict  Supports three formats (mixable):
+                            "CN2.mgt": (60, 98)                       # bounds only
+                            "CN2.mgt": ((60, 98), "r")                # + method
+                            "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
+        param_methods   : optional override for method per param (v/r/a)
+        param_subbasins : optional override for subbasin list per param
         pop_size        : population size NP; default max(10, 5*d)
         max_generations : maximum number of generations
         F               : mutation factor in (0, 2]
         CR              : crossover rate in [0, 1]
         strategy        : 'rand/1/bin' (diverse) or 'best/1/bin' (fast convergence)
         seed            : random seed for reproducibility
-        param_methods   : dict name -> method ('v', 'r', 'a'); default 'v'
         tol             : early stop when max(scores) - min(scores) < tol
         patience        : early stop after N generations without improvement
 
         Returns
         -------
         dict with keys:
-            best_params      : dict  (name -> [(value, method)])
+            best_params      : dict  (name -> [(value, method[, subbasins])])
             best_score       : float
             history          : pd.DataFrame  (generation, best_score, mean_score, std_score)
             all_evaluations  : pd.DataFrame  (all params + score + generation)
@@ -112,17 +115,22 @@ class ParallelDE:
         if not (0 <= CR <= 1):
             raise ValueError("CR must be in [0, 1].")
 
-        names  = list(param_ranges.keys())
+        # Parse unified spec; explicit kwargs override spec values
+        bounds, _m, _s = self._manager._parse_spec(param_ranges)
+        self._manager._methods   = {**_m, **(param_methods   or {})}
+        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+
+        names  = list(bounds.keys())
         d      = len(names)
-        lower  = np.array([param_ranges[n][0] for n in names], dtype=float)
-        upper  = np.array([param_ranges[n][1] for n in names], dtype=float)
+        lower  = np.array([bounds[n][0] for n in names], dtype=float)
+        upper  = np.array([bounds[n][1] for n in names], dtype=float)
         NP     = pop_size or max(10, 5 * d)
         rng    = np.random.default_rng(seed)
-        _pm    = param_methods or {}
 
         def to_param_sets(population: np.ndarray) -> List[Dict]:
+            # Pass raw {name: float} — manager formats on the fly in run_batch
             return [
-                {names[j]: [(float(row[j]), _pm.get(names[j], "v"))] for j in range(d)}
+                {names[j]: float(row[j]) for j in range(d)}
                 for row in population
             ]
 
@@ -159,6 +167,12 @@ class ParallelDE:
 
         no_improve      = 0
         best_score_prev = float(scores.max())
+
+        try:
+            from tqdm import tqdm as _tqdm
+            pbar = _tqdm(total=max_generations, desc="DE Gen", unit="gen")
+        except ImportError:
+            pbar = None
 
         # ── Main loop ───────────────────────────────────────────────────
         for gen in range(1, max_generations + 1):
@@ -199,6 +213,10 @@ class ParallelDE:
                 gen, max_generations, current_best, scores.mean(),
             )
 
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(best=f"{current_best:.4f}", mean=f"{scores.mean():.4f}")
+
             if (scores.max() - scores.min()) < tol:
                 logger.info("DE converged at gen %d (tol=%.2e)", gen, tol)
                 break
@@ -211,11 +229,13 @@ class ParallelDE:
                     logger.info("DE early stop at gen %d (patience=%d)", gen, patience)
                     break
 
-        best_idx = int(np.argmax(scores))
-        best_params = {
-            names[j]: [(float(population[best_idx, j]), _pm.get(names[j], "v"))]
-            for j in range(d)
-        }
+        if pbar is not None:
+            pbar.close()
+
+        best_idx    = int(np.argmax(scores))
+        best_raw    = {names[j]: float(population[best_idx, j]) for j in range(d)}
+        best_params = self._manager._format_params(best_raw)
+
         return {
             "best_params":     best_params,
             "best_score":      float(scores[best_idx]),

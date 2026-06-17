@@ -19,6 +19,7 @@
 - [Định dạng tham số bắt buộc](#định-dạng-tham-số-bắt-buộc)
 - [Khởi động nhanh](#khởi-động-nhanh)
 - [Hiệu chỉnh](#hiệu-chỉnh)
+- [Fig Viewer](#fig-viewer--sơ-đồ-lưu-vực-tương-tác)
 - [Kiểm định](#kiểm-định)
 - [Phân tích độ nhạy](#phân-tích-độ-nhạy)
 - [Đọc/ghi TxtInOut](#đọcghi-txtinout)
@@ -132,6 +133,7 @@ param_ranges = {
 }
 
 calib = SWATCalibration(project)
+calib.manager.setup_parallel(overwrite=True) #Set WorkingFolder truoc khi chay
 
 # Quy trình đầy đủ: GLUE → best params → sensitivity → performance
 result = calib.analyze(param_ranges, obs, n_samples=1000, threshold=0.5, seed=42)
@@ -248,29 +250,109 @@ print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
 
-### param_methods — kiểm soát phương thức cập nhật từng tham số
+### Định dạng param_ranges thống nhất
 
-Tất cả thuật toán đều hỗ trợ `param_methods` để chỉ định cách áp dụng từng tham số:
+Từ v0.2.2, bounds, phương thức và danh sách subbasin có thể khai báo trong một dict duy nhất — không cần truyền riêng `param_methods` / `param_subbasins`. Tất cả định dạng đều backward-compatible và có thể kết hợp tự do.
 
 ```python
-methods = {
-    "CN2.mgt":     "r",   # relative: nhân (1 + val)
-    "ALPHA_BF.gw": "v",   # replace: thay thế tuyệt đối
-    "ESCO.hru":    "a",   # add: cộng vào giá trị hiện tại
+param_ranges = {
+    # Định dạng cũ — chỉ có bounds (method mặc định = "v")
+    "ESCO.hru":    (0.01, 1.0),
+
+    # bounds + method
+    "CN2.mgt":     ((35, 98),   "r"),
+
+    # bounds + method + danh sách subbasin (tối ưu độc lập từng lưu vực)
+    "ALPHA_BF.gw": ((0.0, 1.0), "r", [71, 45, 70]),
+    "GW_DELAY.gw": ((0, 450),   "v", [12, 33]),
 }
-result = calib.glue.run(param_ranges, obs, param_methods=methods)
-result = calib.de.run(param_ranges, obs, param_methods=methods)
-result = calib.dds.run(param_ranges, obs, param_methods=methods)
-result = calib.analyze(param_ranges, obs, param_methods=methods)
+
+# Gọi như thường — không cần kwargs thêm
+result = calib.glue.run(param_ranges, obs, n_samples=1000, seed=42)
+result = calib.de.run(param_ranges, obs, pop_size=20, max_generations=40)
+result = calib.dds.run(param_ranges, obs, n_iterations=300)
+result = calib.analyze(param_ranges, obs)
 ```
 
-| Code | Công thức | Ý nghĩa |
-|------|-----------|---------|
+Mã phương thức:
+
+| Code | Công thức | Khi nào dùng |
+|------|-----------|-------------|
 | `v` (mặc định) | `new = val` | Thay thế tuyệt đối |
 | `r` | `new = old × (1 + val)` | Thay đổi tương đối |
 | `a` | `new = old + val` | Cộng thêm |
 
+Vẫn có thể truyền `param_methods` / `param_subbasins` như kwargs — chúng sẽ **override** giá trị trong spec:
+
+```python
+result = calib.glue.run(
+    param_ranges    = param_ranges,
+    observed_series = obs,
+    param_methods   = {"CN2.mgt": "v"},       # override method trong spec
+    param_subbasins = {"ESCO.hru": [5, 6, 7]}, # thêm subbasin cho ESCO
+)
+```
+
+### Tối ưu độc lập cho từng lưu vực
+
+Gán danh sách subbasin khác nhau cho từng tham số để hiệu chỉnh từng lưu vực một cách độc lập:
+
+```python
+param_ranges = {
+    "CN2.mgt":     ((35, 98),   "r", [71, 45, 70]),   # lưu vực thượng nguồn
+    "ALPHA_BF.gw": ((0.0, 1.0), "r", [71, 45, 70]),
+    "GW_DELAY.gw": ((0, 450),   "v", [12, 33, 8]),    # lưu vực hạ nguồn
+    "ESCO.hru":    (0.01, 1.0),                        # toàn lưu vực
+}
+result = calib.dds.run(param_ranges, obs, n_iterations=500)
+print(result["best_params"])
+# {"CN2.mgt": [(val, "r", [71,45,70])], "GW_DELAY.gw": [(val, "v", [12,33,8])], ...}
+```
+
 ---
+
+## Fig Viewer — Sơ đồ lưu vực tương tác
+
+Trực quan hoá mạng lưới dẫn dòng SWAT (`fig.fig`) dưới dạng đồ thị SVG tương tác trong trình duyệt.
+
+```python
+# Qua SWATProject (đơn giản nhất)
+project.fig_viewer(
+    red_reaches  = [32, 33, 37, 38],   # tô đỏ các reach ID này
+    output_path  = None,               # mặc định: TxtInOut/fig_viewer.html
+    open_browser = False,              # True để tự mở trình duyệt
+)
+```
+
+Standalone:
+
+```python
+from spyswat.swat_calib.visualization import FigViewer
+
+viewer = FigViewer("duong/dan/TxtInOut")
+
+# Chỉ phân tích (trả về dict)
+data = viewer.parse(red_reaches=[32, 33])
+
+# Tạo file HTML
+path = viewer.build(
+    red_reaches  = [32, 33, 37, 38],
+    output_path  = "so_do_luuvuc.html",
+    open_browser = False,
+)
+```
+
+**Tính năng tương tác:**
+
+| Tính năng | Mô tả |
+|-----------|-------|
+| Click node | Chọn và làm nổi bật các reach liên kết |
+| Hover | Hiển thị chi tiết lệnh (ID, loại, tham số) |
+| Nút/cạnh đỏ | Các reach trong `red_reaches` và các lệnh liên quan |
+| Hào xanh | Làm nổi bật node được chọn |
+| Cạnh nét đứt | Lệnh transfer |
+| Cạnh xanh đậm | Cạnh đang hoạt động (hot edges) |
+| Bảng Issues | Cảnh báo kiểm tra (ID trùng, tham chiếu sai, transfer không hợp lệ) |
 
 ## Kiểm định
 
@@ -479,6 +561,7 @@ from spyswat.swat_calib.calibration import CalibrationManager
 manager = CalibrationManager(project)
 manager.setup_parallel(overwrite=True)
 
+
 results = manager.run_batch(
     param_sets = [
         {"CN2.mgt": [(70.0, "v")]},
@@ -514,25 +597,34 @@ project.WorkingFolder.setup(overwrite)
 project.info()
 ```
 
+
 ### SWATCalibration
 
 ```
 calib = SWATCalibration(project)
 
-# Thuật toán độc lập (ưu tiên dùng)
-calib.glue.run(param_ranges, obs, n_samples, threshold, metric, seed, ...)
-calib.glue.uncertainty_band(behavioral_df, obs, metric, ...)
-calib.de.run(param_ranges, obs, pop_size, max_generations, F, CR, strategy, ...)
-calib.dds.run(param_ranges, obs, n_iterations, r, seed, metric, ...)
+# Thuật toán độc lập (ưu tiên dùng)  — param_ranges hỗ trợ định dạng thống nhất từ v0.2.2
+calib.glue.run(param_ranges, obs, n_samples, threshold, metric, seed,
+               param_methods, param_subbasins, ...) → dict
+calib.glue.uncertainty_band(behavioral_df, obs, metric) → dict
+calib.de.run(param_ranges, obs, pop_size, max_generations, F, CR, strategy,
+             param_methods, param_subbasins, ...) → dict
+calib.dds.run(param_ranges, obs, n_iterations, r, seed, metric,
+              param_methods, param_subbasins, ...) → dict
 
 # Quy trình tổng hợp
-calib.analyze(param_ranges, obs, n_samples, threshold, metric, sensitivity_method, ...)
-calib.optimize(param_ranges, obs, method, metric, max_iter, ...)
+calib.analyze(param_ranges, obs, n_samples, threshold, metric,
+              sensitivity_method, seed, param_methods, param_subbasins) → dict
+calib.optimize(param_ranges, obs, method, metric, max_iter,
+               param_methods, param_subbasins) → dict
 
 # Hạ tầng
-calib.manager              # CalibrationManager
+calib.manager                          # CalibrationManager
 calib.manager.run_iteration(param_dict, obs, metric, ...)
+    param_dict: {name: float}  (raw)  HOẶC  {name: [(val, method, ...)]}  (formatted)
 calib.manager.run_batch(param_sets, obs, metrics, ...)
+calib.manager._parse_spec(param_ranges) → (bounds, methods, subbasins)
+calib.manager._format_params(raw_dict) → formatted_dict
 ```
 
 ### Standalone Algorithms
@@ -555,7 +647,21 @@ GLUE(manager, analysis=None)
 
 # ParallelDE standalone
 ParallelDE(manager)
-  .run(param_ranges, obs, pop_size, max_generations, F, CR, strategy, ...) → dict
+  .run(param_ranges, obs, pop_size, max_generations, F, CR, strategy,
+        param_methods, param_subbasins, ...) → dict
+```
+
+### FigViewer
+
+```python
+from spyswat.swat_calib.visualization import FigViewer
+
+FigViewer(txinout_dir)
+  .parse(red_reaches=None) → dict
+  .build(red_reaches=None, output_path=None, open_browser=True) → Path
+
+# Qua SWATProject
+project.fig_viewer(red_reaches=None, output_path=None, open_browser=True) → Path
 ```
 
 ---

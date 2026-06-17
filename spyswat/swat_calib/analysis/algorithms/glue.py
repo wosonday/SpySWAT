@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class GLUE:
 
     def run(
         self,
-        param_ranges: Dict[str, Tuple[float, float]],
+        param_ranges: Dict[str, Tuple],
         observed_series: pd.Series,
         n_samples: int = 1000,
         threshold: float = 0.5,
@@ -71,30 +71,45 @@ class GLUE:
         seed: Optional[int] = None,
         compute_uncertainty: bool = False,
         param_methods: Optional[Dict[str, str]] = None,
+        param_subbasins: Optional[Dict[str, list]] = None,
     ) -> Dict:
         """
         Run GLUE sampling and return results dict.
 
+        Parameters
+        ----------
+        param_ranges    : dict  Supports three formats (mixable):
+                            "CN2.mgt": (60, 98)                       # bounds only
+                            "CN2.mgt": ((60, 98), "r")                # + method
+                            "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
+        param_methods   : optional override for method per param (v/r/a)
+        param_subbasins : optional override for subbasin list per param
+
         Returns
         -------
         dict with keys:
-            all_results         : pd.DataFrame  (n_samples × params + metric)
-            behavioral_results  : pd.DataFrame  (n_behavioral × params + metric)
+            all_results         : pd.DataFrame  (n_samples x params + metric)
+            behavioral_results  : pd.DataFrame  (n_behavioral x params + metric)
             behavioral_ratio    : float
-            parameter_ranges    : dict
+            parameter_ranges    : dict (bounds only)
             threshold           : float
-            [uncertainty_band, p_factor, r_factor  — if compute_uncertainty=True]
+            [uncertainty_band, p_factor, r_factor  -- if compute_uncertainty=True]
         """
         logger.info("GLUE: starting with " + str(n_samples) + " samples")
 
-        param_names = list(param_ranges.keys())
+        # Parse unified spec; explicit kwargs override spec values
+        bounds, _m, _s = self._manager._parse_spec(param_ranges)
+        self._manager._methods   = {**_m, **(param_methods   or {})}
+        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+
+        param_names = list(bounds.keys())
         samples_df  = self._analysis._generate_samples(
-            param_ranges, n_samples, method="lhs", seed=seed
+            bounds, n_samples, method="lhs", seed=seed
         )
 
-        _pm = param_methods or {}
+        # Pass raw {name: float} — manager formats on the fly in run_batch
         param_sets = [
-            {name: [(float(row[name]), _pm.get(name, "v"))] for name in param_names}
+            {name: float(row[name]) for name in param_names}
             for row in samples_df.to_dict("records")
         ]
 
@@ -119,18 +134,18 @@ class GLUE:
         )
 
         result = {
-            "all_results":       results_df,
+            "all_results":        results_df,
             "behavioral_results": behavioral_df,
             "behavioral_ratio":   n_behavioral / n_samples,
-            "parameter_ranges":  param_ranges,
-            "threshold":         threshold,
+            "parameter_ranges":   bounds,
+            "threshold":          threshold,
         }
 
         if compute_uncertainty and n_behavioral > 0:
             unc = self.uncertainty_band(
                 behavioral_df, observed_series,
                 metric=metric, output_variable=output_variable,
-                reach_id=reach_id, param_methods=param_methods,
+                reach_id=reach_id,
             )
             result.update(unc)
 
@@ -143,7 +158,6 @@ class GLUE:
         metric: str = "nse",
         output_variable: str = "FLOW_OUTcms",
         reach_id: int = 1,
-        param_methods: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """
         Compute 95PPU, p-factor, r-factor from behavioral parameter sets.
@@ -154,6 +168,9 @@ class GLUE:
           - Per timestep: sorted weighted CDF -> 2.5% and 97.5% quantiles
           - p-factor = mean(obs_t in [lower_t, upper_t])
           - r-factor = mean(upper - lower) / std(obs)  (Abbaspour et al. 2007)
+
+        Note: method/subbasin config is inherited from the preceding run() call
+        via manager._methods and manager._subbasins.
 
         Returns
         -------
@@ -167,16 +184,13 @@ class GLUE:
         w_sum       = weights.sum()
         weights     = weights / w_sum if w_sum > 0 else np.ones(len(weights)) / len(weights)
 
-        _pm2 = param_methods or {}
         self._manager._backup_state()
         simulations = []
         try:
             for _, row in behavioral_df.iterrows():
-                params = {
-                    name: [(float(row[name]), _pm2.get(name, "v"))]
-                    for name in param_names
-                }
-                self._manager.project.HRU.update_params(params)
+                # Pass raw floats — manager formats with stored _methods/_subbasins
+                raw = {name: float(row[name]) for name in param_names}
+                self._manager.project.HRU.update_params(self._manager._format_params(raw))
                 self._manager.project.run()
                 sim_raw = self._manager.project.Output.read_rch(
                     columns=["RCH", "MON", output_variable], reach_id=reach_id

@@ -1,4 +1,7 @@
+import os
+import stat
 import shutil
+import time
 import concurrent.futures
 from pathlib import Path
 from typing import Optional, Union, List
@@ -10,6 +13,16 @@ from spyswat.logger import Logger
 
 Logger.init(log_dir="logs", log_file="run.log")
 logger = Logger.get_logger(__name__)
+
+
+def _force_remove(func, path, _):
+    """onexc handler: unlock read-only files before retry (Windows PermissionError)."""
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass  # best-effort; rmtree continues with remaining files
+
 
 class WorkingFolderManager:
 
@@ -23,29 +36,36 @@ class WorkingFolderManager:
         self._param_path  = Path(param_path) if param_path else None
         self._worker_dirs: List[Path] = []
 
+    # ------------------------------------------------------------------
 
     def setup(self, overwrite: bool = False) -> List[Path]:
         self.working_dir.mkdir(parents=True, exist_ok=True)
         self._worker_dirs = []
+
+        logger.info(f"[Setup] Preparing {self.n_parallel} worker dirs in {self.working_dir}")
+        t0 = time.perf_counter()
 
         for i in range(1, self.n_parallel + 1):
             dest = self.working_dir / f"TxInOut{i}"
 
             if dest.exists():
                 if overwrite:
-                    shutil.rmtree(dest)
-                    logger.info(f"Removed existing worker dir: {dest}")
+                    shutil.rmtree(dest, onexc=_force_remove)
+                    logger.info(f"[Setup] [{i}/{self.n_parallel}] Removed & rebuilding: {dest.name}")
                 else:
-                    logger.info(f"Worker dir already exists (skip copy): {dest}")
+                    logger.info(f"[Setup] [{i}/{self.n_parallel}] Already exists (skip): {dest.name}")
                     self._worker_dirs.append(dest)
                     continue
 
             shutil.copytree(src=self.txinout_dir, dst=dest)
-            logger.info(f"Created worker dir [{i}/{self.n_parallel}]: {dest}")
+            logger.info(f"[Setup] [{i}/{self.n_parallel}] Created: {dest.name}")
             self._worker_dirs.append(dest)
 
+        elapsed = time.perf_counter() - t0
+        logger.info(f"[Setup] Done — {len(self._worker_dirs)} workers ready ({elapsed:.1f}s)")
         return self._worker_dirs
 
+    # ------------------------------------------------------------------
 
     def run_parallel(self, swat_exe: Union[str, Path],
                            param_sets: Optional[List[dict]] = None) -> List[Path]:
@@ -62,46 +82,70 @@ class WorkingFolderManager:
                 f"Dùng run_batch() để xử lý tự động."
             )
 
-        # Chỉ chạy đúng số worker cần thiết
         n = len(param_sets) if param_sets else len(self._worker_dirs)
-        active_dirs = self._worker_dirs[:n]
+        active_dirs   = self._worker_dirs[:n]
         active_params = param_sets if param_sets else [None] * n
         tasks = list(zip(active_dirs, active_params))
 
         param_path_str = str(self._param_path) if self._param_path else None
 
+        logger.info(f"[Parallel] Starting {n} workers ...")
+        t_batch = time.perf_counter()
+        done_count = 0
+
         with concurrent.futures.ProcessPoolExecutor(max_workers=n) as executor:
-            futures = {
+            future_to_info = {
                 executor.submit(
-                    self._run_single, worker_dir, str(swat_exe), params, param_path_str
+                    self._run_single_timed,
+                    worker_dir, str(swat_exe), params, param_path_str
                 ): worker_dir
                 for worker_dir, params in tasks
             }
-            for future in concurrent.futures.as_completed(futures):
-                worker_dir = futures[future]
+            for future in concurrent.futures.as_completed(future_to_info):
+                worker_dir = future_to_info[future]
+                done_count += 1
                 try:
-                    future.result()
-                    logger.info(f"Finished: {worker_dir.name}")
+                    elapsed_w = future.result()
+                    logger.info(
+                        f"[Parallel] [{done_count}/{n}] {worker_dir.name} OK "
+                        f"({elapsed_w:.1f}s)"
+                    )
                 except Exception as exc:
-                    logger.error(f"FAILED {worker_dir.name}: {exc}")
+                    logger.error(
+                        f"[Parallel] [{done_count}/{n}] {worker_dir.name} FAILED: {exc}"
+                    )
 
+        total = time.perf_counter() - t_batch
+        logger.info(f"[Parallel] Batch done — {n} workers in {total:.1f}s")
         return active_dirs
 
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _run_single(worker_dir: Path, swat_exe: str,
-                    params: Optional[dict],
-                    param_path: Optional[str] = None) -> None:
-        """Ghi tham số (nếu có) và chạy SWAT trong worker_dir."""
+    def _run_single_timed(worker_dir: Path, swat_exe: str,
+                          params: Optional[dict],
+                          param_path: Optional[str] = None) -> float:
+        """Ghi tham số (nếu có), chạy SWAT, trả về thời gian thực thi (giây)."""
+        t0 = time.perf_counter()
         if params:
             txinout = TxInOut(str(worker_dir))
             hru_mgr = HRUManager(txinout, SWATParam(param_path))
             hru_mgr.update_params(params)
+        SWATRun(swat_exe).run(worker_dir)
+        return time.perf_counter() - t0
 
-        SWATRun(swat_exe).run(str(worker_dir))
+    # backward-compat alias (old name)
+    @staticmethod
+    def _run_single(worker_dir: Path, swat_exe: str,
+                    params: Optional[dict],
+                    param_path: Optional[str] = None) -> None:
+        WorkingFolderManager._run_single_timed(worker_dir, swat_exe, params, param_path)
+
+    # ------------------------------------------------------------------
 
     def cleanup(self) -> None:
         if self.working_dir.exists():
-            shutil.rmtree(self.working_dir)
+            shutil.rmtree(self.working_dir, onexc=_force_remove)
             logger.info(f"Cleaned up working dir: {self.working_dir}")
 
     @property

@@ -19,6 +19,7 @@
 - [Parameter Key Format](#parameter-key-format)
 - [Quick Start](#quick-start)
 - [Calibration](#calibration)
+- [Fig Viewer](#fig-viewer--interactive-watershed-diagram)
 - [Validation](#validation)
 - [Sensitivity Analysis](#sensitivity-analysis)
 - [Reading and Writing TxtInOut](#reading-and-writing-txtinout)
@@ -132,7 +133,7 @@ param_ranges = {
 }
 
 calib = SWATCalibration(project)
-
+calib.manager.setup_parallel(overwrite=True) #Set up in WorkingFolder
 # Full workflow: GLUE → best params → sensitivity → performance
 result = calib.analyze(param_ranges, obs, n_samples=1000, threshold=0.5, seed=42)
 
@@ -270,29 +271,112 @@ print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
 
-### param_methods — per-parameter update control
+### Unified param_ranges format
 
-All algorithms accept `param_methods` to specify how each parameter value is applied:
+From v0.2.2, bounds, method, and subbasin list can be expressed in a single dict — no need for separate `param_methods` / `param_subbasins` arguments. All formats are backward-compatible and mixable.
 
 ```python
-methods = {
-    "CN2.mgt":     "r",   # relative: new = old × (1 + val)
-    "ALPHA_BF.gw": "v",   # replace:  new = val
-    "ESCO.hru":    "a",   # add:      new = old + val
+param_ranges = {
+    # Old format — bounds only (default method = "v")
+    "ESCO.hru":    (0.01, 1.0),
+
+    # bounds + method
+    "CN2.mgt":     ((35, 98),   "r"),
+
+    # bounds + method + subbasin list (per-watershed optimisation)
+    "ALPHA_BF.gw": ((0.0, 1.0), "r", [71, 45, 70]),
+    "GW_DELAY.gw": ((0, 450),   "v", [12, 33]),
 }
-result = calib.glue.run(param_ranges, obs, param_methods=methods)
-result = calib.de.run(param_ranges, obs, param_methods=methods)
-result = calib.dds.run(param_ranges, obs, param_methods=methods)
-result = calib.analyze(param_ranges, obs, param_methods=methods)
+
+# Same call — no extra kwargs needed
+result = calib.glue.run(param_ranges, obs, n_samples=1000, seed=42)
+result = calib.de.run(param_ranges, obs, pop_size=20, max_generations=40)
+result = calib.dds.run(param_ranges, obs, n_iterations=300)
+result = calib.analyze(param_ranges, obs)
 ```
 
-| Code | Formula | Meaning |
-|------|---------|---------|
+Method codes:
+
+| Code | Formula | When to use |
+|------|---------|-------------|
 | `v` (default) | `new = val` | Direct assignment |
 | `r` | `new = old × (1 + val)` | Relative change |
 | `a` | `new = old + val` | Additive change |
 
+You can still pass `param_methods` / `param_subbasins` as keyword arguments — they **override** values in the spec:
+
+```python
+# Override method for CN2 (spec says "r" but we want "v")
+result = calib.glue.run(
+    param_ranges    = param_ranges,
+    observed_series = obs,
+    param_methods   = {"CN2.mgt": "v"},   # overrides spec
+    param_subbasins = {"ESCO.hru": [5, 6, 7]},  # adds subbasin for ESCO
+)
+```
+
+### Per-watershed independent optimisation
+
+Assign different subbasin lists per parameter to calibrate each watershed independently:
+
+```python
+param_ranges = {
+    "CN2.mgt":     ((35, 98),   "r", [71, 45, 70]),   # upper basin
+    "ALPHA_BF.gw": ((0.0, 1.0), "r", [71, 45, 70]),
+    "GW_DELAY.gw": ((0, 450),   "v", [12, 33, 8]),    # lower basin
+    "ESCO.hru":    (0.01, 1.0),                        # all basins
+}
+result = calib.dds.run(param_ranges, obs, n_iterations=500)
+print(result["best_params"])
+# {"CN2.mgt": [(val, "r", [71,45,70])], "GW_DELAY.gw": [(val, "v", [12,33,8])], ...}
+```
+
 ---
+
+## Fig Viewer — Interactive Watershed Diagram
+
+Visualise the SWAT routing network (`fig.fig`) as an interactive SVG graph directly in your browser.
+
+```python
+# Via SWATProject (simplest)
+project.fig_viewer(
+    red_reaches  = [32, 33, 37, 38],   # highlight these reach IDs in red
+    output_path  = None,               # default: TxtInOut/fig_viewer.html
+    open_browser = False,              # set True to auto-open
+)
+```
+
+Standalone:
+
+```python
+from spyswat.swat_calib.visualization import FigViewer
+
+viewer = FigViewer("path/to/TxtInOut")
+
+# Parse only (returns dict)
+data = viewer.parse(red_reaches=[32, 33])
+
+# Build HTML file
+path = viewer.build(
+    red_reaches  = [32, 33, 37, 38],
+    output_path  = "my_fig.html",
+    open_browser = False,
+)
+```
+
+**Interactive features:**
+
+| Feature | Description |
+|---------|-------------|
+| Click node | Select and highlight connected reaches |
+| Hover | Show command details (ID, type, parameters) |
+| Red nodes/edges | Reaches in `red_reaches` and all related commands |
+| Blue halo | Connected node highlight |
+| Dashed edges | Transfer commands |
+| Blue thick edges | Active (hot) edges |
+| Issues panel | Validation warnings (duplicate IDs, forward references, transfer semantics) |
+
+The viewer validates `fig.fig` on parse and reports issues per command in the sidebar.
 
 ## Validation
 
@@ -564,19 +648,20 @@ calib.de      → ParallelDE(manager)
 calib.dds     → DDSCalibration(manager)
 calib.manager → CalibrationManager
 
-# Algorithm methods
+# Algorithm methods  (param_ranges accepts unified format since v0.2.2)
 calib.glue.run(param_ranges, obs, n_samples, threshold, metric, seed,
-               compute_uncertainty, param_methods) → dict
-calib.glue.uncertainty_band(behavioral_df, obs, metric, param_methods) → dict
+               compute_uncertainty, param_methods, param_subbasins) → dict
+calib.glue.uncertainty_band(behavioral_df, obs, metric) → dict
 calib.de.run(param_ranges, obs, pop_size, max_generations, F, CR,
-             strategy, seed, tol, patience, param_methods) → dict
+             strategy, seed, tol, patience, param_methods, param_subbasins) → dict
 calib.dds.run(param_ranges, obs, n_iterations, r, seed, metric,
-              output_variable, reach_id, maximize) → dict
+              output_variable, reach_id, maximize, param_methods, param_subbasins) → dict
 
 # Orchestrated workflows
 calib.analyze(param_ranges, obs, n_samples, threshold, metric,
-              sensitivity_method, seed, param_methods) → dict
-calib.optimize(param_ranges, obs, method, metric, max_iter) → dict
+              sensitivity_method, seed, param_methods, param_subbasins) → dict
+calib.optimize(param_ranges, obs, method, metric, max_iter,
+               param_methods, param_subbasins) → dict
 ```
 
 ### Standalone Algorithm Classes
@@ -604,7 +689,24 @@ ParallelDE(manager)
 CalibrationManager(project)
   .setup_parallel(overwrite=False)
   .run_iteration(param_dict, obs, metric, reach_id, output_variable) → float
+      param_dict: {name: float}  (raw)  OR  {name: [(val, method, ...)]}  (formatted)
   .run_batch(param_sets, observed, metrics, reach_id, output_variable) → DataFrame
+      param_sets: list of raw or formatted dicts — both accepted
+  ._parse_spec(param_ranges) → (bounds, methods, subbasins)  [staticmethod]
+  ._format_params(raw_dict) → formatted_dict
+```
+
+### FigViewer
+
+```
+from spyswat.swat_calib.visualization import FigViewer
+
+FigViewer(txinout_dir)
+  .parse(red_reaches=None) → dict
+  .build(red_reaches=None, output_path=None, open_browser=True) → Path
+
+# Via SWATProject
+project.fig_viewer(red_reaches=None, output_path=None, open_browser=True) → Path
 ```
 
 ---

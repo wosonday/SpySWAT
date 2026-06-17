@@ -9,7 +9,7 @@ Reference:
     https://doi.org/10.1029/2005WR004723
 
 DDS is designed for single-objective calibration of computationally expensive
-models when the evaluation budget N is small (100–1000 runs). Key properties:
+models when the evaluation budget N is small (100-1000 runs). Key properties:
   - No algorithm parameters to tune (only N and r).
   - Perturbation probability decreases as iterations grow: P_perturb = 1 - ln(i)/ln(N).
   - Neighbour generation: x_new = x_best + r*(x_max - x_min)*N(0,1)
@@ -36,9 +36,9 @@ class DDS:
         Parameter names mapped to (min, max) bounds.
         Keys must use name.ext format (e.g. "CN2.mgt").
     objective : Callable[[dict], float]
-        Function that accepts a parameter dict and returns a scalar score
-        (higher is better, e.g. NSE).  Typically wraps
-        ``CalibrationManager.run_iteration``.
+        Function that accepts {name: float} and returns a scalar score
+        (higher is better, e.g. NSE). Typically wraps
+        CalibrationManager.run_iteration.
     n_iterations : int
         Total evaluation budget (recommended >= 200).
     r : float
@@ -47,8 +47,8 @@ class DDS:
     seed : int | None
         Random seed for reproducibility.
     maximize : bool
-        True (default) — objective is maximised (NSE, KGE, R2, …).
-        False        — objective is minimised (RMSE, PBIAS, …).
+        True (default) -- objective is maximised (NSE, KGE, R2).
+        False          -- objective is minimised (RMSE, PBIAS).
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class DDS:
         self._names: List[str] = list(param_ranges.keys())
         self._lower = np.array([param_ranges[k][0] for k in self._names], dtype=float)
         self._upper = np.array([param_ranges[k][1] for k in self._names], dtype=float)
-        self._d = len(self._names)   # number of dimensions
+        self._d = len(self._names)
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,25 +90,28 @@ class DDS:
         Returns
         -------
         dict with keys:
-            best_params  : dict[str, float]  — best parameter set found
-            best_score   : float             — corresponding objective value
-            history      : pd.DataFrame      — columns = param names + "score"
-                           one row per iteration, sorted by iteration order
+            best_params  : dict[str, float]  -- best parameter set found (raw floats)
+            best_score   : float             -- corresponding objective value
+            history      : pd.DataFrame      -- columns = param names + "score"
         """
-        # ── Step 1: random initial solution ──────────────────────────
+        try:
+            from tqdm import tqdm as _tqdm
+            pbar = _tqdm(total=self.n_iterations, desc="DDS", unit="iter")
+        except ImportError:
+            pbar = None
+
         x_best = self._random_uniform()
         f_best = self._evaluate(x_best)
         history: List[Dict] = [self._row(x_best, f_best)]
         logger.info("DDS iter 1/%d | score=%.4f", self.n_iterations, f_best)
+        if pbar is not None:
+            pbar.update(1)
+            pbar.set_postfix(best=f"{f_best:.4f}")
 
-        # ── Step 2: DDS main loop (iterations 2..N) ───────────────────
         for i in range(2, self.n_iterations + 1):
-            # Perturbation probability (Eq. 3, Tolson & Shoemaker 2007)
             p_perturb = 1.0 - np.log(i) / np.log(self.n_iterations)
 
-            # Select dimensions to perturb
             perturb_mask = self.rng.random(self._d) < p_perturb
-            # Guarantee at least one dimension is perturbed
             if not perturb_mask.any():
                 perturb_mask[self.rng.integers(0, self._d)] = True
 
@@ -125,13 +128,18 @@ class DDS:
                     "DDS iter %d/%d | improved score=%.4f", i, self.n_iterations, f_best
                 )
 
-        best_dict = dict(zip(self._names, x_best.tolist()))
-        hist_df = pd.DataFrame(history)
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(best=f"{f_best:.4f}")
 
+        if pbar is not None:
+            pbar.close()
+
+        best_dict = dict(zip(self._names, x_best.tolist()))
         return {
             "best_params": best_dict,
-            "best_score": float(f_best),
-            "history": hist_df,
+            "best_score":  float(f_best),
+            "history":     pd.DataFrame(history),
         }
 
     # ------------------------------------------------------------------
@@ -139,7 +147,6 @@ class DDS:
     # ------------------------------------------------------------------
 
     def _random_uniform(self) -> np.ndarray:
-        """Uniform random sample within bounds."""
         u = self.rng.random(self._d)
         return self._lower + u * (self._upper - self._lower)
 
@@ -151,26 +158,18 @@ class DDS:
         """
         sigma = self.r * (self._upper[j] - self._lower[j])
         x_new = x_j + sigma * self.rng.standard_normal()
-
-        # Reflect at lower bound
         if x_new < self._lower[j]:
             x_new = 2.0 * self._lower[j] - x_new
-        # Reflect at upper bound
         if x_new > self._upper[j]:
             x_new = 2.0 * self._upper[j] - x_new
-
-        # If still outside (double reflection) clip to bound
-        x_new = float(np.clip(x_new, self._lower[j], self._upper[j]))
-        return x_new
+        return float(np.clip(x_new, self._lower[j], self._upper[j]))
 
     def _evaluate(self, x: np.ndarray) -> float:
         param_dict = dict(zip(self._names, x.tolist()))
         return float(self.objective(param_dict))
 
     def _is_better(self, f_new: float, f_best: float) -> bool:
-        if self.maximize:
-            return f_new > f_best
-        return f_new < f_best
+        return f_new > f_best if self.maximize else f_new < f_best
 
     def _row(self, x: np.ndarray, score: float) -> Dict:
         row = dict(zip(self._names, x.tolist()))
@@ -182,7 +181,7 @@ class DDS:
 
 class DDSCalibration:
     """
-    DDS backed by CalibrationManager — same interface as GLUE and ParallelDE.
+    DDS backed by CalibrationManager -- same interface as GLUE and ParallelDE.
 
     Wraps the standalone DDS optimiser and wires CalibrationManager.run_iteration
     as the objective function.
@@ -208,7 +207,7 @@ class DDSCalibration:
 
     def run(
         self,
-        param_ranges: Dict[str, Tuple[float, float]],
+        param_ranges: Dict[str, Tuple],
         observed_series,
         n_iterations: int = 200,
         r: float = 0.2,
@@ -217,35 +216,51 @@ class DDSCalibration:
         output_variable: str = "FLOW_OUTcms",
         reach_id: int = 1,
         maximize: bool = True,
+        param_methods: Optional[Dict[str, str]] = None,
+        param_subbasins: Optional[Dict[str, list]] = None,
     ) -> dict:
         """
         Run DDS calibration.
 
         Parameters
         ----------
-        param_ranges    : dict  name -> (min, max)
+        param_ranges    : dict  Supports three formats (mixable):
+                            "CN2.mgt": (60, 98)                       # bounds only
+                            "CN2.mgt": ((60, 98), "r")                # + method
+                            "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
         observed_series : pd.Series  observed discharge with DatetimeIndex
         n_iterations    : int   total evaluation budget (recommended >= 200)
         r               : float perturbation size as fraction of range (0, 1]
         seed            : int | None  random seed for reproducibility
         metric          : str   objective metric; higher is better unless maximize=False
         maximize        : bool  True for NSE/KGE/R2, False for RMSE/PBIAS
+        param_methods   : optional override for method per param (v/r/a)
+        param_subbasins : optional override for subbasin list per param
 
         Returns
         -------
         dict with keys: best_params, best_score, history (pd.DataFrame)
         """
+        # Parse unified spec; explicit kwargs override spec values
+        bounds, _m, _s = self._manager._parse_spec(param_ranges)
+        self._manager._methods   = {**_m, **(param_methods   or {})}
+        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+
+        # DDS passes {name: float}; manager.run_iteration auto-formats it
         def objective(params: dict) -> float:
             return self._manager.run_iteration(
                 params, observed_series, metric, reach_id, output_variable
             )
 
         dds = DDS(
-            param_ranges  = param_ranges,
-            objective     = objective,
-            n_iterations  = n_iterations,
-            r             = r,
-            seed          = seed,
-            maximize      = maximize,
+            param_ranges = bounds,
+            objective    = objective,
+            n_iterations = n_iterations,
+            r            = r,
+            seed         = seed,
+            maximize     = maximize,
         )
-        return dds.run()
+        result = dds.run()
+        # Format raw {name: float} -> {name: [(val, method, ...)]} for consistency
+        result["best_params"] = self._manager._format_params(result["best_params"])
+        return result

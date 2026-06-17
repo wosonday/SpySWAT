@@ -13,7 +13,8 @@ class SWATRun:
     def __init__(self, swat_exe_path):
         self.swat_exe_path = Path(swat_exe_path)
 
-    def run(self, txinout_path: str, capture_output: bool = False):
+    def run(self, txinout_path, capture_output: bool = False):
+        txinout_path = Path(txinout_path)
         if not (txinout_path / "file.cio").exists():
             raise RuntimeError("file.cio not found in TxtInOut")
 

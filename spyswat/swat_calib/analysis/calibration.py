@@ -1,5 +1,5 @@
 """
-SWATCalibration — orchestrator and scipy wrapper.
+SWATCalibration -- orchestrator and scipy wrapper.
 
 Algorithm instances are accessed directly:
     calib.glue   -> GLUE
@@ -36,6 +36,11 @@ class SWATCalibration:
     Orchestrated workflow:
         calib.analyze(param_ranges, obs)   # GLUE + sensitivity + performance
         calib.optimize(param_ranges, obs)  # scipy DE / minimize
+
+    Unified param_ranges format (all formats are mixable):
+        "CN2.mgt": (60, 98)                        # bounds only (old format)
+        "CN2.mgt": ((60, 98), "r")                 # bounds + method
+        "CN2.mgt": ((60, 98), "r", [71, 45, 70])  # bounds + method + subbasins
     """
 
     def __init__(self, project, analysis=None):
@@ -58,21 +63,28 @@ class SWATCalibration:
 
     def optimize(
             self,
-            param_ranges: Dict[str, Tuple[float, float]],
+            param_ranges: Dict[str, Tuple],
             observed_series: pd.Series,
             method: str = "differential_evolution",
             metric: str = "nse",
             max_iter: int = 100,
             reach_id: int = 1,
             output_variable: str = "FLOW_OUTcms",
+            param_methods: Optional[Dict[str, str]] = None,
+            param_subbasins: Optional[Dict[str, list]] = None,
     ) -> Dict:
         """Single-threaded scipy optimisation (DE or Nelder-Mead/SLSQP)."""
-        names  = list(param_ranges.keys())
-        bounds = [param_ranges[n] for n in names]
+        bounds_dict, _m, _s = CalibrationManager._parse_spec(param_ranges)
+        self.manager._methods   = {**_m, **(param_methods   or {})}
+        self.manager._subbasins = {**_s, **(param_subbasins or {})}
+
+        names  = list(bounds_dict.keys())
+        bounds = [bounds_dict[n] for n in names]
 
         def objective(x):
+            raw   = dict(zip(names, x))
             score = self.manager.run_iteration(
-                dict(zip(names, x)), observed_series, metric, reach_id, output_variable
+                raw, observed_series, metric, reach_id, output_variable
             )
             self.optimization_history.append({"params": dict(zip(names, x)), "score": score})
             return -score if metric in ("nse", "r2", "kge") else score
@@ -93,7 +105,7 @@ class SWATCalibration:
 
     def analyze(
             self,
-            param_ranges: Dict[str, Tuple[float, float]],
+            param_ranges: Dict[str, Tuple],
             observed_series: pd.Series,
             n_samples: int = 1000,
             threshold: float = 0.5,
@@ -103,39 +115,42 @@ class SWATCalibration:
             sensitivity_method: str = "spearman",
             seed: Optional[int] = None,
             param_methods: Optional[Dict[str, str]] = None,
+            param_subbasins: Optional[Dict[str, list]] = None,
     ) -> Dict:
         """
         GLUE (parallel) -> best params -> sensitivity -> performance.
         All n_samples SWAT runs happen inside glue.run(); none added for sensitivity.
+
+        param_ranges supports unified format — see class docstring.
         """
         glue_result = self.glue.run(
-            param_ranges=param_ranges,
-            observed_series=observed_series,
-            n_samples=n_samples,
-            threshold=threshold,
-            metric=metric,
-            output_variable=output_variable,
-            reach_id=reach_id,
-            seed=seed,
-            param_methods=param_methods,
+            param_ranges    = param_ranges,
+            observed_series = observed_series,
+            n_samples       = n_samples,
+            threshold       = threshold,
+            metric          = metric,
+            output_variable = output_variable,
+            reach_id        = reach_id,
+            seed            = seed,
+            param_methods   = param_methods,
+            param_subbasins = param_subbasins,
         )
         all_results = glue_result["all_results"]
 
+        # best_params: raw float dict -> format via manager (methods/subbasins already set by glue.run)
         best_row    = all_results.loc[all_results[metric].idxmax()]
-        _pm         = param_methods or {}
-        best_params = {
-            name: [(float(best_row[name]), _pm.get(name, "v"))]
-            for name in param_ranges
-        }
+        bounds_dict = glue_result["parameter_ranges"]
+        best_raw    = {name: float(best_row[name]) for name in bounds_dict}
+        best_params = self.manager._format_params(best_raw)
         best_score  = float(best_row[metric])
 
         sensitivity = self.analysis.sensitivity_from_results(
             all_results, metric=metric,
-            param_names=list(param_ranges.keys()),
+            param_names=list(bounds_dict.keys()),
             method=sensitivity_method,
         )
 
-        self.manager.run_iteration(best_params, observed_series, metric, reach_id, output_variable)
+        self.manager.run_iteration(best_raw, observed_series, metric, reach_id, output_variable)
         sim = self.project.Output.read_rch(
             columns=["RCH", "MON", output_variable], reach_id=reach_id
         )[output_variable]
