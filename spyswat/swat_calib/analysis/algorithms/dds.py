@@ -92,7 +92,7 @@ class DDS:
         dict with keys:
             best_params  : dict[str, float]  -- best parameter set found (raw floats)
             best_score   : float             -- corresponding objective value
-            history      : pd.DataFrame      -- columns = param names + "score"
+            history      : pd.DataFrame      -- columns = "iteration", param names, "best_score"
         """
         try:
             from tqdm import tqdm as _tqdm
@@ -135,11 +135,13 @@ class DDS:
         if pbar is not None:
             pbar.close()
 
-        best_dict = dict(zip(self._names, x_best.tolist()))
+        best_dict  = dict(zip(self._names, x_best.tolist()))
+        history_df = pd.DataFrame(history)
+        history_df.insert(0, "iteration", range(1, len(history_df) + 1))
         return {
             "best_params": best_dict,
             "best_score":  float(f_best),
-            "history":     pd.DataFrame(history),
+            "history":     history_df,   # columns: iteration, [params...], best_score
         }
 
     # ------------------------------------------------------------------
@@ -173,7 +175,7 @@ class DDS:
 
     def _row(self, x: np.ndarray, score: float) -> Dict:
         row = dict(zip(self._names, x.tolist()))
-        row["score"] = score
+        row["best_score"] = score
         return row
 
 

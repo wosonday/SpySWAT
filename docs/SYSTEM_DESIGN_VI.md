@@ -1,8 +1,11 @@
 # Thiết kế hệ thống SpySWAT — Mở rộng Hiệu chỉnh, Kiểm định và Phân tích Độ nhạy
 
-**Phiên bản:** 1.0  
+**Phiên bản:** 1.0 (tài liệu thiết kế lịch sử — phản ánh ý định thiết kế ban đầu)  
 **Ngày:** 2026-06-10  
+**Phiên bản triển khai hiện tại:** v0.2.6 — xem [ARCHITECTURE.md](../ARCHITECTURE.md) để biết trạng thái hiện tại  
 **Phạm vi:** Thiết kế kiến trúc mở rộng cho module calibration, validation và sensitivity analysis  
+
+> **Lưu ý:** Đây là tài liệu thiết kế lịch sử được viết trước khi triển khai. Tất cả các khoảng cách (gaps) ở §2–§3 đã được giải quyết. Tập thuật toán hiện tại: GLUE, Parallel DE, DDS, PSO (v0.2.6). Xem [ARCHITECTURE.md](../ARCHITECTURE.md) và [README_VI.md](../README_VI.md) để biết API cập nhật.
 
 ---
 

@@ -61,7 +61,10 @@ class GLUE:
 
         Returns
         -------
-        dict with keys:
+        dict with keys (standard contract):
+            best_params         : dict  {name: [(val, method, [subs])]}
+            best_score          : float  highest metric value across all_results
+        dict with keys (GLUE-specific):
             all_results         : pd.DataFrame  (n_samples x params + metric)
             behavioral_results  : pd.DataFrame  (n_behavioral x params + metric)
             behavioral_ratio    : float
@@ -108,7 +111,15 @@ class GLUE:
             "(" + str(round(100 * n_behavioral / n_samples, 1)) + "%)"
         )
 
+        # ── best_params / best_score (standard contract) ──────────────
+        best_idx    = int(all_results[metric].idxmax())
+        best_raw    = {name: float(all_results.loc[best_idx, name]) for name in param_names}
+        best_params = self._manager._format_params(best_raw, methods, subbasins)
+        best_score  = float(all_results.loc[best_idx, metric])
+
         result = {
+            "best_params":        best_params,
+            "best_score":         best_score,
             "all_results":        results_df,
             "behavioral_results": behavioral_df,
             "behavioral_ratio":   n_behavioral / n_samples,

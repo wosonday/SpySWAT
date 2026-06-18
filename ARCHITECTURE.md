@@ -18,6 +18,7 @@ SpySWAT được tổ chức theo **3 tầng** tách biệt rõ ràng:
 │      │          │  calib.glue     │               │                  │
 │      │          │  calib.de       │               │                  │
 │      │          │  calib.dds      │               │                  │
+│      │          │  calib.pso      │               │                  │
 │      │          │  calib.analyze()│               │                  │
 │      │          └────────┬────────┘               │                  │
 └──────┼───────────────────┼────────────────────────┼──────────────────┘
@@ -123,7 +124,17 @@ SWATCalibration(project, analysis=None)
 │             param_methods, param_subbasins) → dict
 │         ├── best_params          dict
 │         ├── best_score           float
-│         └── history              DataFrame
+│         └── history              DataFrame (iteration, best_score)
+│
+├── .pso       → PSOCalibration(manager)
+│   └── .run(param_ranges, obs, n_particles, max_iterations,
+│             w_max, w_min, c1, c2, v_max_ratio, seed,
+│             metric, output_variable, reach_id,
+│             tol, patience, param_methods, param_subbasins) → dict
+│         ├── best_params          dict
+│         ├── best_score           float
+│         ├── history              DataFrame (iteration, best/mean/std score)
+│         └── all_evaluations      DataFrame
 │
 ├── .analyze(param_ranges, obs, n_samples, threshold, metric,
 │            sensitivity_method, seed,
@@ -320,6 +331,37 @@ Gen 1..max_generations:
 
 *(Storn & Price, 1997, Journal of Global Optimization)*
 
+### 3.6 PSO — Particle Swarm Optimization
+
+```
+Iter 0: khởi tạo swarm P (n_particles × D) ngẫu nhiên trong bounds
+        velocities V (n_particles × D) ngẫu nhiên trong [-v_max, v_max]
+     │
+     ▼
+Đánh giá toàn bộ P qua run_batch (song song)
+Ghi nhận pbest_i = P[i], gbest = argmax(scores)
+     │
+     ▼
+Iter 1..max_iterations:
+  w = w_max - (w_max - w_min) × t / max_iterations    # inertia decay
+  For each particle i:
+    V[i] = w × V[i]
+           + c1 × r1 × (pbest_i - P[i])   # cognitive
+           + c2 × r2 × (gbest  - P[i])    # social
+    V[i] = clip(V[i], -v_max, v_max)
+    P[i] = clip(P[i] + V[i], lower, upper)
+  │
+  ▼
+  Đánh giá toàn bộ P qua run_batch
+  Cập nhật pbest_i nếu score mới tốt hơn
+  Cập nhật gbest nếu có cá thể mới tốt hơn
+  │
+  ▼
+  Early stopping nếu |Δgbest| < tol trong "patience" iterations
+```
+
+*(Kennedy & Eberhart, 1995, ICNN; Shi & Eberhart, 1998, ICEC)*
+
 ---
 
 ## 4. Cấu trúc module
@@ -360,10 +402,11 @@ SpySWAT/
 │           ├── sensitivity.py         → SWATSensitivity
 │           │
 │           └── algorithms/
-│               ├── __init__.py        → export DDS, DDSCalibration, GLUE, ParallelDE
+│               ├── __init__.py        → export DDS, DDSCalibration, GLUE, ParallelDE, PSO, PSOCalibration
 │               ├── dds.py             → DDS (standalone) + DDSCalibration (wrapper)
 │               ├── glue.py            → GLUE (standalone)
-│               └── parallel_de.py     → ParallelDE (standalone)
+│               ├── parallel_de.py     → ParallelDE (standalone)
+│               └── pso.py             → PSO (standalone) + PSOCalibration (wrapper)
 │
 ├── tests/
 │   ├── test_calibration.py    (18 tests — facade + GLUE API)
@@ -397,10 +440,11 @@ calib.glue_analysis(...)       # delegate → bị xóa
 calib.parallel_de(...)         # delegate → bị xóa
 calib.dds_analysis(...)        # delegate → bị xóa
 
-# Mới (159 dòng, standalone classes)
+# Mới (standalone classes)
 calib.glue.run(...)            # GLUE class độc lập
 calib.de.run(...)              # ParallelDE class độc lập
 calib.dds.run(...)             # DDSCalibration class độc lập
+calib.pso.run(...)             # PSOCalibration class độc lập
 ```
 
 Lợi ích:
@@ -456,30 +500,33 @@ Old format `(min, max)` với > 2 phần tử sẽ raise `ValueError` thay vì i
 
 ## 6. Quy tắc mở rộng
 
-Thêm thuật toán mới (ví dụ: PSO):
+Thêm thuật toán mới (PSO đã có sẵn — xem `pso.py` làm mẫu):
 
 ```python
 # 1. Tạo file mới
-# spyswat/swat_calib/analysis/algorithms/pso.py
-class PSO:
+# spyswat/swat_calib/analysis/algorithms/myalgo.py
+class MyAlgoCalibration:
     def __init__(self, manager):
         self._manager = manager
 
     def run(self, param_ranges, observed_series, ...) -> dict:
-        # Dùng self._manager.run_batch() cho mỗi swarm evaluation
+        bounds, _m, _s = self._manager._parse_spec(param_ranges)
+        # Dùng self._manager.run_batch() để đánh giá song song
         ...
+        return {
+            "best_params": ...,   # bắt buộc
+            "best_score":  ...,   # bắt buộc
+            "history":     ...,   # bắt buộc (pd.DataFrame)
+        }
 
 # 2. Export từ __init__.py
-# algorithms/__init__.py
-from .pso import PSO
+from .myalgo import MyAlgoCalibration
 
 # 3. Đăng ký trong SWATCalibration
-# analysis/calibration.py
-self.pso = PSO(self.manager)
+self.myalgo = MyAlgoCalibration(self.manager)
 
 # 4. Viết test
-# tests/test_pso.py
-# mock manager.run_batch → test logic thuần
+# tests/test_myalgo.py → mock manager.run_batch → test logic thuần
 ```
 
 ---
@@ -490,6 +537,7 @@ self.pso = PSO(self.manager)
 |-----------|------|
 | Khám phá (nhiều sample, song song) | `calib.glue.run(n_samples=1000)` |
 | Tối ưu nhanh (budget nhỏ, <500) | `calib.dds.run(n_iterations=300)` |
+| Tối ưu quần thể (swarm, song song) | `calib.pso.run(n_particles=20, max_iterations=50)` |
 | Tối ưu chính xác (budget lớn) | `calib.de.run(pop_size=20, max_generations=40)` |
 | Bất định 95PPU | `calib.glue.uncertainty_band(behavioral_df, obs)` |
 | Quy trình đầy đủ 1 lần gọi | `calib.analyze(param_ranges, obs)` |
@@ -506,5 +554,7 @@ self.pso = PSO(self.manager)
 - Abbaspour, K.C. et al. (2007). Modelling hydrology and water quality in the pre-alpine/alpine Thur watershed using SWAT. *Journal of Hydrology*, 333, 554–570.
 - Tolson, B.A. & Shoemaker, C.A. (2007). Dynamically dimensioned search algorithm for computationally efficient watershed model calibration. *Water Resources Research*, 43(1), W01413.
 - Storn, R. & Price, K. (1997). Differential evolution — a simple and efficient heuristic for global optimization over continuous spaces. *Journal of Global Optimization*, 11(4), 341–359.
+- Kennedy, J. & Eberhart, R. (1995). Particle swarm optimization. *Proceedings of ICNN'95*, 4, 1942–1948.
+- Shi, Y. & Eberhart, R. (1998). A modified particle swarm optimizer. *Proceedings of IEEE ICEC*, 69–73.
 - Moriasi, D.N. et al. (2007). Model evaluation guidelines for systematic quantification of accuracy in watershed simulations. *Trans. ASABE*, 50(3), 885–900.
 - Helton, J.C. & Davis, F.J. (2003). Latin hypercube sampling and the propagation of uncertainty in analyses of complex systems. *Reliability Engineering & System Safety*, 81(1), 23–69.

@@ -1,8 +1,11 @@
 # SpySWAT System Design — Calibration, Validation & Sensitivity Analysis Extension
 
-**Version:** 1.0  
+**Version:** 1.0 (design record — reflects original design intent)  
 **Date:** 2026-06-10  
+**Current implementation:** v0.2.6 — see [ARCHITECTURE.md](../ARCHITECTURE.md) for current state  
 **Scope:** Architecture design for extending SpySWAT with automated calibration, validation, and parameter sensitivity analysis workflows  
+
+> **Note:** This is a historical design record written before implementation. All gaps in §2–§3 have been resolved. Current algorithm set: GLUE, Parallel DE, DDS, PSO (v0.2.6). For up-to-date API see [ARCHITECTURE.md](../ARCHITECTURE.md) and [README_EN.md](../README_EN.md).
 
 ---
 

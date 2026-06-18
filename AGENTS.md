@@ -43,7 +43,8 @@ spyswat/
     │   └── algorithms/
     │       ├── dds.py              ← DDS (standalone) + DDSCalibration
     │       ├── glue.py             ← GLUE + 95PPU
-    │       └── parallel_de.py      ← ParallelDE (Differential Evolution)
+    │       ├── parallel_de.py      ← ParallelDE (Differential Evolution)
+    │       └── pso.py              ← PSO (standalone) + PSOCalibration
     ├── run/
     │   └── swat_run.py             ← SWATRun: subprocess wrapper for SWAT exe
     ├── visualization/
@@ -60,7 +61,7 @@ spyswat/
 `CN2.mgt`, `ALPHA_BF.gw`, `ESCO.hru` — never bare `CN2`. This disambiguates parameters that appear in multiple file types.
 
 **2. No shared mutable state for methods/subbasins.**
-`CalibrationManager` does not store `_methods` or `_subbasins` as instance fields. They are always passed as local arguments through `run_iteration(..., methods=None, subbasins=None)` and `_format_params(raw, methods, subbasins)`. Algorithms (GLUE, DE, DDS) parse `param_ranges` at the start of `run()` and pass locals down.
+`CalibrationManager` does not store `_methods` or `_subbasins` as instance fields. They are always passed as local arguments through `run_iteration(..., methods=None, subbasins=None)` and `_format_params(raw, methods, subbasins)`. Algorithms (GLUE, DE, DDS, PSO) parse `param_ranges` at the start of `run()` and pass locals down.
 
 **3. param_ranges accepts a unified format (since v0.2.2).**
 ```python
@@ -111,11 +112,19 @@ calib.manager.setup_parallel(overwrite=True)
 result = calib.glue.run(param_ranges, obs, n_samples=500, threshold=0.5, seed=42)
 ```
 
+### Run PSO calibration
+```python
+result = calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50, seed=42)
+print(result["best_params"])   # {name: [(val, method, ...)]}
+print(result["best_score"])    # float
+print(result["history"])       # iteration, best_score, mean_score, std_score
+```
+
 ### Add a new calibration algorithm
-1. Create `spyswat/swat_calib/analysis/algorithms/myalgo.py` — class with `__init__(self, manager)` and `run(param_ranges, observed_series, ...) -> dict`
-2. Use `self._manager.run_batch()` for population-based evaluation
+1. Create `spyswat/swat_calib/analysis/algorithms/myalgo.py` — class with `__init__(self, manager)` and `run(param_ranges, observed_series, ...) -> dict` returning `{"best_params", "best_score", "history"}`
+2. Use `self._manager.run_batch()` for population-based parallel evaluation (see `pso.py` as template)
 3. Export from `algorithms/__init__.py`
-4. Register in `SWATCalibration.__init__` as `self.myalgo = MyAlgo(self.manager)`
+4. Register in `SWATCalibration.__init__` as `self.myalgo = MyAlgoCalibration(self.manager)`
 5. Add tests in `tests/test_myalgo.py` (mock `manager.run_batch`)
 
 ---

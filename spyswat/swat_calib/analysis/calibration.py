@@ -20,6 +20,7 @@ from spyswat.swat_calib.analysis.statistics import SWATAnalysis
 from spyswat.swat_calib.analysis.algorithms.glue import GLUE
 from spyswat.swat_calib.analysis.algorithms.parallel_de import ParallelDE
 from spyswat.swat_calib.analysis.algorithms.dds import DDSCalibration
+from spyswat.swat_calib.analysis.algorithms.pso import PSOCalibration
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class SWATCalibration:
         calib.glue.run(param_ranges, obs, n_samples=500, seed=42)
         calib.de.run(param_ranges, obs, pop_size=20, max_generations=40)
         calib.dds.run(param_ranges, obs, n_iterations=300, seed=42)
+        calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50)
 
     Orchestrated workflow:
         calib.analyze(param_ranges, obs)   # GLUE + sensitivity + performance
@@ -51,6 +53,7 @@ class SWATCalibration:
         self.glue = GLUE(self.manager, self.analysis)
         self.de   = ParallelDE(self.manager)
         self.dds  = DDSCalibration(self.manager)
+        self.pso  = PSOCalibration(self.manager)
 
         self.optimization_history = []
 
@@ -88,7 +91,12 @@ class SWATCalibration:
                 raw, observed_series, metric, reach_id, output_variable,
                 methods=methods, subbasins=subbasins
             )
-            self.optimization_history.append({"params": dict(zip(names, x)), "score": score})
+            step = len(self.optimization_history) + 1
+            self.optimization_history.append({
+                "step":  step,
+                **dict(zip(names, x)),
+                "score": score,
+            })
             return -score if metric in ("nse", "r2", "kge") else score
 
         if method == "differential_evolution":
@@ -100,11 +108,17 @@ class SWATCalibration:
         # so negate back to return the true score to the caller.
         _maximize_metrics = ("nse", "r2", "kge")
         best_value = -res.fun if metric in _maximize_metrics else res.fun
+        best_raw   = dict(zip(names, res.x))
         return {
-            "best_parameters":      dict(zip(names, res.x)),
+            # ── standard contract ─────────────────────────────────────
+            "best_params":  best_raw,
+            "best_score":   best_value,
+            "history":      pd.DataFrame(self.optimization_history),
+            # ── scipy-specific extras ─────────────────────────────────
+            "scipy_result": res,
+            # ── backward-compat aliases (deprecated) ─────────────────
+            "best_parameters":      best_raw,
             "best_objective_value": best_value,
-            "history":              self.optimization_history,
-            "scipy_result":         res,
         }
 
     # ── unified workflow ─────────────────────────────────────────────

@@ -5,6 +5,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.6] – 2026-06-18
+
+### Added
+
+#### `PSOCalibration` — Particle Swarm Optimization
+
+New calibration algorithm following the same standalone-class pattern as `ParallelDE` and `DDSCalibration`.
+
+**File:** `spyswat/swat_calib/analysis/algorithms/pso.py`
+
+Two classes:
+
+- **`PSO`** — standalone optimiser, takes an `objective: Callable[[dict], float]`, no SWAT dependency. Suitable for testing or custom objective functions.
+- **`PSOCalibration`** — backed by `CalibrationManager`, evaluates the **entire swarm in parallel** each iteration via `run_batch`. Same pattern as `ParallelDE`.
+
+Key algorithm parameters (all have sensible defaults):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_particles` | `max(10, 5*d)` | Swarm size |
+| `max_iterations` | `50` | Maximum iterations |
+| `w_max` / `w_min` | `0.9` / `0.4` | Inertia weight range (Shi & Eberhart 1998) |
+| `c1` / `c2` | `2.0` / `2.0` | Cognitive / social coefficients |
+| `v_max_ratio` | `0.2` | Max velocity as fraction of parameter range |
+| `tol` / `patience` | `1e-6` / `10` | Early-stop criteria |
+
+**Standard output contract (same as all other algorithms):**
+
+```python
+result = calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50, seed=42)
+result["best_params"]      # {name: [(val, method, ...)]}
+result["best_score"]       # float
+result["history"]          # DataFrame: iteration, best_score, mean_score, std_score
+result["all_evaluations"]  # DataFrame: all particle positions + score + iteration
+```
+
+**Registered in `SWATCalibration`:**
+
+```python
+calib = SWATCalibration(project)
+calib.pso   # → PSOCalibration(manager)
+calib.de    # → ParallelDE(manager)      (unchanged)
+calib.dds   # → DDSCalibration(manager)  (unchanged)
+calib.glue  # → GLUE(manager, analysis)  (unchanged)
+```
+
+**Exported from `algorithms/__init__.py`:** `PSO`, `PSOCalibration`
+
+**References:**
+- Kennedy, J. & Eberhart, R. (1995). Particle swarm optimization. *Proc. ICNN'95*, 4, 1942–1948.
+- Shi, Y. & Eberhart, R. (1998). A modified particle swarm optimizer. *Proc. IEEE ICEC*, 69–73.
+
+---
+
 ## [0.2.1] – 2026-06-11
 
 ### Breaking Change — Mandatory `name.ext` parameter key format

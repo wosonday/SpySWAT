@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.2.5-orange)]()
+[![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > English version: [README_EN.md](README_EN.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md)
@@ -36,7 +36,7 @@
 SpySWAT cung cấp:
 
 - Đọc/ghi trực tiếp file TxtInOut của SWAT (định dạng fixed-width)
-- Hiệu chỉnh tham số tự động: **GLUE**, **DDS**, **Parallel DE**
+- Hiệu chỉnh tham số tự động: **GLUE**, **DDS**, **Parallel DE**, **PSO**
 - Chạy song song nhiều bộ tham số qua `ProcessPoolExecutor`
 - Phân tích độ nhạy từ kết quả GLUE — **không tốn thêm lần chạy SWAT**
 - Đánh giá hiệu suất theo Moriasi et al. (2007)
@@ -147,7 +147,7 @@ print(result["performance"])
 
 ## Hiệu chỉnh
 
-Từ v0.2.1, các thuật toán được tách thành lớp độc lập, truy cập qua `calib.glue`, `calib.de`, `calib.dds`.
+Từ v0.2.1, các thuật toán được tách thành lớp độc lập, truy cập qua `calib.glue`, `calib.de`, `calib.dds`, `calib.pso`.
 
 ### GLUE — Monte Carlo song song
 
@@ -236,6 +236,46 @@ print(f"Best NSE: {result['best_score']:.4f}")
 print(result["history"])   # DataFrame: generation, best_score, mean_score
 ```
 
+### PSO — Particle Swarm Optimization
+
+Mỗi iteration đánh giá toàn bộ swarm song song qua `run_batch`. Trọng số inertia giảm tuyến tính `w_max → w_min` (Shi & Eberhart, 1998), tự cân bằng exploration / exploitation.
+
+```python
+result = calib.pso.run(
+    param_ranges    = param_ranges,
+    observed_series = obs,
+    n_particles     = 20,
+    max_iterations  = 50,
+    w_max           = 0.9,
+    w_min           = 0.4,
+    c1              = 2.0,
+    c2              = 2.0,
+    seed            = 42,
+    tol             = 1e-6,
+    patience        = 10,
+)
+print(f"Best NSE: {result['best_score']:.4f}")
+print(result["best_params"])
+print(result["history"])          # iteration, best_score, mean_score, std_score
+print(result["all_evaluations"])  # vị trí tất cả hạt qua từng iteration
+```
+
+Dùng `PSO` standalone (không cần SWAT):
+
+```python
+from spyswat.swat_calib.analysis.algorithms import PSO
+
+pso = PSO(
+    param_ranges   = param_ranges,
+    objective      = my_objective_fn,   # callable: dict → float
+    n_particles    = 20,
+    max_iterations = 100,
+    seed           = 42,
+    maximize       = True
+)
+result = pso.run()
+```
+
 ### Scipy DE / Nelder-Mead (sequential)
 
 ```python
@@ -271,6 +311,7 @@ param_ranges = {
 result = calib.glue.run(param_ranges, obs, n_samples=1000, seed=42)
 result = calib.de.run(param_ranges, obs, pop_size=20, max_generations=40)
 result = calib.dds.run(param_ranges, obs, n_iterations=300)
+result = calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50)
 result = calib.analyze(param_ranges, obs)
 ```
 
@@ -611,6 +652,9 @@ calib.de.run(param_ranges, obs, pop_size, max_generations, F, CR, strategy,
              param_methods, param_subbasins, ...) → dict
 calib.dds.run(param_ranges, obs, n_iterations, r, seed, metric,
               param_methods, param_subbasins, ...) → dict
+calib.pso.run(param_ranges, obs, n_particles, max_iterations, w_max, w_min,
+              c1, c2, v_max_ratio, seed, metric, tol, patience,
+              param_methods, param_subbasins, ...) → dict
 
 # Quy trình tổng hợp
 calib.analyze(param_ranges, obs, n_samples, threshold, metric,
@@ -634,7 +678,7 @@ calib.manager._align_series(obs, sim) → (obs_aligned, sim_aligned)
 ### Standalone Algorithms
 
 ```python
-from spyswat.swat_calib.analysis.algorithms import DDS, DDSCalibration, GLUE, ParallelDE
+from spyswat.swat_calib.analysis.algorithms import DDS, DDSCalibration, GLUE, ParallelDE, PSO, PSOCalibration
 
 # DDS thuần — không cần SWAT
 DDS(param_ranges, objective_fn, n_iterations=200, r=0.2, seed=None, maximize=True)
@@ -653,6 +697,15 @@ GLUE(manager, analysis=None)
 ParallelDE(manager)
   .run(param_ranges, obs, pop_size, max_generations, F, CR, strategy,
         param_methods, param_subbasins, ...) → dict
+
+# PSO thuần — không cần SWAT
+PSO(param_ranges, objective_fn, n_particles=None, max_iterations=100,
+    w_max=0.9, w_min=0.4, c1=2.0, c2=2.0, seed=None, maximize=True)
+  .run() → {"best_params", "best_score", "history"}
+
+# PSOCalibration — wrapper cho SWAT
+PSOCalibration(manager)
+  .run(param_ranges, obs, n_particles, max_iterations, ...) → dict
 ```
 
 ### FigViewer
@@ -683,7 +736,7 @@ SpySWAT/
 │       │               ValidationRunner
 │       └── analysis/   SWATAnalysis (statistics), SWATCalibration (facade),
 │                       SWATSensitivity
-│                       └── algorithms/  dds.py, glue.py, parallel_de.py
+│                       └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
 ├── tests/              73 tests (pytest)
 ├── ARCHITECTURE.md     Kiến trúc chi tiết + sơ đồ kết nối
 └── pyproject.toml
@@ -706,5 +759,7 @@ pytest tests/ -v
 - Abbaspour, K.C. et al. (2007). Modelling hydrology and water quality. *Journal of Hydrology*, 333, 554–570.
 - Tolson, B.A. & Shoemaker, C.A. (2007). Dynamically dimensioned search algorithm for computationally efficient watershed model calibration. *Water Resources Research*, 43(1), W01413.
 - Storn, R. & Price, K. (1997). Differential evolution — a simple and efficient heuristic for global optimization. *Journal of Global Optimization*, 11(4), 341–359.
+- Kennedy, J. & Eberhart, R. (1995). Particle swarm optimization. *Proc. ICNN'95*, 4, 1942–1948.
+- Shi, Y. & Eberhart, R. (1998). A modified particle swarm optimizer. *Proc. IEEE ICEC*, 69–73.
 - Moriasi, D.N. et al. (2007). Model evaluation guidelines for systematic quantification of accuracy in watershed simulations. *Trans. ASABE*, 50(3), 885–900.
 - Helton, J.C. & Davis, F.J. (2003). Latin hypercube sampling and the propagation of uncertainty in analyses of complex systems. *Reliability Engineering & System Safety*, 81(1), 23–69.

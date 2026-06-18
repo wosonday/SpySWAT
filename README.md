@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.2.5-orange)]()
+[![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
@@ -36,7 +36,7 @@
 SpySWAT provides:
 
 - Direct read/write of SWAT TxtInOut files (fixed-width format)
-- Automated calibration: **GLUE** (parallel Monte Carlo), **DDS**, **Parallel DE**
+- Automated calibration: **GLUE** (parallel Monte Carlo), **DDS**, **Parallel DE**, **PSO**
 - Uncertainty quantification: 95PPU band, p-factor, r-factor
 - Sensitivity analysis from GLUE results — **zero extra SWAT runs**
 - Performance evaluation following Moriasi et al. (2007)
@@ -162,7 +162,7 @@ What happens inside `analyze()`:
 
 ## Calibration
 
-From v0.2.1, algorithms are standalone classes accessed via `calib.glue`, `calib.de`, `calib.dds`.
+From v0.2.1, algorithms are standalone classes accessed via `calib.glue`, `calib.de`, `calib.dds`, `calib.pso`.
 
 ### GLUE — Parallel Monte Carlo
 
@@ -257,6 +257,46 @@ print(f"Best NSE: {result['best_score']:.4f}")
 print(result["history"])    # generation, best_score, mean_score, std_score
 ```
 
+### PSO — Particle Swarm Optimization
+
+Evaluates the entire swarm in parallel via `run_batch` each iteration. Inertia weight decays linearly from `w_max` to `w_min` (Shi & Eberhart, 1998), balancing exploration and exploitation automatically.
+
+```python
+result = calib.pso.run(
+    param_ranges    = param_ranges,
+    observed_series = obs,
+    n_particles     = 20,
+    max_iterations  = 50,
+    w_max           = 0.9,
+    w_min           = 0.4,
+    c1              = 2.0,
+    c2              = 2.0,
+    seed            = 42,
+    tol             = 1e-6,
+    patience        = 10,
+)
+print(f"Best NSE: {result['best_score']:.4f}")
+print(result["best_params"])
+print(result["history"])         # iteration, best_score, mean_score, std_score
+print(result["all_evaluations"]) # every particle position across all iterations
+```
+
+Standalone PSO (no SWAT dependency):
+
+```python
+from spyswat.swat_calib.analysis.algorithms import PSO
+
+pso = PSO(
+    param_ranges   = param_ranges,
+    objective      = my_objective_fn,   # callable: dict → float
+    n_particles    = 20,
+    max_iterations = 100,
+    seed           = 42,
+    maximize       = True
+)
+result = pso.run()
+```
+
 ### Scipy DE / Nelder-Mead (sequential)
 
 ```python
@@ -292,6 +332,7 @@ param_ranges = {
 result = calib.glue.run(param_ranges, obs, n_samples=1000, seed=42)
 result = calib.de.run(param_ranges, obs, pop_size=20, max_generations=40)
 result = calib.dds.run(param_ranges, obs, n_iterations=300)
+result = calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50)
 result = calib.analyze(param_ranges, obs)
 ```
 
@@ -646,6 +687,7 @@ calib = SWATCalibration(project)
 calib.glue    → GLUE(manager, analysis)
 calib.de      → ParallelDE(manager)
 calib.dds     → DDSCalibration(manager)
+calib.pso     → PSOCalibration(manager)
 calib.manager → CalibrationManager
 
 # Algorithm methods  (param_ranges accepts unified format since v0.2.2)
@@ -656,6 +698,9 @@ calib.de.run(param_ranges, obs, pop_size, max_generations, F, CR,
              strategy, seed, tol, patience, param_methods, param_subbasins) → dict
 calib.dds.run(param_ranges, obs, n_iterations, r, seed, metric,
               output_variable, reach_id, maximize, param_methods, param_subbasins) → dict
+calib.pso.run(param_ranges, obs, n_particles, max_iterations, w_max, w_min,
+              c1, c2, v_max_ratio, seed, metric, output_variable, reach_id,
+              tol, patience, param_methods, param_subbasins) → dict
 
 # Orchestrated workflows
 calib.analyze(param_ranges, obs, n_samples, threshold, metric,
@@ -667,7 +712,7 @@ calib.optimize(param_ranges, obs, method, metric, max_iter,
 ### Standalone Algorithm Classes
 
 ```python
-from spyswat.swat_calib.analysis.algorithms import DDS, DDSCalibration, GLUE, ParallelDE
+from spyswat.swat_calib.analysis.algorithms import DDS, DDSCalibration, GLUE, ParallelDE, PSO, PSOCalibration
 
 DDS(param_ranges, objective, n_iterations=200, r=0.2, seed=None, maximize=True)
   .run() → {"best_params", "best_score", "history"}
@@ -680,6 +725,13 @@ GLUE(manager, analysis=None)
   .uncertainty_band(behavioral_df, obs, ...) → dict
 
 ParallelDE(manager)
+  .run(param_ranges, obs, ...) → dict
+
+PSO(param_ranges, objective, n_particles=None, max_iterations=100,
+    w_max=0.9, w_min=0.4, c1=2.0, c2=2.0, seed=None, maximize=True)
+  .run() → {"best_params", "best_score", "history"}
+
+PSOCalibration(manager)
   .run(param_ranges, obs, ...) → dict
 ```
 
@@ -726,7 +778,7 @@ SpySWAT/
 │       ├── io/         SWATParam, readers, writers, mapping_file, FileCIO
 │       ├── calibration/ CalibrationManager, ValidationRunner
 │       └── analysis/   SWATAnalysis, SWATCalibration (facade), SWATSensitivity
-│                       └── algorithms/  dds.py, glue.py, parallel_de.py
+│                       └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
 ├── tests/              73 tests (pytest)
 ├── ARCHITECTURE.md     Architecture + connection diagrams
 └── pyproject.toml
@@ -740,9 +792,11 @@ SpySWAT/
 - Abbaspour, K.C. et al. (2007). Modelling hydrology and water quality. *Journal of Hydrology*, 333, 554–570.
 - Tolson, B.A. & Shoemaker, C.A. (2007). Dynamically dimensioned search. *Water Resources Research*, 43(1), W01413.
 - Storn, R. & Price, K. (1997). Differential evolution. *Journal of Global Optimization*, 11(4), 341–359.
+- Kennedy, J. & Eberhart, R. (1995). Particle swarm optimization. *Proc. ICNN'95*, 4, 1942–1948.
+- Shi, Y. & Eberhart, R. (1998). A modified particle swarm optimizer. *Proc. IEEE ICEC*, 69–73.
 - Moriasi, D.N. et al. (2007). Model evaluation guidelines. *Trans. ASABE*, 50(3), 885–900.
 - Helton, J.C. & Davis, F.J. (2003). Latin hypercube sampling. *Reliability Engineering & System Safety*, 81(1), 23–69.
 
 ---
 
-*SpySWAT v0.2.5 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md)*
+*SpySWAT v0.2.6 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md)*
