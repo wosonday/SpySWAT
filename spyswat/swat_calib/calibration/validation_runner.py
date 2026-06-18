@@ -29,7 +29,8 @@ class ValidationRunner:
         self.period       = period
 
     def run(self, metric='nse', method='differential_evolution',
-            max_iter=100, reach_id=1) -> dict:
+            max_iter=100, reach_id=1,
+            output_variable: str = 'FLOW_OUTcms') -> dict:
         """
         Returns:
             best_parameters, calibration: {metric: score}, validation: {all metrics}
@@ -37,7 +38,7 @@ class ValidationRunner:
         # 1. Hieu chinh (calibration period)
         obs_calib = self.observed.loc[self.period.calib_start:self.period.calib_end]
         best_params, calib_score = self._calibrate(
-            obs_calib, metric, method, max_iter, reach_id
+            obs_calib, metric, method, max_iter, reach_id, output_variable
         )
 
         # 2. Ap dung best params va chay SWAT
@@ -45,8 +46,8 @@ class ValidationRunner:
         self.project.run()
 
         sim = self.project.Output.read_rch(
-            columns=['RCH', 'MON', 'FLOW_OUTcms'], reach_id=reach_id
-        )['FLOW_OUTcms']
+            columns=['RCH', 'MON', output_variable], reach_id=reach_id
+        )[output_variable]
         sim.index = self.project.get_date_range()
 
         # 3. Kiem dinh (validation period)
@@ -62,12 +63,13 @@ class ValidationRunner:
             'validation':      valid_stats,
         }
 
-    def _calibrate(self, obs_calib, metric, method, max_iter, reach_id):
+    def _calibrate(self, obs_calib, metric, method, max_iter, reach_id, output_variable):
         from spyswat.swat_calib.analysis.calibration import SWATCalibration
         calib = SWATCalibration(self.project)
         result = calib.optimize(
             self.param_ranges, obs_calib,
             method=method, metric=metric,
-            max_iter=max_iter, reach_id=reach_id
+            max_iter=max_iter, reach_id=reach_id,
+            output_variable=output_variable
         )
         return result['best_parameters'], result['best_objective_value']

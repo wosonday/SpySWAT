@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.2.1-orange)]()
+[![Version](https://img.shields.io/badge/version-0.2.5-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
@@ -412,7 +412,7 @@ runner = ValidationRunner(
         valid_end   = "2015-12-31"
     )
 )
-r = runner.run(metric="nse")
+r = runner.run(metric="nse", output_variable="FLOW_OUTcms")
 print("Calib NSE:", r["calibration"]["nse"])
 print("Valid NSE:", r["validation"]["nse"])
 ```
@@ -688,12 +688,16 @@ ParallelDE(manager)
 ```
 CalibrationManager(project)
   .setup_parallel(overwrite=False)
-  .run_iteration(param_dict, obs, metric, reach_id, output_variable) → float
+  .run_iteration(param_dict, obs, metric, reach_id, output_variable,
+                 methods=None, subbasins=None) → float
       param_dict: {name: float}  (raw)  OR  {name: [(val, method, ...)]}  (formatted)
-  .run_batch(param_sets, observed, metrics, reach_id, output_variable) → DataFrame
+  .run_batch(param_sets, observed, metrics, reach_id, output_variable,
+             methods=None, subbasins=None) → DataFrame
       param_sets: list of raw or formatted dicts — both accepted
   ._parse_spec(param_ranges) → (bounds, methods, subbasins)  [staticmethod]
-  ._format_params(raw_dict) → formatted_dict
+      Raises ValueError if old-format tuple has > 2 elements
+  ._format_params(raw_dict, methods=None, subbasins=None) → formatted_dict
+  ._align_series(obs, sim) → (obs_aligned, sim_aligned)
 ```
 
 ### FigViewer
@@ -741,4 +745,4 @@ SpySWAT/
 
 ---
 
-*SpySWAT v0.2.1 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md)*
+*SpySWAT v0.2.5 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md)*

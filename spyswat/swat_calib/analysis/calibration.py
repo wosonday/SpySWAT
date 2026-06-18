@@ -74,9 +74,10 @@ class SWATCalibration:
             param_subbasins: Optional[Dict[str, list]] = None,
     ) -> Dict:
         """Single-threaded scipy optimisation (DE or Nelder-Mead/SLSQP)."""
+        self.optimization_history = []
         bounds_dict, _m, _s = CalibrationManager._parse_spec(param_ranges)
-        self.manager._methods   = {**_m, **(param_methods   or {})}
-        self.manager._subbasins = {**_s, **(param_subbasins or {})}
+        methods   = {**_m, **(param_methods   or {})}
+        subbasins = {**_s, **(param_subbasins or {})}
 
         names  = list(bounds_dict.keys())
         bounds = [bounds_dict[n] for n in names]
@@ -84,7 +85,8 @@ class SWATCalibration:
         def objective(x):
             raw   = dict(zip(names, x))
             score = self.manager.run_iteration(
-                raw, observed_series, metric, reach_id, output_variable
+                raw, observed_series, metric, reach_id, output_variable,
+                methods=methods, subbasins=subbasins
             )
             self.optimization_history.append({"params": dict(zip(names, x)), "score": score})
             return -score if metric in ("nse", "r2", "kge") else score
@@ -94,9 +96,13 @@ class SWATCalibration:
         else:
             res = minimize(objective, [(b[0] + b[1]) / 2 for b in bounds], bounds=bounds)
 
+        # scipy always minimises; for maximize metrics the objective was negated,
+        # so negate back to return the true score to the caller.
+        _maximize_metrics = ("nse", "r2", "kge")
+        best_value = -res.fun if metric in _maximize_metrics else res.fun
         return {
             "best_parameters":      dict(zip(names, res.x)),
-            "best_objective_value": -res.fun,
+            "best_objective_value": best_value,
             "history":              self.optimization_history,
             "scipy_result":         res,
         }
@@ -123,6 +129,10 @@ class SWATCalibration:
 
         param_ranges supports unified format — see class docstring.
         """
+        _, _m, _s  = CalibrationManager._parse_spec(param_ranges)
+        methods    = {**_m, **(param_methods   or {})}
+        subbasins  = {**_s, **(param_subbasins or {})}
+
         glue_result = self.glue.run(
             param_ranges    = param_ranges,
             observed_series = observed_series,
@@ -137,11 +147,10 @@ class SWATCalibration:
         )
         all_results = glue_result["all_results"]
 
-        # best_params: raw float dict -> format via manager (methods/subbasins already set by glue.run)
         best_row    = all_results.loc[all_results[metric].idxmax()]
         bounds_dict = glue_result["parameter_ranges"]
         best_raw    = {name: float(best_row[name]) for name in bounds_dict}
-        best_params = self.manager._format_params(best_raw)
+        best_params = self.manager._format_params(best_raw, methods, subbasins)
         best_score  = float(best_row[metric])
 
         sensitivity = self.analysis.sensitivity_from_results(
@@ -150,18 +159,13 @@ class SWATCalibration:
             method=sensitivity_method,
         )
 
-        self.manager.run_iteration(best_raw, observed_series, metric, reach_id, output_variable)
+        self.manager.run_iteration(best_raw, observed_series, metric, reach_id, output_variable,
+                                   methods=methods, subbasins=subbasins)
         sim = self.project.Output.read_rch(
             columns=["RCH", "MON", output_variable], reach_id=reach_id
         )[output_variable]
-        date_range = self.project.get_date_range(freq="D")
-        sim = sim.reset_index(drop=True)
-        if len(sim) == len(date_range):
-            sim.index = date_range
-        common      = observed_series.index.intersection(sim.index)
-        performance = self.analysis.evaluate_performance(
-            observed_series.loc[common], sim.loc[common]
-        )
+        obs_aligned, sim_aligned = self.manager._align_series(observed_series, sim)
+        performance = self.analysis.evaluate_performance(obs_aligned, sim_aligned)
 
         return {
             "best_params":        best_params,

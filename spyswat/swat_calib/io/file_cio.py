@@ -102,13 +102,36 @@ class FileCIO(ReadFileLine):
         IDAL = yr_end[4:]
         return int(IYR[:4]), int(NBYR), int(IDAL)
 
+    # ── Public IPRINT API ────────────────────────────────────────────
+
+    _FREQ_TO_IPRINT = {'D': 1, 'MS': 0, 'M': 0, 'YS': 2}
+    _IPRINT_TO_FREQ = {1: 'D', 0: 'MS', 2: 'YS'}
+
+    def get_iprint(self) -> str:
+        """Return current output frequency as freq string ('D', 'MS', 'YS')."""
+        iprint = int(self.lines[58][12:16].strip())
+        return self._IPRINT_TO_FREQ.get(iprint, 'D')
+
+    def set_iprint(self, freq: str) -> None:
+        """
+        Set IPRINT in file.cio and save — does NOT touch NBYR/IYR/IDAL.
+
+        Parameters
+        ----------
+        freq : 'D'  → daily output   (IPRINT=1)
+               'MS' → monthly output  (IPRINT=0)
+               'M'  → alias for 'MS'
+               'YS' → annual output   (IPRINT=2)
+        """
+        iprint = self._FREQ_TO_IPRINT.get(freq)
+        if iprint is None:
+            raise ValueError(f"Unsupported freq '{freq}'. Use 'D', 'MS', or 'YS'.")
+        self.__set_frequency_of_sim(freq)
+        self._write_file()
+
+    # ── Private helpers ───────────────────────────────────────────────
+
     def __set_frequency_of_sim(self, freq: str = 'D'):
         line = self.lines[58]
-        if freq == 'D':
-            self.lines[58] = line[:12] + f'{1:4d}' + line[16:]
-        elif freq == 'MS':
-            self.lines[58] = line[:12] + f'{0:4d}' + line[16:]
-        elif freq == 'YS':
-            self.lines[58] = line[:12] + f'{2:4d}' + line[16:]
-
-        return None
+        iprint = self._FREQ_TO_IPRINT.get(freq, 1)
+        self.lines[58] = line[:12] + f'{iprint:4d}' + line[16:]

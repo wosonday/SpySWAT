@@ -11,7 +11,6 @@ from spyswat.swat_calib.core import TxInOut, HRUManager
 from spyswat.swat_calib.io import SWATParam
 from spyswat.logger import Logger
 
-Logger.init(log_dir="logs", log_file="run.log")
 logger = Logger.get_logger(__name__)
 
 
@@ -68,18 +67,28 @@ class WorkingFolderManager:
     # ------------------------------------------------------------------
 
     def run_parallel(self, swat_exe: Union[str, Path],
-                           param_sets: Optional[List[dict]] = None) -> List[Path]:
+                           param_sets: Optional[List[dict]] = None,
+                           log_queue=None) -> List[Path]:
         """
-        Chạy SWAT song song trên các worker directories.
-        param_sets có thể ít hơn n_parallel (chỉ chạy len(param_sets) workers).
+        Run SWAT in parallel across worker directories.
+
+        param_sets may be smaller than n_parallel (only len(param_sets) workers are used).
+
+        Args:
+            swat_exe:   Path to the SWAT executable.
+            param_sets: List of formatted param dicts, one per worker.
+            log_queue:  multiprocessing.Queue from Logger.init_queue_listener().
+                        When provided, worker processes route their log records
+                        through this queue instead of writing directly to the
+                        log file (prevents concurrent write corruption).
         """
         if not self._worker_dirs:
-            raise RuntimeError("Chưa gọi setup(). Hãy gọi setup() trước.")
+            raise RuntimeError("Worker dirs not initialised. Call setup() first.")
 
         if param_sets and len(param_sets) > len(self._worker_dirs):
             raise ValueError(
-                f"param_sets ({len(param_sets)}) vượt quá n_parallel ({self.n_parallel}). "
-                f"Dùng run_batch() để xử lý tự động."
+                f"param_sets ({len(param_sets)}) exceeds n_parallel ({self.n_parallel}). "
+                f"Use run_batch() to handle chunking automatically."
             )
 
         n = len(param_sets) if param_sets else len(self._worker_dirs)
@@ -97,7 +106,7 @@ class WorkingFolderManager:
             future_to_info = {
                 executor.submit(
                     self._run_single_timed,
-                    worker_dir, str(swat_exe), params, param_path_str
+                    worker_dir, str(swat_exe), params, param_path_str, log_queue
                 ): worker_dir
                 for worker_dir, params in tasks
             }
@@ -124,8 +133,27 @@ class WorkingFolderManager:
     @staticmethod
     def _run_single_timed(worker_dir: Path, swat_exe: str,
                           params: Optional[dict],
-                          param_path: Optional[str] = None) -> float:
-        """Ghi tham số (nếu có), chạy SWAT, trả về thời gian thực thi (giây)."""
+                          param_path: Optional[str] = None,
+                          log_queue=None) -> float:
+        """
+        Write parameters (if any), run SWAT, return wall-clock execution time (seconds).
+
+        Args:
+            worker_dir: Path to this worker's TxtInOut copy.
+            swat_exe:   Path string to SWAT executable.
+            params:     Formatted param dict or None.
+            param_path: Path string to the parameter definition file.
+            log_queue:  multiprocessing.Queue from Logger.init_queue_listener().
+                        When provided, all logging in this subprocess is routed
+                        through the queue to the main process's QueueListener,
+                        preventing concurrent file writes from multiple workers.
+                        When None, workers fall back to default logging (no file output).
+        """
+        # ── redirect worker logging through the shared queue ──────────
+        if log_queue is not None:
+            from spyswat.logger import Logger
+            Logger.init_worker(log_queue)
+
         t0 = time.perf_counter()
         if params:
             txinout = TxInOut(str(worker_dir))

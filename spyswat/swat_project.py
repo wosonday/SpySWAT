@@ -6,6 +6,7 @@ from spyswat.swat_calib.core import TxInOut, OutputFileManager, HRUManager, Work
 from spyswat.swat_calib.io import SWATParam, FileCIO
 from spyswat.swat_calib.run import SWATRun
 from spyswat.swat_calib.analysis import SWATAnalysis
+from spyswat.logger import Logger
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,8 @@ logger = logging.getLogger(__name__)
 class SWATProject:
     """
         >>> project = SWATProject(
-        ...     project_dir="D:/SWAT/my_project",
+        ...     txinout_dir="D:/SWAT/my_project/TxtInOut",
+        ...     working_dir="D:/SWAT/my_project/working",
         ...     swat_exe="D:/SWAT/swat2012.exe"
         ... )
         >>> project.HRU.update_params({'CN2.mgt': [(75, 'v')]})
@@ -43,7 +45,7 @@ class SWATProject:
 
 
         # ============= Statistic ======================
-        self._statistic     = SWATAnalysis(self.txinout)
+        self._statistic     = SWATAnalysis(self)
 
         self._wf_manager = WorkingFolderManager(
             txinout      = self.txinout,
@@ -53,6 +55,10 @@ class SWATProject:
         )
         #============================================
 
+        # Initialise logging once for the main process.
+        # Workers bypass this via Logger.init_worker(queue) in run_parallel.
+        Logger.init(log_dir="logs", log_file="run.log")
+
         logger.info(f"SWAT Project initialized: {self.txinout}")
         logger.info(f"Found {self.txinout.number_hru} HRUs in {self.txinout.number_sub} subbasins")
 
@@ -60,10 +66,10 @@ class SWATProject:
     def worker(self, index: int) -> "SWATProject":
         worker_dirs = self._wf_manager.worker_dirs
         if not worker_dirs:
-            raise RuntimeError("Chưa gọi setup(). Hãy gọi setup() trước.")
+            raise RuntimeError("Worker dirs not initialised. Call setup() first.")
         if index < 1 or index > len(worker_dirs):
-            raise IndexError(f"Worker index {index} không hợp lệ. "
-                             f"Có {len(worker_dirs)} workers (1..{len(worker_dirs)}).")
+            raise IndexError(f"Worker index {index} out of range. "
+                             f"{len(worker_dirs)} workers available (1..{len(worker_dirs)}).")
 
         target_dir = worker_dirs[index - 1]  # TxInOut1 → index 0
         return SWATProject(
@@ -89,10 +95,6 @@ class SWATProject:
         print("=" * 20)
         print(f"SWAT Executable: {self.swat_exe}")
         self.txinout.info()
-
-    def __working_folder(self):
-        return self.working_folder
-
 
     def __repr__(self):
         return (f"SWATProject '{self.txinout.directory}')', "

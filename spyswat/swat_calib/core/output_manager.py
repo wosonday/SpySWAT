@@ -56,7 +56,7 @@ class OutputFileManager:
         if isinstance(reach_id, int):
             reach_id = [reach_id]
         if columns is not None:
-            columns = _SED_DEFAULT_COLS + [c for c in columns if c not in _SUB_DEFAULT_COLS]
+            columns = _SED_DEFAULT_COLS + [c for c in columns if c not in _SED_DEFAULT_COLS]
         df = self._get_reader('.sub').read(columns)
         if reach_id is not None:
             df = df[df['RCH'].isin(reach_id)]

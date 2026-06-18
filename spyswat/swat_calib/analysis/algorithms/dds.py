@@ -243,13 +243,14 @@ class DDSCalibration:
         """
         # Parse unified spec; explicit kwargs override spec values
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
-        self._manager._methods   = {**_m, **(param_methods   or {})}
-        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+        methods   = {**_m, **(param_methods   or {})}
+        subbasins = {**_s, **(param_subbasins or {})}
 
         # DDS passes {name: float}; manager.run_iteration auto-formats it
         def objective(params: dict) -> float:
             return self._manager.run_iteration(
-                params, observed_series, metric, reach_id, output_variable
+                params, observed_series, metric, reach_id, output_variable,
+                methods=methods, subbasins=subbasins
             )
 
         dds = DDS(

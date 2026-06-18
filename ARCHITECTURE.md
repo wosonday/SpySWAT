@@ -1,6 +1,6 @@
 # SpySWAT — Kiến trúc và Hướng dẫn Kỹ thuật
 
-> Phiên bản: 0.2.1 | Cập nhật: 2026-06-11
+> Phiên bản: 0.2.5 | Cập nhật: 2026-06-18
 
 ---
 
@@ -92,23 +92,26 @@ SWATCalibration(project, analysis=None)
 │
 ├── .manager   → CalibrationManager(project)
 │   ├── .setup_parallel(overwrite)
-│   ├── .run_iteration(param_dict, obs, metric, reach_id, output_var) → float
-│   └── .run_batch(param_sets, observed, metrics, reach_id, ...)      → DataFrame
+│   ├── .run_iteration(param_dict, obs, metric, reach_id, output_var,
+│   │                  methods=None, subbasins=None) → float
+│   └── .run_batch(param_sets, observed, metrics, reach_id, output_var,
+│                  methods=None, subbasins=None)      → DataFrame
 │
 ├── .glue      → GLUE(manager, analysis)
 │   ├── .run(param_ranges, obs, n_samples, threshold, metric, seed,
-│   │         compute_uncertainty, param_methods) → dict
+│   │         compute_uncertainty, param_methods, param_subbasins) → dict
 │   │     ├── all_results          DataFrame (n_samples × params+metric)
 │   │     ├── behavioral_results   DataFrame (subset ≥ threshold)
 │   │     └── behavioral_ratio     float
-│   └── .uncertainty_band(behavioral_df, obs, metric, param_methods) → dict
+│   └── .uncertainty_band(behavioral_df, obs, metric) → dict
 │         ├── uncertainty_band     DataFrame (lower, upper, obs)
 │         ├── p_factor             float (≥ 0.70 → tốt)
 │         └── r_factor             float (≤ 1.50 → tốt)
 │
 ├── .de        → ParallelDE(manager)
 │   └── .run(param_ranges, obs, pop_size, max_generations, F, CR,
-│             strategy, seed, tol, patience, param_methods) → dict
+│             strategy, seed, tol, patience,
+│             param_methods, param_subbasins) → dict
 │         ├── best_params          dict
 │         ├── best_score           float
 │         ├── history              DataFrame (generation, best/mean/std score)
@@ -116,20 +119,23 @@ SWATCalibration(project, analysis=None)
 │
 ├── .dds       → DDSCalibration(manager)
 │   └── .run(param_ranges, obs, n_iterations, r, seed,
-│             metric, output_variable, reach_id, maximize) → dict
+│             metric, output_variable, reach_id, maximize,
+│             param_methods, param_subbasins) → dict
 │         ├── best_params          dict
 │         ├── best_score           float
 │         └── history              DataFrame
 │
 ├── .analyze(param_ranges, obs, n_samples, threshold, metric,
-│            sensitivity_method, seed, param_methods) → dict
+│            sensitivity_method, seed,
+│            param_methods, param_subbasins) → dict
 │   [GLUE → best params → sensitivity → performance]
 │   ├── best_params, best_score
 │   ├── all_results, behavioral_results, behavioral_ratio
 │   ├── sensitivity              DataFrame
 │   └── performance              dict
 │
-└── .optimize(param_ranges, obs, method, metric, max_iter) → dict
+└── .optimize(param_ranges, obs, method, metric, max_iter,
+              param_methods, param_subbasins) → dict
     [scipy DE / minimize — single-threaded]
     ├── best_parameters
     ├── best_objective_value
@@ -142,21 +148,43 @@ SWATCalibration(project, analysis=None)
 ```
 CalibrationManager(project)
 │
-├── run_iteration(param_dict, obs, metric, reach_id, output_var)
-│   │
-│   ├── 1. project.HRU.update_params(param_dict)
-│   ├── 2. project.run()
-│   ├── 3. project.Output.read_rch(...)
-│   └── 4. calculate NSE/KGE/R² → return float
+├── _parse_spec(param_ranges)  [staticmethod]
+│     Parse unified format → (bounds_dict, methods_dict, subbasins_dict)
+│     Formats: (min, max) | ((min,max), method) | ((min,max), method, [subs])
+│     Raises ValueError nếu old-format có > 2 phần tử
 │
-└── run_batch(param_sets, observed, metrics, reach_id, output_var)
+├── _format_params(raw_dict, methods=None, subbasins=None)
+│     {name: float} → {name: [(val, method, [subs])]}
+│     methods/subbasins là dict local — không có shared state
+│
+├── _align_series(obs, sim)
+│     pd.infer_freq(obs.index) → 'MS' hoặc 'D'
+│     Gán DatetimeIndex cho sim, lấy giao với obs
+│
+├── _backup_state() / _restore_state()
+│     Tạo tmp dir → copytree TxtInOut vào backup
+│     Nếu backup tồn tại → restore trước khi tạo mới (không leak)
+│
+├── run_iteration(param_dict, obs, metric, reach_id, output_var,
+│                methods=None, subbasins=None)
+│   │
+│   ├── 1. _backup_state()
+│   ├── 2. _format_params(param_dict, methods, subbasins)
+│   ├── 3. project.HRU.update_params(formatted)
+│   ├── 4. project.run()
+│   ├── 5. project.Output.read_rch(...)
+│   ├── 6. _align_series(obs, sim)
+│   ├── 7. calculate metric → return float
+│   └── 8. finally: _restore_state()  (luôn khôi phục)
+│
+└── run_batch(param_sets, observed, metrics, reach_id, output_var,
+              methods=None, subbasins=None)
     │
-    ├── WorkingFolderManager.setup_parallel (nếu chưa có)
     └── ProcessPoolExecutor(n_parallel)
-          worker_1: copy TxtInOut → update → run SWAT → read output
-          worker_2: copy TxtInOut → update → run SWAT → read output
+          worker_1: formatted_p1 → SWAT → _align_series → metrics
+          worker_2: formatted_p2 → SWAT → _align_series → metrics
           ...
-          worker_N: copy TxtInOut → update → run SWAT → read output
+          worker_N: formatted_pN → SWAT → _align_series → metrics
           → DataFrame(metrics)
 ```
 
@@ -393,6 +421,36 @@ Tầng User (GLUE, DE, DDS) không biết gì về xử lý song song — chúng
 ### 5.4 Sensitivity không tốn thêm lần chạy SWAT
 
 `sensitivity_from_results()` dùng Spearman/PRCC trực tiếp trên DataFrame kết quả GLUE — không cần chạy thêm lần nào. Đây là cách tiếp cận tiêu chuẩn trong hiệu chỉnh Bayesian (Beven & Binley, 1992).
+
+### 5.5 Không có shared mutable state (v0.2.5)
+
+Trước v0.2.5, `CalibrationManager.__init__` lưu `self._methods` và `self._subbasins` — gây race condition khi `run_batch` chạy song song nhiều thuật toán cùng lúc.
+
+Từ v0.2.5: `methods` và `subbasins` là tham số cục bộ, truyền qua call chain `run_iteration → _format_params`. Không còn shared state; các thuật toán standalone (GLUE, DE, DDS) tự parse `param_ranges` và truyền locals xuống manager.
+
+```python
+# ❌ Cũ — shared state, race condition
+self.manager._methods  = methods
+self.manager._subbasins = subbasins
+
+# ✅ Mới — local args
+score = self.manager.run_iteration(..., methods=methods, subbasins=subbasins)
+```
+
+### 5.6 Backup/restore an toàn (v0.2.5)
+
+`_backup_state()` kiểm tra nếu backup đang tồn tại thì gọi `_restore_state()` trước — tránh leak temp dir khi `run_iteration` bị gọi lại mà chưa restore. `_restore_state()` luôn được gọi trong `finally` để đảm bảo TxtInOut về trạng thái gốc dù có exception.
+
+### 5.7 Strict validation trong _parse_spec (v0.2.5)
+
+Old format `(min, max)` với > 2 phần tử sẽ raise `ValueError` thay vì im lặng bỏ qua phần tử thừa. Điều này phát hiện sớm lỗi dùng nhầm format:
+
+```python
+# Raises ValueError rõ ràng
+{"CN2.mgt": (35, 98, "r")}
+# → ValueError: old format (min, max) accepts exactly 2 values, got 3.
+#   Use new format: ((min, max), method, subbasins).
+```
 
 ---
 

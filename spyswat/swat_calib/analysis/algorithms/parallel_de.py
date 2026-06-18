@@ -117,8 +117,8 @@ class ParallelDE:
 
         # Parse unified spec; explicit kwargs override spec values
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
-        self._manager._methods   = {**_m, **(param_methods   or {})}
-        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+        methods   = {**_m, **(param_methods   or {})}
+        subbasins = {**_s, **(param_subbasins or {})}
 
         names  = list(bounds.keys())
         d      = len(names)
@@ -128,9 +128,10 @@ class ParallelDE:
         rng    = np.random.default_rng(seed)
 
         def to_param_sets(population: np.ndarray) -> List[Dict]:
-            # Pass raw {name: float} — manager formats on the fly in run_batch
+            # Pre-format so callers/mocks of run_batch always see {name: [(val, method, ...)]}
             return [
-                {names[j]: float(row[j]) for j in range(d)}
+                self._manager._format_params({names[j]: float(row[j]) for j in range(d)},
+                                             methods, subbasins)
                 for row in population
             ]
 

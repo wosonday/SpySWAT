@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.2.1-orange)]()
+[![Version](https://img.shields.io/badge/version-0.2.5-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > English version: [README_EN.md](README_EN.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md)
@@ -389,7 +389,7 @@ runner = ValidationRunner(
         valid_end   = "2015-12-31"
     )
 )
-r = runner.run(metric="nse")
+r = runner.run(metric="nse", output_variable="FLOW_OUTcms")
 print("Calib NSE:", r["calibration"]["nse"])
 print("Valid NSE:", r["validation"]["nse"])
 ```
@@ -620,11 +620,15 @@ calib.optimize(param_ranges, obs, method, metric, max_iter,
 
 # Hạ tầng
 calib.manager                          # CalibrationManager
-calib.manager.run_iteration(param_dict, obs, metric, ...)
+calib.manager.run_iteration(param_dict, obs, metric,
+                            methods=None, subbasins=None, ...)
     param_dict: {name: float}  (raw)  HOẶC  {name: [(val, method, ...)]}  (formatted)
-calib.manager.run_batch(param_sets, obs, metrics, ...)
+calib.manager.run_batch(param_sets, obs, metrics,
+                        methods=None, subbasins=None, ...)
 calib.manager._parse_spec(param_ranges) → (bounds, methods, subbasins)
-calib.manager._format_params(raw_dict) → formatted_dict
+    Raises ValueError nếu old-format tuple có > 2 phần tử
+calib.manager._format_params(raw_dict, methods=None, subbasins=None) → formatted_dict
+calib.manager._align_series(obs, sim) → (obs_aligned, sim_aligned)
 ```
 
 ### Standalone Algorithms

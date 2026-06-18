@@ -117,8 +117,8 @@ class HRUWriter(ReadFileLine):
             return float(line[start:end].strip())
         except ValueError:
             logger.warning(
-                f"Không thể parse giá trị tại [{start}:{end}] "
-                f"trong dòng: {line!r}. Trả về 0.0."
+                f"Cannot parse value at [{start}:{end}] "
+                f"in line: {line!r}. Returning 0.0."
             )
             return 0.0
 
@@ -128,7 +128,7 @@ class HRUWriter(ReadFileLine):
             col_end = col_start + self.SOL_FIELD_WIDTH
             return float(line[col_start:col_end].strip())
         except (ValueError, IndexError) as e:
-            logger.warning(f"Không thể parse SOL layer {layer}: {e}. Trả về 0.0.")
+            logger.warning(f"Cannot parse SOL layer {layer}: {e}. Returning 0.0.")
             return 0.0
 
     def __count_layers(self, line: str) -> int:
@@ -137,5 +137,5 @@ class HRUWriter(ReadFileLine):
             n = len(data_part) // self.SOL_FIELD_WIDTH
             return max(n, 0)
         except Exception:
-            logger.warning(f"Không đếm được layer trong dòng: {line!r}")
+            logger.warning(f"Could not count SOL layers in line: {line!r}")
             return 0

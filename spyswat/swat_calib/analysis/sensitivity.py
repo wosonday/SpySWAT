@@ -109,7 +109,8 @@ class SWATSensitivity:
             observed_series: Optional[pd.Series] = None,
             output_variable: str = 'FLOW_OUTcms',
             reach_id: int = 1,
-            metric: str = 'nse'
+            metric: str = 'nse',
+            seed: Optional[int] = None,
     ) -> Dict:
         """
         Morris sensitivity analysis (Elementary Effects).
@@ -117,7 +118,7 @@ class SWATSensitivity:
         """
         param_names = list(param_ranges.keys())
         trajectories = self._generate_morris_trajectories(
-            param_ranges, n_trajectories, n_levels
+            param_ranges, n_trajectories, n_levels, seed=seed
         )
 
         # Flatten tất cả trajectory steps → chạy parallel
@@ -194,17 +195,19 @@ class SWATSensitivity:
             self,
             param_ranges: Dict,
             n_trajectories: int,
-            n_levels: int
+            n_levels: int,
+            seed: Optional[int] = None,
     ) -> List[List[Dict]]:
         """Sinh Morris sampling trajectories."""
         param_names = list(param_ranges.keys())
         n_params = len(param_names)
         delta = n_levels / (2 * (n_levels - 1))
         trajectories = []
+        rng = np.random.default_rng(seed)
 
         for _ in range(n_trajectories):
-            base = np.random.choice(n_levels, n_params) / (n_levels - 1)
-            param_order = np.random.permutation(param_names)
+            base = rng.choice(n_levels, n_params) / (n_levels - 1)
+            param_order = rng.permutation(param_names)
             trajectory = []
             current = base.copy()
 
@@ -300,7 +303,7 @@ class SWATSensitivity:
             from SALib.analyze import morris as morris_analyze
         except ImportError:
             raise ImportError(
-                "SALib chưa được cài. Chạy: pip install SALib"
+                "SALib is not installed. Run: pip install SALib"
             )
 
         problem = self._build_problem(param_ranges)
@@ -401,7 +404,7 @@ class SWATSensitivity:
             from SALib.analyze import sobol as sobol_analyze
         except ImportError:
             raise ImportError(
-                "SALib chưa được cài. Chạy: pip install SALib"
+                "SALib is not installed. Run: pip install SALib"
             )
 
         problem = self._build_problem(param_ranges)
@@ -481,7 +484,7 @@ class SWATSensitivity:
         try:
             import matplotlib.pyplot as plt
         except ImportError:
-            raise ImportError("matplotlib chưa được cài. Chạy: pip install matplotlib")
+            raise ImportError("matplotlib is not installed. Run: pip install matplotlib")
 
         df = results_morris.copy()
         has_ci = 'ci_95' in df.columns

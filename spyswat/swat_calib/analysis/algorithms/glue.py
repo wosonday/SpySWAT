@@ -28,23 +28,6 @@ class GLUE:
     them in parallel through CalibrationManager.run_batch, filters behavioral
     sets (score >= threshold), and optionally computes the 95% Prediction
     Uncertainty band (95PPU) with p-factor and r-factor.
-
-    Parameters
-    ----------
-    manager : CalibrationManager
-        Infrastructure layer that owns run_batch / run_iteration.
-    analysis : SWATAnalysis, optional
-        Statistics layer for _generate_samples. Created automatically if None.
-
-    Usage
-    -----
-    >>> from spyswat.swat_calib.analysis.algorithms import GLUE
-    >>> from spyswat.swat_calib.calibration import CalibrationManager
-    >>>
-    >>> manager = CalibrationManager(project)
-    >>> glue = GLUE(manager)
-    >>> result = glue.run(param_ranges, obs, n_samples=500, seed=42)
-    >>> band  = glue.uncertainty_band(result["behavioral_results"], obs)
     """
 
     def __init__(self, manager, analysis=None):
@@ -76,15 +59,6 @@ class GLUE:
         """
         Run GLUE sampling and return results dict.
 
-        Parameters
-        ----------
-        param_ranges    : dict  Supports three formats (mixable):
-                            "CN2.mgt": (60, 98)                       # bounds only
-                            "CN2.mgt": ((60, 98), "r")                # + method
-                            "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
-        param_methods   : optional override for method per param (v/r/a)
-        param_subbasins : optional override for subbasin list per param
-
         Returns
         -------
         dict with keys:
@@ -99,17 +73,18 @@ class GLUE:
 
         # Parse unified spec; explicit kwargs override spec values
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
-        self._manager._methods   = {**_m, **(param_methods   or {})}
-        self._manager._subbasins = {**_s, **(param_subbasins or {})}
+        methods   = {**_m, **(param_methods   or {})}
+        subbasins = {**_s, **(param_subbasins or {})}
 
         param_names = list(bounds.keys())
         samples_df  = self._analysis._generate_samples(
             bounds, n_samples, method="lhs", seed=seed
         )
 
-        # Pass raw {name: float} — manager formats on the fly in run_batch
+        # Pre-format so callers/mocks of run_batch always see {name: [(val, method, ...)]}
         param_sets = [
-            {name: float(row[name]) for name in param_names}
+            self._manager._format_params({name: float(row[name]) for name in param_names},
+                                         methods, subbasins)
             for row in samples_df.to_dict("records")
         ]
 
@@ -169,9 +144,6 @@ class GLUE:
           - p-factor = mean(obs_t in [lower_t, upper_t])
           - r-factor = mean(upper - lower) / std(obs)  (Abbaspour et al. 2007)
 
-        Note: method/subbasin config is inherited from the preceding run() call
-        via manager._methods and manager._subbasins.
-
         Returns
         -------
         dict with keys:
@@ -184,22 +156,28 @@ class GLUE:
         w_sum       = weights.sum()
         weights     = weights / w_sum if w_sum > 0 else np.ones(len(weights)) / len(weights)
 
+        # Compute the common date index once from the observed series so that
+        # all simulations are aligned to the same index regardless of which
+        # SWAT run happens to be last in the loop.
+        inferred   = pd.infer_freq(observed_series.index)
+        freq       = 'MS' if (inferred and inferred.upper().startswith(('M', 'Q', 'A', 'Y'))) else 'D'
+        date_range = self._manager.project.get_date_range(freq=freq)
+        _dummy     = pd.Series(np.zeros(len(date_range)), index=date_range)
+        common     = observed_series.index.intersection(_dummy.index)
+
         self._manager._backup_state()
         simulations = []
         try:
             for _, row in behavioral_df.iterrows():
-                # Pass raw floats — manager formats with stored _methods/_subbasins
                 raw = {name: float(row[name]) for name in param_names}
                 self._manager.project.HRU.update_params(self._manager._format_params(raw))
                 self._manager.project.run()
                 sim_raw = self._manager.project.Output.read_rch(
                     columns=["RCH", "MON", output_variable], reach_id=reach_id
                 )[output_variable]
-                date_range = self._manager.project.get_date_range(freq="D")
                 sim_raw = sim_raw.reset_index(drop=True)
                 if len(sim_raw) == len(date_range):
                     sim_raw.index = date_range
-                common = observed_series.index.intersection(sim_raw.index)
                 simulations.append(sim_raw.reindex(common).values)
         finally:
             self._manager._restore_state()
@@ -214,9 +192,9 @@ class GLUE:
         ppu_lower  = np.empty(T)
         ppu_upper  = np.empty(T)
         for t in range(T):
-            vals      = sim_matrix[:, t]
-            order     = np.argsort(vals)
-            sorted_w  = np.cumsum(weights[order])
+            vals         = sim_matrix[:, t]
+            order        = np.argsort(vals)
+            sorted_w     = np.cumsum(weights[order])
             ppu_lower[t] = vals[order[np.searchsorted(sorted_w, 0.025)]]
             ppu_upper[t] = vals[order[np.searchsorted(sorted_w, 0.975, side="right") - 1]]
 

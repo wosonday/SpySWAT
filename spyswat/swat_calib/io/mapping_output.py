@@ -10,13 +10,12 @@ from typing import List, Optional, Union, Dict
 
 logger = Logger.get_logger(__name__)
 
-# Fortran drops 'E' when exponent has 3+ digits: '0.2746-139' → '0.2746E-139'
+# Fortran drops 'E' when exponent has 3+ digits: '0.2746-139' -> '0.2746E-139'
 _RE_MISSING_E = re.compile(r'([0-9])([+-]\d{2,})$')
 
 def _fix_fortran_exp(vals: list) -> list:
     """Normalize Fortran fixed-width numbers with missing exponent 'E'."""
     return [_RE_MISSING_E.sub(r'\1E\2', v) if v else v for v in vals]
-
 
 
 class SWATReaderCache:
@@ -63,7 +62,6 @@ class OutputFileReader:
         self.file_type = self.filepath.suffix
         self.skip_header = self.DEFAULT_SKIP_HEADER.get(self.file_type)
 
-
         self._cache = cache or SWATReaderCache()
         self._cache_key = str(self.filepath.resolve())
 
@@ -78,7 +76,7 @@ class OutputFileReader:
         rows = len(self.data) if self.data is not None else 0
         return f"SWATFileReader(type='{self.file_type}', rows={rows}, status='{status}')"
 
-    def read(self, columns: Optional[List[str]| str | None] = None) -> pd.DataFrame:
+    def read(self, columns: Optional[List[str] | str | None] = None) -> pd.DataFrame:
         # full cache
         if columns is None:
             cached = self._cache.get(self._cache_key)
@@ -89,7 +87,7 @@ class OutputFileReader:
             return df.copy()
 
         # column-subset cache
-        col_key = f"{self._cache_key}::{','.join(sorted(columns))}"
+        col_key = f"{self._cache_key}::{ ','.join(sorted(columns))}"
         cached = self._cache.get(col_key)
         if cached is not None:
             return cached
@@ -99,37 +97,37 @@ class OutputFileReader:
 
     def __read_all(self) -> pd.DataFrame:
         cols = self.mapping_class.get_column_names()
-        print(cols)
+        logger.debug("Columns: %s", cols)
         result = ReadFileLine._read_file(
             self.filepath,
-            colspecs    =self.mapping_class.get_all_colspecs(),
-            skiprows    =self.skip_header, #type: ignore
-            )
+            colspecs=self.mapping_class.get_all_colspecs(),
+            skiprows=self.skip_header,  # type: ignore
+        )
         result = {k: _fix_fortran_exp(v) for k, v in result.items()}
         arr = np.array(list(result.values())).T
         self.data = pd.DataFrame(arr, columns=cols, dtype=np.float32)
-        print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")
+        logger.debug("Read %s: %d rows from %s",
+                     self.file_type.upper(), len(self.data), self.filepath.name)
         return self.data
 
-    def __read_by_col(self, columns: Optional[List[str]| str]) -> pd.DataFrame:
+    def __read_by_col(self, columns: Optional[List[str] | str]) -> pd.DataFrame:
         colspecs = []
         names = []
         for c in columns:
             info = self.mapping_class.get_column_info(c)
-
             if info is None:
-                raise logger.exception(f"Column not in mapping: {c}")
+                raise ValueError(f"Column not in mapping: {c}")
             colspecs.append(info["colspec"])
             names.append(c)
 
         result = ReadFileLine._read_file(
             self.filepath,
-            colspecs    =colspecs,
-            skiprows    =self.skip_header, #type: ignore
-            )
+            colspecs=colspecs,
+            skiprows=self.skip_header,  # type: ignore
+        )
         result = {k: _fix_fortran_exp(v) for k, v in result.items()}
         arr = np.array(list(result.values())).T
         self.data = pd.DataFrame(arr, columns=names, dtype=np.float32)
-        print(f"Read {self.file_type.upper()}: {len(self.data)} rows from {self.filepath.name}")
+        logger.debug("Read %s: %d rows from %s",
+                     self.file_type.upper(), len(self.data), self.filepath.name)
         return self.data
-
