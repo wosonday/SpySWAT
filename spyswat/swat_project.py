@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 
+
 class SWATProject:
     """
         >>> project = SWATProject(
@@ -153,4 +154,3 @@ class SWATProject:
             output_path  = out,
             open_browser = open_browser,
         )
-

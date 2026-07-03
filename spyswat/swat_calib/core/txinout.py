@@ -5,7 +5,6 @@ from spyswat.logger import Logger
 from pathlib import Path
 
 
-Logger.init(log_dir="logs", log_file="run.log", level="WARNING")
 logger = Logger.get_logger(__name__)
 
 

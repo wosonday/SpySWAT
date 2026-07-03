@@ -39,6 +39,12 @@ class FileCIO(ReadFileLine):
 
         return pd.date_range(start=start, end=end, freq=freq)
 
+    def set_year_skip(self, num_skip: int=2):
+        if num_skip < 0:
+            raise ValueError("num_skip must be >= 0")
+        self.__replace_value(59, 12, 16, num_skip)
+        self._write_file()
+        self.__update_metadata()
 
     def update(self, freq: str = 'D'):
         IYR, NBYR, IDAL = self.__get_year_pcp()

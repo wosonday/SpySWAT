@@ -54,7 +54,8 @@ from pathlib import Path
 class Logger:
     _initialized: bool = False
     _listener: "logging.handlers.QueueListener | None" = None
-    _log_queue = None   # multiprocessing.Queue, typed as Any to avoid import at module level
+    _log_queue = None   # multiprocessing.Manager().Queue() proxy — picklable, safe for ProcessPoolExecutor
+    _manager  = None    # multiprocessing.SyncManager — must be kept alive while queue is in use
 
     # ──────────────────────────────────────────────────────────────────
     # 1. Main-process initialisation
@@ -167,7 +168,12 @@ class Logger:
         worker_console.setLevel(level)
         worker_console.setFormatter(formatter)
 
-        cls._log_queue = multiprocessing.Queue(-1)
+        # Manager().Queue() returns a proxy object that is picklable and can be
+        # passed to ProcessPoolExecutor workers via submit() on Windows (spawn).
+        # Plain multiprocessing.Queue is NOT picklable and fails with:
+        #   "Queue objects should only be shared between processes through inheritance"
+        cls._manager  = multiprocessing.Manager()
+        cls._log_queue = cls._manager.Queue(-1)
         cls._listener = logging.handlers.QueueListener(
             cls._log_queue,
             worker_file,
@@ -226,6 +232,9 @@ class Logger:
             cls._listener.stop()
             cls._listener = None
             cls._log_queue = None
+        if cls._manager is not None:
+            cls._manager.shutdown()
+            cls._manager = None
 
     # ──────────────────────────────────────────────────────────────────
     # 3. Logger factory

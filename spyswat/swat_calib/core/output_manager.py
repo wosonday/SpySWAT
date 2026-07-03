@@ -5,7 +5,6 @@ from pandas import DataFrame
 from ..io.mapping_output import OutputFileReader ,SWATReaderCache
 from .txinout import TxInOut
 
-Logger.init(log_dir="logs", log_file="run.log", level="WARNING")
 logger = Logger.get_logger(__name__)
 
 

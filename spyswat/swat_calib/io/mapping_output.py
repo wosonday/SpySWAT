@@ -14,8 +14,16 @@ logger = Logger.get_logger(__name__)
 _RE_MISSING_E = re.compile(r'([0-9])([+-]\d{2,})$')
 
 def _fix_fortran_exp(vals: list) -> list:
-    """Normalize Fortran fixed-width numbers with missing exponent 'E'."""
-    return [_RE_MISSING_E.sub(r'\1E\2', v) if v else v for v in vals]
+    """Normalize Fortran fixed-width numbers with missing exponent 'E'.
+    Empty or whitespace-only strings are replaced with NaN.
+    """
+    out = []
+    for v in vals:
+        if not v or not v.strip():
+            out.append(np.nan)
+        else:
+            out.append(_RE_MISSING_E.sub(r'\1E\2', v))
+    return out
 
 
 class SWATReaderCache:

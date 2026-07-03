@@ -7,7 +7,6 @@ from spyswat.swat_calib.io.writers import HRUWriter
 from spyswat.logger import Logger
 import pandas as pd
 
-Logger.init(log_dir="logs", log_file="run.log", level="WARNING")
 logger = Logger.get_logger(__name__)
 
 
@@ -66,7 +65,7 @@ class HRUManager:
                 raw_sub = group[2] if len(group) > 2 else subbasin
                 subbasin_filter = None if (raw_sub is None or raw_sub == "All") else raw_sub
 
-                logger.info(
+                logger.debug(
                     f"[Pass {pass_idx + 1}] Param: {param_name} | Method: {method} "
                     f"| Value: {value} | Sub: {subbasin_filter or 'All'}"
                 )
