@@ -16,7 +16,21 @@ class HRUManager:
         self.swat_param = swat_param
 
     def read_multi_hru_param_values(self, param: list, hru_name: bool = True,
-                                    subbasin=None) -> pd.DataFrame:
+                                    subbasin=None, attrs=None) -> pd.DataFrame:
+        """
+        Read HRU parameter values from TxtInOut.
+
+        Each param is located by the file/line/column position in swatParam.txt
+        (same DATAParameter coordinates used by HRUWriter), so read and write stay
+        symmetric.
+
+        Args:
+            param:    list of 'name.ext' keys, e.g. ['CN2.mgt', 'ALPHA_BF.gw'].
+            hru_name: True -> prepend the 'hru' column (file stem); False -> params only.
+            subbasin: optional subbasin filter (int or list of int); None = all.
+            attrs:    optional HRU header attributes to join, e.g.
+                      ['Subbasin', 'Luse', 'Soil', 'Slope'].
+        """
         param_by_ext = self.swat_param.get_params(param)
         data = defaultdict(dict)
 
@@ -30,6 +44,12 @@ class HRUManager:
         df = (pd.DataFrame.from_dict(data, orient='index')
                 .reindex(columns=param)
                 .sort_index())
+
+        if attrs:
+            info = pd.DataFrame(self.txinout.hru_info).set_index('name')
+            keep = [a for a in attrs if a in info.columns]
+            df = df.join(info[keep])
+            df = df[keep + [c for c in df.columns if c not in keep]]
 
         if hru_name:
             df.insert(0, 'hru', df.index)
