@@ -15,25 +15,42 @@ class HRUManager:
         self.txinout = txinout
         self.swat_param = swat_param
 
-    def read_muti_hru_param_values(self, param: list):
-        param_ = self.swat_param.get_params(param)
-        records = []
-        for ext, param_dict in param_.items():
-            if ext == '.bsn':
-                hrs = [self.txinout.get_watershed_file(ext)]
-            else:
-                hrs = self.txinout.get_hru_file(ext)
-            for hru in hrs:
-                reader = HRURead(hru)
-                row = {"hru": hru.stem}
-                for name in param_dict:
+    def read_multi_hru_param_values(self, param: list, hru_name: bool = True,
+                                    subbasin=None) -> pd.DataFrame:
+        param_by_ext = self.swat_param.get_params(param)
+        data = defaultdict(dict)
+
+        for ext, names in param_by_ext.items():
+            for hru_file in self._resolve_files(ext, subbasin):
+                reader = HRURead(hru_file)
+                for name in names:
                     p = self.swat_param.get(name)
-                    val = reader.get_value(p)
-                    row[name] = float(val)
-                records.append(row)
-        df = pd.DataFrame(records)
-        df_merged = df.sort_values(by="hru").groupby("hru").first().reset_index()
-        return df_merged
+                    data[hru_file.stem][name] = self._safe_float(reader.get_value(p))
+
+        df = (pd.DataFrame.from_dict(data, orient='index')
+                .reindex(columns=param)
+                .sort_index())
+
+        if hru_name:
+            df.insert(0, 'hru', df.index)
+        return df.reset_index(drop=True)
+
+    def _resolve_files(self, ext: str, subbasin_filter=None):
+        """Resolve the TxtInOut files that hold parameters of a given extension."""
+        ext = ext if ext.startswith('.') else f".{ext}"
+        if ext == '.bsn':
+            return [self.txinout.get_watershed_file(ext)]
+        if subbasin_filter is None:
+            return self.txinout.get_hru_file(ext)
+        subs = subbasin_filter if isinstance(subbasin_filter, list) else [subbasin_filter]
+        return [f for s in subs for f in self.txinout.get_hru_file(ext, s)]
+
+    @staticmethod
+    def _safe_float(raw):
+        try:
+            return float(str(raw).strip())
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _validate_param_keys(param: dict):
@@ -109,18 +126,10 @@ class HRUManager:
             logger.warning(f"Param '{pname}' not found. Skipping.")
             return {}
 
-        ext = par_info.ext if par_info.ext.startswith('.') else f".{par_info.ext}"
-
-        if ext == '.bsn':
-            hru_files = [self.txinout.get_watershed_file(ext)]
-        elif subbasin_filter is None:
-            hru_files = self.txinout.get_hru_file(ext)
-        else:
-            sub_list = subbasin_filter if isinstance(subbasin_filter, list) else [subbasin_filter]
-            hru_files = [f for s in sub_list for f in self.txinout.get_hru_file(ext, s)]
+        hru_files = self._resolve_files(par_info.ext, subbasin_filter)
 
         if not hru_files:
-            logger.warning(f"No files found for ext '{ext}'. Skipping.")
+            logger.warning(f"No files found for param '{pname}'. Skipping.")
             return {}
 
         return {hru_file: (par_info, val, mth) for hru_file in hru_files}
