@@ -12,6 +12,7 @@ _SUB_DEFAULT_COLS = ['SUB', 'MON']
 _RCH_DEFAULT_COLS = ['RCH', 'MON']
 _SED_DEFAULT_COLS = ['RCH', 'MON']
 _HRU_DEFAULT_COLS = ['HRU', 'SUB', 'MON']
+_WATOUT_DEFAULT_COLS = ['YEAR', 'DAY', 'STEP', 'FLOW_OUTcms']
 
 class OutputFileManager:
 
@@ -90,8 +91,9 @@ class OutputFileManager:
     def read_watout(self, columns: Optional[str | list] = None) -> DataFrame:
         if isinstance(columns, str):
             columns = [columns]
+        if columns is not None:
+            columns = _WATOUT_DEFAULT_COLS + [c for c in columns if c not in _WATOUT_DEFAULT_COLS]
         return self._get_reader('.dat').read(columns)
-
 
     def __repr__(self):
         cached = list(self._cache.keys()) if self._cache else []

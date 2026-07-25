@@ -369,7 +369,7 @@ class WatoutMapping(SWATColumnMapping):
                     "unit": "-",   "category": "time"},
         "STEP":    {"colspec": (12, 17), "dtype": "int",   "description": "Step of simulated",
                     "unit": "-",   "category": "identifier"},
-        "FLOW":    {"colspec": (18, 28), "dtype": "int",   "description": "Stream outlet flow",
+        "FLOW_OUTcms":    {"colspec": (18, 28), "dtype": "int",   "description": "Stream outlet flow",
                     "unit": "-",   "category": "identifier"}
         }
     @classmethod
