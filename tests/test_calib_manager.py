@@ -47,6 +47,7 @@ class StubWorker:
 class StubProject:
     def __init__(self, base, param, work, n_parallel=2, iprint="D", dates=DATES):
         self.txinout = TxInOut(str(base))
+        self.working_folder = Path(work)
         self.param_file = SWATParam(str(param))
         self.HRU = HRUManager(self.txinout, self.param_file)
         self.WorkingFolder = WorkingFolderManager(self.txinout, work, n_parallel, param)
@@ -330,21 +331,156 @@ def test_run_error_and_restore_error_are_both_reported(proj, obs, monkeypatch):
 
 # ── ValidationRunner ─────────────────────────────────────────────────
 
-def test_validation_runner_leaves_inputs_unchanged(proj, obs, monkeypatch):
-    seen = []
-
+def _validation_setup(proj, monkeypatch, obs):
     def run_impl(p):
-        seen.append(read_cn2(str(p.txinout.directory)))
         _run_writes_rch(p)
-
     base, before = _setup_iteration(proj, run_impl)
     monkeypatch.setattr(ValidationRunner, "_calibrate",
                         lambda self, *a: ({"CN2.mgt": 0.1}, 0.5))
     period = PeriodConfig("2000-01-01", "2000-01-05", "2000-01-06", "2000-01-10")
-    runner = ValidationRunner(proj, {"CN2.mgt": ((-0.2, 0.2), "r")}, obs, period)
-    out = runner.run()
-    out2 = runner.run()
-    assert seen == [pytest.approx(38.5), pytest.approx(38.5)]
-    assert out["validation"]["nse"] == pytest.approx(3.0) and out2 == out
+    runner = ValidationRunner(proj, {"CN2.mgt": ((-0.2, 0.2), "r", [1, 2])}, obs, period)
+    return base, before, runner
+
+
+def _all_cn2(base):
+    return [float(f.read_text().splitlines()[10][:16]) for f in sorted(base.glob("0*.mgt"))]
+
+
+def test_validation_runner_keeps_best_params_by_default_and_saves_results(
+        proj, obs, monkeypatch, caplog):
+    base, before, runner = _validation_setup(proj, monkeypatch, obs)
+    with caplog.at_level("WARNING"):
+        out = runner.run()
+    assert _all_cn2(base) == pytest.approx([38.5, 38.5, 38.5])    # calibrated values stay
+    assert any("CALIBRATED" in r.message for r in caplog.records)
+    assert (base / "output.rch").read_text().startswith("3.0")
+    assert out["validation"]["nse"] == pytest.approx(3.0)
+
+    bp = pd.read_csv(runner.manager.session_path("best_params"))
+    assert list(bp.columns) == ["name", "value", "method", "subbasins"]
+    assert bp.iloc[0].tolist() == ["CN2.mgt", 0.1, "r", "1;2"]
+    val = pd.read_csv(runner.manager.session_path("validation"))
+    assert list(val.columns) == ["period", "metric", "value"]
+    assert val.iloc[0].tolist() == ["calibration", "nse", 0.5]
+    assert val.iloc[1].tolist() == ["validation", "nse", 3.0]
+    runs = pd.read_csv(runner.manager.session_files["metrics"])
+    assert len(runs) == 1 and runs.loc[0, "status"] == "ok"
+    assert len(pd.read_csv(runner.manager.session_files["outputs"])) == 10
+
+
+def test_validation_runner_restore_true_gives_original_inputs(proj, obs, monkeypatch):
+    base, before, runner = _validation_setup(proj, monkeypatch, obs)
+    runner.run(restore=True)
     assert snapshot(base) == before
     assert (base / "output.rch").read_text().startswith("3.0")
+    assert runner.manager.session_path("best_params").exists()   # saved before the restore
+
+
+# ── per-run result log ───────────────────────────────────────────────
+
+def _metrics(mgr):
+    return pd.read_csv(mgr.session_files["metrics"])
+
+
+def _outputs(mgr):
+    return pd.read_csv(mgr.session_files["outputs"])
+
+
+def _iter(mgr, obs, cn2=0.1):
+    return mgr.run_iteration({"CN2.mgt": cn2}, obs, metric="nse", methods={"CN2.mgt": "r"})
+
+
+def test_sequential_runs_append_one_row_each(proj, obs):
+    _setup_iteration(proj, _run_writes_rch)
+    mgr = CalibrationManager(proj)
+    assert mgr.results_dir == proj.working_folder / "calibration_results"
+    _iter(mgr, obs, 0.1)
+    assert _metrics(mgr).shape[0] == 1                 # already on disk before the next run
+    _iter(mgr, obs, 0.2)
+    m = _metrics(mgr)
+    assert m["run_id"].tolist() == [1, 2]
+    assert set(m["mode"]) == {"sequential"} and set(m["status"]) == {"ok"}
+    assert m["CN2.mgt"].tolist() == [0.1, 0.2] and set(m["CN2.mgt__method"]) == {"r"}
+    assert m["nse"].tolist() == [3.0, 3.0]
+    assert m.loc[0, "reach_id"] == 1 and m.loc[0, "output_variable"] == "FLOW_OUTcms"
+    o = _outputs(mgr)
+    assert len(o) == 20 and set(o["run_id"]) == {1, 2}
+    assert list(o.columns) == ["run_id", "date", "variable", "reach", "value"]
+    assert o.loc[0, "date"] == "2000-01-01" and o.loc[0, "value"] == 3.0
+    assert set(mgr.session_files) == {"metrics", "outputs"}
+
+
+def test_parallel_runs_log_failed_job_without_output_rows(proj, obs):
+    mgr = CalibrationManager(proj)
+    df = mgr.run_batch([_v(50.0), _v(FAIL_CN2), _v(60.0)], obs, metrics=METRICS)
+    m = _metrics(mgr)
+    assert m["run_id"].tolist() == [1, 2, 3] and set(m["mode"]) == {"parallel"}
+    assert m["status"].tolist() == ["ok", "failed", "ok"]
+    assert "boom" in m.loc[1, "error"]
+    assert m.loc[1, METRICS].isna().all() and m.loc[0, "nse"] == 50.0
+    assert m["CN2.mgt"].tolist() == [50.0, FAIL_CN2, 60.0]
+    assert set(_outputs(mgr)["run_id"]) == {1, 3}
+    assert df["nse"].isna().tolist() == [False, True, False]   # scores/order unchanged
+
+
+def test_log_survives_exception_in_later_run(proj, obs):
+    base, _ = _setup_iteration(proj, _run_writes_rch)
+    mgr = CalibrationManager(proj)
+    _iter(mgr, obs)
+
+    def boom(p):
+        raise OSError("swat crashed")
+    proj.run_impl = boom
+    with pytest.raises(RuntimeError, match="swat crashed"):
+        _iter(mgr, obs, 0.2)
+    m = _metrics(mgr)
+    assert m["status"].tolist() == ["ok", "failed"]
+    assert "swat crashed" in m.loc[1, "error"] and np.isnan(m.loc[1, "nse"])
+    assert set(_outputs(mgr)["run_id"]) == {1}
+
+
+def test_locked_log_file_only_warns_and_calibration_continues(proj, obs, monkeypatch, caplog):
+    _setup_iteration(proj, _run_writes_rch)
+    mgr = CalibrationManager(proj)
+    real_open = open
+
+    def locked_open(file, *a, **k):
+        if str(file).endswith("_metrics.csv"):
+            raise PermissionError("open in Excel")
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(cm, "open", locked_open, raising=False)
+    monkeypatch.setattr(cm.time, "sleep", lambda s: None)
+    with caplog.at_level("WARNING"):
+        assert _iter(mgr, obs) == pytest.approx(3.0)
+        assert _iter(mgr, obs) == pytest.approx(3.0)
+    warns = [r for r in caplog.records if "Cannot write" in r.message and "_metrics.csv" in r.message]
+    assert len(warns) == 1                                   # once per file
+    assert not mgr.session_files["metrics"].exists()
+    assert len(_outputs(mgr)) == 20                          # other file unaffected
+
+
+def test_column_set_change_raises_value_error(proj, obs):
+    _setup_iteration(proj, _run_writes_rch)
+    mgr = CalibrationManager(proj)
+    _iter(mgr, obs)
+    with pytest.raises(ValueError, match="column mismatch"):
+        mgr.run_iteration({"ALPHA_BF.gw": 0.5}, obs, metric="nse")
+    assert len(_metrics(mgr)) == 1
+    assert mgr._backup_dir is None                         # inputs were still restored
+
+
+def test_results_dir_none_disables_and_session_collision_gets_counter(proj, obs):
+    _setup_iteration(proj, _run_writes_rch)
+    off = CalibrationManager(proj)
+    off.results_dir = None
+    _iter(off, obs)
+    assert off.session_files == {}
+    assert not (proj.working_folder / "calibration_results").exists()
+
+    a, b = CalibrationManager(proj), CalibrationManager(proj)
+    b._session_base = a._session_base
+    _iter(a, obs)
+    _iter(b, obs)
+    assert a.session_files["metrics"] != b.session_files["metrics"]
+    assert b.session_files["metrics"].name.endswith("_2_metrics.csv")

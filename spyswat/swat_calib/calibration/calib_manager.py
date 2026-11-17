@@ -2,8 +2,11 @@
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
+import csv
+import time
 import shutil, tempfile
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from spyswat.swat_calib.core.workingFolder_manager import (
@@ -13,6 +16,8 @@ from spyswat.swat_calib.core.workingFolder_manager import (
 from spyswat.logger import Logger
 
 logger = logging.getLogger(__name__)
+
+_UNSET = object()
 
 
 def check_observation_step(obs_index: pd.DatetimeIndex, sim_freq: str) -> None:
@@ -56,6 +61,148 @@ class CalibrationManager:
     def __init__(self, project):
         self.project = project
         self._backup_dir: Path | None = None
+        # per-run result log (see _log_run)
+        self._results_dir = _UNSET
+        self._session_base = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._session_id: str | None = None
+        self._session_dir: Path | None = None
+        self._run_counter = 0
+        self._log_columns: Tuple[Tuple[str, ...], Tuple[str, ...]] | None = None
+        self._warned_paths: set = set()
+
+    # ── Per-run result log ───────────────────────────────────────────
+
+    @property
+    def results_dir(self) -> Path | None:
+        """Folder of the per-run result files (None disables logging)."""
+        if self._results_dir is _UNSET:
+            wf = getattr(self.project, "working_folder", None)
+            return Path(wf) / "calibration_results" if isinstance(wf, (str, Path)) else None
+        return self._results_dir
+
+    @results_dir.setter
+    def results_dir(self, value) -> None:
+        self._results_dir = None if value is None else Path(value)
+        self._session_id = None
+
+    def _resolve_session(self) -> str | None:
+        """Session id (unique inside results_dir); None when logging is disabled."""
+        d = self.results_dir
+        if d is None:
+            return None
+        if self._session_id is not None and self._session_dir == d:
+            return self._session_id
+        sid, n = self._session_base, 1
+        while any((d / f"{sid}_{k}.csv").exists()
+                  for k in ("metrics", "outputs", "best_params", "validation")):
+            n += 1
+            sid = f"{self._session_base}_{n}"
+        self._session_id, self._session_dir = sid, d
+        logger.info(f"[Results] Per-run results are appended to {d / (sid + '_metrics.csv')} "
+                    f"and {d / (sid + '_outputs.csv')}")
+        return sid
+
+    def session_path(self, suffix: str) -> Path | None:
+        """Path ``<results_dir>/<session>_<suffix>.csv`` (None when logging is disabled)."""
+        sid = self._resolve_session()
+        return None if sid is None else self.results_dir / f"{sid}_{suffix}.csv"
+
+    @property
+    def session_files(self) -> dict:
+        """{'metrics': Path, 'outputs': Path} of this session ({} when logging is disabled)."""
+        if self._resolve_session() is None:
+            return {}
+        return {"metrics": self.session_path("metrics"), "outputs": self.session_path("outputs")}
+
+    def _append_csv(self, path: Path, header: list, rows: list) -> bool:
+        """Append rows (header on creation); retry on PermissionError; never raises."""
+        if not rows:
+            return True
+        last: Exception | None = None
+        for attempt in range(4):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                new = (not path.exists()) or path.stat().st_size == 0
+                with open(path, "a", newline="", encoding="utf-8") as fh:
+                    w = csv.writer(fh)
+                    if new:
+                        w.writerow(header)
+                    w.writerows(rows)
+                    fh.flush()
+                return True
+            except PermissionError as exc:      # e.g. file open in Excel
+                last = exc
+                time.sleep(0.2 * (attempt + 1))
+            except OSError as exc:
+                last = exc
+                break
+        if path not in self._warned_paths:
+            self._warned_paths.add(path)
+            logger.warning(f"[Results] Cannot write {path} ({last}); results for this file "
+                           f"are not saved while it stays locked. Calibration continues.")
+        return False
+
+    @staticmethod
+    def _fmt(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return v
+        return "nan" if np.isnan(f) else repr(f)
+
+    @staticmethod
+    def _param_columns(params: dict) -> Dict[str, tuple]:
+        """{name: (value, method)} of the first pass of every formatted parameter."""
+        out = {}
+        for name, groups in (params or {}).items():
+            if isinstance(groups, tuple):
+                groups = [groups]
+            first = groups[0]
+            out[name] = (first[0], first[1] if len(first) > 1 else "v")
+        return out
+
+    def _logged_metric_names(self) -> List[str] | None:
+        return list(self._log_columns[1]) if self._log_columns else None
+
+    def _log_run(self, mode: str, status: str, error, reach_id, output_variable,
+                 params: dict, scores: dict | None, sim_dated: pd.Series | None = None,
+                 metrics: List[str] | None = None) -> None:
+        """
+        Append one run to ``<session>_metrics.csv`` (and its simulated series to
+        ``<session>_outputs.csv`` when status is 'ok'). Raises ValueError if the
+        parameter/metric column set differs from the first run of the session; IO errors
+        only produce a warning.
+        """
+        if self._resolve_session() is None:
+            return
+        pcols = self._param_columns(params)
+        mnames = list(metrics) if metrics is not None else list(scores or {})
+        if self._log_columns is None:
+            self._log_columns = (tuple(pcols), tuple(mnames))
+        elif (set(self._log_columns[0]) != set(pcols)
+              or set(self._log_columns[1]) != set(mnames)):
+            raise ValueError(
+                f"Run log column mismatch: this session was started with parameters "
+                f"{list(self._log_columns[0])} and metrics {list(self._log_columns[1])}, "
+                f"but this run has parameters {list(pcols)} and metrics {mnames}. "
+                f"Use a new CalibrationManager (new session) for a different column set."
+            )
+        pnames, metric_cols = self._log_columns
+        self._run_counter += 1
+        run_id = self._run_counter
+        header = (["run_id", "time", "mode", "status", "error", "reach_id", "output_variable"]
+                  + list(pnames) + [f"{n}__method" for n in pnames] + list(metric_cols))
+        row = [run_id, datetime.now().isoformat(timespec="seconds"), mode, status,
+               "" if error is None else str(error), reach_id, output_variable]
+        row += [self._fmt(pcols[n][0]) for n in pnames] + [pcols[n][1] for n in pnames]
+        row += [self._fmt((scores or {}).get(m, np.nan)) for m in metric_cols]
+        self._append_csv(self.session_path("metrics"), header, [row])
+
+        if status == "ok" and sim_dated is not None:
+            rows = [[run_id, pd.Timestamp(d).date().isoformat(), output_variable, reach_id,
+                     self._fmt(v)] for d, v in sim_dated.items()]
+            self._append_csv(self.session_path("outputs"),
+                             ["run_id", "date", "variable", "reach", "value"], rows)
 
     # ── Unified param_ranges parser ──────────────────────────────────
 
@@ -114,6 +261,9 @@ class CalibrationManager:
                       methods=None, subbasins=None) -> float:
         formatted = self._format_params(param_dict, methods, subbasins) if self._is_raw(param_dict) else param_dict
         self._backup_state()
+        err: Exception | None = None
+        score = None
+        sim_dated = None
         try:
             self.project.HRU.update_params(formatted)
 
@@ -132,24 +282,42 @@ class CalibrationManager:
             score = self.project.Statistic.calculate_statistics(
                 obs_aligned, sim_aligned, metrics=[metric]
             )[metric]
+            if self.results_dir is not None:
+                sim_dated = self._to_model_dates(sim, self._sim_freq(observed))
         except Exception as e:
-            # Always restore baseline inputs so that relative-change methods ('r', 'a')
-            # start from the original parameter values on the next iteration.
-            try:
-                self._restore_state()
-            except Exception as restore_err:
-                raise RuntimeError(
-                    f"Iteration failed: {e}; additionally the input files could not be "
-                    f"restored: {restore_err}"
-                ) from e
-            raise RuntimeError(f"Iteration failed: {e}") from e
+            err = e
         except BaseException:
             try:
                 self._restore_state()
             except Exception as restore_err:
                 logger.error(f"Restore after interruption failed: {restore_err}")
             raise
-        self._restore_state()
+
+        # Save this run before anything else can go wrong (restore, next run).
+        log_err: Exception | None = None
+        try:
+            self._log_run("sequential", "failed" if err is not None else "ok", err,
+                          reach_id, output_variable, formatted,
+                          None if err is not None else {metric: score},
+                          sim_dated, metrics=[metric])
+        except ValueError as ve:
+            log_err = ve
+
+        # Always restore baseline inputs so that relative-change methods ('r', 'a')
+        # start from the original parameter values on the next iteration.
+        try:
+            self._restore_state()
+        except Exception as restore_err:
+            if err is not None:
+                raise RuntimeError(
+                    f"Iteration failed: {err}; additionally the input files could not be "
+                    f"restored: {restore_err}"
+                ) from err
+            raise
+        if err is not None:
+            raise RuntimeError(f"Iteration failed: {err}") from err
+        if log_err is not None:
+            raise log_err
         return score
 
     def _txinout_dir(self) -> Path | None:
@@ -296,7 +464,10 @@ class CalibrationManager:
                 batch_scores = []
                 for j, res in enumerate(results):
                     row = {m: np.nan for m in metrics}
+                    run_error = None
+                    sim_dated = None
                     if not res.ok:
+                        run_error = res.error
                         logger.error(f"[run_batch] Run {chunk_start + j + 1} failed "
                                      f"(worker {j+1}): {res.error}")
                     else:
@@ -312,13 +483,21 @@ class CalibrationManager:
                             )
                             for m in metrics:
                                 row[m] = scores.get(m, np.nan)
+                            if self.results_dir is not None:
+                                sim_dated = self._to_model_dates(sim, self._sim_freq(observed))
                         except Exception as e:
+                            run_error = f"output unreadable: {e}"
+                            row = {m: np.nan for m in metrics}
                             logger.warning(
                                 f"[run_batch] Run {chunk_start + j + 1} (worker {j+1}) "
                                 f"output unreadable: {e}"
                             )
                     batch_scores.append(row)
                     all_rows.append(row)
+                    # save every run immediately (before the next job/batch)
+                    self._log_run("parallel", "ok" if run_error is None else "failed",
+                                  run_error, reach_id, output_variable, chunk[j], row,
+                                  sim_dated, metrics=metrics)
 
                 # ── progress: tqdm + logger ────────────────────────────
                 done = chunk_start + len(chunk)
@@ -354,6 +533,19 @@ class CalibrationManager:
             raise ValueError(f"Unsupported simulation frequency {freq!r} from file.cio")
         return freq
 
+    def _to_model_dates(self, sim: pd.Series, freq: str) -> pd.Series:
+        """Return ``sim`` indexed by the model's own date range (ValueError on length mismatch)."""
+        date_range = self.project.get_date_range(freq=freq)
+        sim = sim.reset_index(drop=True)
+        if len(sim) != len(date_range):
+            raise ValueError(
+                f"Simulated series has {len(sim)} values but the simulation period "
+                f"(file.cio, freq={freq}) has {len(date_range)} expected values. "
+                f"Partial-year runs (IDAF/IDAL) are not supported."
+            )
+        sim.index = date_range
+        return sim
+
     def _align_series(self, obs: pd.Series, sim: pd.Series):
         """
         Give ``sim`` the simulation date index and intersect it with ``obs``.
@@ -366,15 +558,7 @@ class CalibrationManager:
         """
         freq = self._sim_freq(obs)
         check_observation_step(obs.index, freq)
-        date_range = self.project.get_date_range(freq=freq)
-        sim = sim.reset_index(drop=True)
-        if len(sim) != len(date_range):
-            raise ValueError(
-                f"Simulated series has {len(sim)} values but the simulation period "
-                f"(file.cio, freq={freq}) has {len(date_range)} expected values. "
-                f"Partial-year runs (IDAF/IDAL) are not supported."
-            )
-        sim.index = date_range
+        sim = self._to_model_dates(sim, freq)
 
         common = obs.index.intersection(sim.index)
         if len(common) == 0:
