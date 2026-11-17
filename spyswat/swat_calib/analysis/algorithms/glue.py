@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 
+from spyswat.swat_calib.analysis.statistics import (
+    best_index, is_maximize, to_objective,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +30,9 @@ class GLUE:
 
     Generates n_samples parameter sets via Latin Hypercube Sampling, evaluates
     them in parallel through CalibrationManager.run_batch, filters behavioral
-    sets (score >= threshold), and optionally computes the 95% Prediction
+    sets (score at least as good as the threshold in the metric's direction:
+    score >= threshold for nse/r2/kge/correlation, score <= threshold for
+    rmse/mae/rsr, |pbias| <= threshold for pbias), and optionally computes the 95% Prediction
     Uncertainty band (95PPU) with p-factor and r-factor.
     """
 
@@ -63,7 +69,8 @@ class GLUE:
         -------
         dict with keys (standard contract):
             best_params         : dict  {name: [(val, method, [subs])]}
-            best_score          : float  highest metric value across all_results
+            best_score          : float  best real metric value across all_results
+                                  (closest to 0 for pbias)
         dict with keys (GLUE-specific):
             all_results         : pd.DataFrame  (n_samples x params + metric)
             behavioral_results  : pd.DataFrame  (n_behavioral x params + metric)
@@ -72,6 +79,7 @@ class GLUE:
             threshold           : float
             [uncertainty_band, p_factor, r_factor  -- if compute_uncertainty=True]
         """
+        to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
         logger.info("GLUE: starting with " + str(n_samples) + " samples")
 
         # Parse unified spec; explicit kwargs override spec values
@@ -102,7 +110,12 @@ class GLUE:
 
         results_df            = samples_df.copy()
         results_df[metric]    = scores
-        behavioral_mask       = results_df[metric] >= threshold
+        # NaN (failed run) compares False in both branches -> never behavioural
+        if is_maximize(metric):
+            behavioral_mask   = results_df[metric] >= threshold
+        else:
+            behavioral_mask   = to_objective(metric, results_df[metric].to_numpy(dtype=float)) <= threshold
+            behavioral_mask   = pd.Series(behavioral_mask, index=results_df.index)
         behavioral_df         = results_df[behavioral_mask]
         n_behavioral          = len(behavioral_df)
 
@@ -112,10 +125,11 @@ class GLUE:
         )
 
         # ── best_params / best_score (standard contract) ──────────────
-        best_idx    = int(all_results[metric].idxmax())
-        best_raw    = {name: float(all_results.loc[best_idx, name]) for name in param_names}
+        best_pos    = best_index(results_df[metric], metric)   # RuntimeError if all runs failed
+        best_row    = results_df.iloc[best_pos]
+        best_raw    = {name: float(best_row[name]) for name in param_names}
         best_params = self._manager._format_params(best_raw, methods, subbasins)
-        best_score  = float(all_results.loc[best_idx, metric])
+        best_score  = float(best_row[metric])
 
         result = {
             "best_params":        best_params,
@@ -132,6 +146,7 @@ class GLUE:
                 behavioral_df, observed_series,
                 metric=metric, output_variable=output_variable,
                 reach_id=reach_id,
+                param_methods=methods, param_subbasins=subbasins,
             )
             result.update(unc)
 
@@ -144,13 +159,19 @@ class GLUE:
         metric: str = "nse",
         output_variable: str = "FLOW_OUTcms",
         reach_id: int = 1,
+        param_methods: Optional[Dict[str, str]] = None,
+        param_subbasins: Optional[Dict[str, list]] = None,
     ) -> Dict:
         """
         Compute 95PPU, p-factor, r-factor from behavioral parameter sets.
 
-        Runs n_behavioral SWAT simulations sequentially with backup/restore.
+        Runs n_behavioral SWAT simulations sequentially; the baseline TxtInOut is
+        backed up and restored around EVERY run so relative ('r'/'a') changes
+        always start from the original values. param_methods / param_subbasins
+        must be those of the GLUE run (default: absolute 'v' for all).
         Uses weighted CDF approach (Beven & Binley 1992):
-          - Weights = normalised likelihood scores (NSE, clipped >= 0)
+          - Weights = normalised likelihood scores (clipped >= 0) for
+            maximised metrics; equal weights for rmse/mae/rsr/pbias
           - Per timestep: sorted weighted CDF -> 2.5% and 97.5% quantiles
           - p-factor = mean(obs_t in [lower_t, upper_t])
           - r-factor = mean(upper - lower) / std(obs)  (Abbaspour et al. 2007)
@@ -163,41 +184,44 @@ class GLUE:
             r_factor         : float  (target <= 1.50)
         """
         param_names = [c for c in behavioral_df.columns if c != metric]
-        weights     = np.array(behavioral_df[metric].clip(lower=0).tolist(), dtype=float)
+        if is_maximize(metric):
+            weights = np.array(behavioral_df[metric].clip(lower=0).tolist(), dtype=float)
+        else:
+            weights = np.zeros(len(behavioral_df))
         w_sum       = weights.sum()
         weights     = weights / w_sum if w_sum > 0 else np.ones(len(weights)) / len(weights)
 
-        # Compute the common date index once from the observed series so that
-        # all simulations are aligned to the same index regardless of which
-        # SWAT run happens to be last in the loop.
-        inferred   = pd.infer_freq(observed_series.index)
-        freq       = 'MS' if (inferred and inferred.upper().startswith(('M', 'Q', 'A', 'Y'))) else 'D'
-        date_range = self._manager.project.get_date_range(freq=freq)
-        _dummy     = pd.Series(np.zeros(len(date_range)), index=date_range)
-        common     = observed_series.index.intersection(_dummy.index)
-
-        self._manager._backup_state()
-        simulations = []
-        try:
-            for _, row in behavioral_df.iterrows():
-                raw = {name: float(row[name]) for name in param_names}
-                self._manager.project.HRU.update_params(self._manager._format_params(raw))
+        # Each run is aligned to the observations by the manager (single source of
+        # truth for frequency handling); keep only timesteps present in every run.
+        sims: List[pd.Series] = []
+        obs_aligned: Optional[pd.Series] = None
+        for _, row in behavioral_df.iterrows():
+            raw = {name: float(row[name]) for name in param_names}
+            self._manager._backup_state()
+            try:
+                self._manager.project.HRU.update_params(
+                    self._manager._format_params(raw, param_methods, param_subbasins)
+                )
                 self._manager.project.run()
                 sim_raw = self._manager.project.Output.read_rch(
                     columns=["RCH", "MON", output_variable], reach_id=reach_id
                 )[output_variable]
-                sim_raw = sim_raw.reset_index(drop=True)
-                if len(sim_raw) == len(date_range):
-                    sim_raw.index = date_range
-                simulations.append(sim_raw.reindex(common).values)
-        finally:
-            self._manager._restore_state()
+            finally:
+                self._manager._restore_state()
+            obs_a, sim_a = self._manager._align_series(observed_series, sim_raw)
+            obs_aligned = obs_a
+            sims.append(sim_a)
+
+        common = None
+        for sim_a in sims:
+            common = sim_a.index if common is None else common.intersection(sim_a.index)
+        simulations = [sim_a.reindex(common).values for sim_a in sims] if sims else []
 
         if not simulations:
             return {"uncertainty_band": None, "p_factor": float("nan"), "r_factor": float("nan")}
 
         sim_matrix = np.array(simulations)          # (n_behavioral, T)
-        obs_vals   = observed_series.reindex(common).values
+        obs_vals   = obs_aligned.reindex(common).values
         T          = sim_matrix.shape[1]
 
         ppu_lower  = np.empty(T)

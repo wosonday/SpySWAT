@@ -40,6 +40,10 @@ import numpy as np
 import pandas as pd
 from typing import Callable, Dict, List, Optional, Tuple
 
+from spyswat.swat_calib.analysis.statistics import (
+    best_index, sanitize_scores, to_objective,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,16 +170,21 @@ class PSO:
         gbest_idx = int(np.argmax(pbest_f) if self.maximize else np.argmin(pbest_f))
         gbest_x   = pbest_x[gbest_idx].copy()
         gbest_f   = float(pbest_f[gbest_idx])
+        if not np.isfinite(gbest_f):
+            raise RuntimeError(
+                f"all runs failed: PSO got no valid score for {self._NP} initial particles"
+            )
 
+        mean0, std0 = self._finite_stats(scores)
         history: List[Dict] = [{
             "iteration":  0,
             "best_score": gbest_f,
-            "mean_score": float(scores.mean()),
-            "std_score":  float(scores.std()),
+            "mean_score": mean0,
+            "std_score":  std0,
         }]
         logger.info(
             "PSO iter 0 | best=%.4f mean=%.4f NP=%d d=%d",
-            gbest_f, scores.mean(), self._NP, self._d,
+            gbest_f, mean0, self._NP, self._d,
         )
 
         no_improve = 0
@@ -219,16 +228,17 @@ class PSO:
                     t, self.max_iterations, gbest_f,
                 )
 
+            cur_mean, cur_std = self._finite_stats(scores)
             history.append({
                 "iteration":  t,
                 "best_score": gbest_f,
-                "mean_score": float(scores.mean()),
-                "std_score":  float(scores.std()),
+                "mean_score": cur_mean,
+                "std_score":  cur_std,
             })
 
             if pbar is not None:
                 pbar.update(1)
-                pbar.set_postfix(best=f"{gbest_f:.4f}", mean=f"{scores.mean():.4f}")
+                pbar.set_postfix(best=f"{gbest_f:.4f}", mean=f"{cur_mean:.4f}")
 
             # Early stopping — patience
             if abs(gbest_f - prev_best) > self.tol:
@@ -256,8 +266,17 @@ class PSO:
     # ------------------------------------------------------------------
 
     def _evaluate(self, x: np.ndarray) -> float:
+        """Objective value; NaN (failed run) becomes the worst value for the direction."""
         param_dict = dict(zip(self._names, x.tolist()))
-        return float(self.objective(param_dict))
+        f = float(self.objective(param_dict))
+        if np.isnan(f):
+            return -np.inf if self.maximize else np.inf
+        return f
+
+    @staticmethod
+    def _finite_stats(scores: np.ndarray) -> Tuple[float, float]:
+        ok = scores[np.isfinite(scores)]
+        return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +344,9 @@ class PSOCalibration:
                             "CN2.mgt": ((60, 98), "r")                # + method
                             "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
         observed_series : pd.Series  Observed discharge with DatetimeIndex.
-        metric          : str    Objective metric, higher = better
-                                 (use 'rmse' / 'pbias' with maximize=False).
+        metric          : str    Objective metric; direction comes from the metric
+                                 registry (nse/r2/kge maximised, rmse/mae/rsr minimised,
+                                 pbias -> |pbias| minimised). Failed runs (NaN) rank worst.
         n_particles     : int    Swarm size; default max(10, 5*d).
         max_iterations  : int    Maximum number of iterations.
         w_max, w_min    : float  Inertia weight range (Shi & Eberhart 1998).
@@ -367,10 +387,10 @@ class PSOCalibration:
         v_max  = v_max_ratio * (upper - lower)
         rng    = np.random.default_rng(seed)
 
-        maximize = metric in ("nse", "r2", "kge", "pbias") and metric != "pbias"
-        # pbias: closer to 0 is better; treat as minimise |pbias| elsewhere —
-        # here we keep convention: nse/r2/kge are maximise, rmse/pbias minimise
-        maximize = metric in ("nse", "r2", "kge")
+        # Direction comes from the metric registry. Internally the swarm works on
+        # the objective (smaller is better: -nse, rmse, |pbias|); reported scores
+        # stay the real metric values.
+        to_objective(metric, 0.0)  # ValueError for an unknown metric
 
         def to_param_sets(pop: np.ndarray) -> List[Dict]:
             return [
@@ -393,19 +413,27 @@ class PSOCalibration:
         positions  = lower + rng.random((NP, d)) * (upper - lower)
         velocities = rng.uniform(-v_max, v_max, (NP, d))
 
-        scores   = evaluate_swarm(positions)
-        pbest_x  = positions.copy()
-        pbest_f  = scores.copy()
+        def finite_stats(raw: np.ndarray) -> Tuple[float, float]:
+            ok = raw[np.isfinite(raw)]
+            return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
 
-        gbest_idx = int(np.argmax(pbest_f) if maximize else np.argmin(pbest_f))
-        gbest_x   = pbest_x[gbest_idx].copy()
-        gbest_f   = float(pbest_f[gbest_idx])
+        scores    = evaluate_swarm(positions)               # raw metric values (may hold NaN)
+        gidx0     = best_index(scores, metric)              # RuntimeError if every run failed
+        obj       = to_objective(metric, sanitize_scores(scores, metric))
+        pbest_x   = positions.copy()
+        pbest_obj = obj.copy()                              # smaller is better
+        pbest_raw = scores.copy()
 
+        gbest_x   = pbest_x[gidx0].copy()
+        gbest_obj = float(pbest_obj[gidx0])
+        gbest_f   = float(scores[gidx0])                    # real metric value
+
+        mean0, std0 = finite_stats(scores)
         history: List[Dict] = [{
             "iteration":  0,
             "best_score": gbest_f,
-            "mean_score": float(scores.mean()),
-            "std_score":  float(scores.std()),
+            "mean_score": mean0,
+            "std_score":  std0,
         }]
         all_rows: List[Dict] = []
         for i in range(NP):
@@ -415,11 +443,11 @@ class PSOCalibration:
 
         logger.info(
             "PSO iter 0 | best=%.4f mean=%.4f NP=%d d=%d metric=%s",
-            gbest_f, scores.mean(), NP, d, metric,
+            gbest_f, mean0, NP, d, metric,
         )
 
         no_improve = 0
-        prev_best  = gbest_f
+        prev_best  = gbest_obj
 
         try:
             from tqdm import tqdm as _tqdm
@@ -450,32 +478,36 @@ class PSOCalibration:
                 all_rows.append(row)
 
             # Update personal bests
-            improve = scores > pbest_f if maximize else scores < pbest_f
-            pbest_x[improve] = positions[improve]
-            pbest_f[improve] = scores[improve]
+            obj     = to_objective(metric, sanitize_scores(scores, metric))
+            improve = obj < pbest_obj
+            pbest_x[improve]   = positions[improve]
+            pbest_obj[improve] = obj[improve]
+            pbest_raw[improve] = scores[improve]
 
             # Update global best
-            new_idx   = int(np.argmax(pbest_f) if maximize else np.argmin(pbest_f))
-            new_gbest = float(pbest_f[new_idx])
-            if (maximize and new_gbest > gbest_f) or (not maximize and new_gbest < gbest_f):
-                gbest_x, gbest_f = pbest_x[new_idx].copy(), new_gbest
+            new_idx = int(np.argmin(pbest_obj))
+            if pbest_obj[new_idx] < gbest_obj:
+                gbest_x   = pbest_x[new_idx].copy()
+                gbest_obj = float(pbest_obj[new_idx])
+                gbest_f   = float(pbest_raw[new_idx])
                 logger.info(
                     "PSO iter %d/%d | improved best=%.4f", t, max_iterations, gbest_f
                 )
 
+            cur_mean, cur_std = finite_stats(scores)
             history.append({
                 "iteration":  t,
                 "best_score": gbest_f,
-                "mean_score": float(scores.mean()),
-                "std_score":  float(scores.std()),
+                "mean_score": cur_mean,
+                "std_score":  cur_std,
             })
 
             if pbar is not None:
                 pbar.update(1)
-                pbar.set_postfix(best=f"{gbest_f:.4f}", mean=f"{scores.mean():.4f}")
+                pbar.set_postfix(best=f"{gbest_f:.4f}", mean=f"{cur_mean:.4f}")
 
-            if abs(gbest_f - prev_best) > tol:
-                prev_best, no_improve = gbest_f, 0
+            if abs(gbest_obj - prev_best) > tol:
+                prev_best, no_improve = gbest_obj, 0
             else:
                 no_improve += 1
                 if no_improve >= patience:

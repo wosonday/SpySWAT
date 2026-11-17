@@ -4,6 +4,8 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import logging
 
+from .statistics import worst_score
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +20,15 @@ class SWATSensitivity:
         # CalibrationManager cho parallel execution
         from spyswat.swat_calib.calibration import CalibrationManager
         self._manager = CalibrationManager(project)
+
+    def _batch_scores(self, param_sets, observed_series, metric, reach_id, output_variable) -> np.ndarray:
+        """Run a batch and return the ``metric`` column as a float array (NaN = failed run)."""
+        res = self._manager.run_batch(
+            param_sets, observed_series, [metric], reach_id, output_variable
+        )
+        if hasattr(res, 'columns'):
+            res = res[metric]
+        return np.asarray(list(res), dtype=float)
 
     # ==================== One-At-A-Time (OAT) ====================
     def one_at_a_time(
@@ -58,7 +69,7 @@ class SWATSensitivity:
             # Parallel: chạy tất cả qua run_batch
             self._manager.setup_parallel(overwrite=False)
             param_sets = [cfg[2] for cfg in all_configs]
-            scores = self._manager.run_batch(
+            scores = self._batch_scores(
                 param_sets, observed_series, metric, reach_id, output_variable
             )
         else:
@@ -139,7 +150,7 @@ class SWATSensitivity:
         # Chạy song song
         if observed_series is not None:
             self._manager.setup_parallel(overwrite=False)
-            all_scores = self._manager.run_batch(
+            all_scores = self._batch_scores(
                 all_steps, observed_series, metric, reach_id, output_variable
             )
         else:
@@ -326,16 +337,12 @@ class SWATSensitivity:
         # --- Chạy song song qua run_batch ---
         self._manager.setup_parallel(overwrite=False)
         param_sets = self._X_to_param_sets(X, param_names)
-        Y = np.array(
-            self._manager.run_batch(
-                param_sets, observed_series, metric, reach_id, output_variable
-            ),
-            dtype=float,
+        Y = self._batch_scores(
+            param_sets, observed_series, metric, reach_id, output_variable
         )
 
         # Thay NaN/Inf bằng bad score để SALib không lỗi
-        bad = -1.0 if metric in ('nse', 'kge', 'r2') else 1e6
-        Y = np.where(np.isfinite(Y), Y, bad)
+        Y = np.where(np.isfinite(Y), Y, worst_score(metric))
 
         # --- Phân tích Morris qua SALib ---
         Si = morris_analyze.analyze(
@@ -422,15 +429,11 @@ class SWATSensitivity:
         # --- Chạy song song qua run_batch ---
         self._manager.setup_parallel(overwrite=False)
         param_sets = self._X_to_param_sets(X, param_names)
-        Y = np.array(
-            self._manager.run_batch(
-                param_sets, observed_series, metric, reach_id, output_variable
-            ),
-            dtype=float,
+        Y = self._batch_scores(
+            param_sets, observed_series, metric, reach_id, output_variable
         )
 
-        bad = -1.0 if metric in ('nse', 'kge', 'r2') else 1e6
-        Y = np.where(np.isfinite(Y), Y, bad)
+        Y = np.where(np.isfinite(Y), Y, worst_score(metric))
 
         # --- Phân tích Sobol ---
         Si = sobol_analyze.analyze(

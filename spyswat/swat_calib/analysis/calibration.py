@@ -12,11 +12,14 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from scipy.optimize import differential_evolution, minimize
 
 from spyswat.swat_calib.calibration import CalibrationManager
-from spyswat.swat_calib.analysis.statistics import SWATAnalysis
+from spyswat.swat_calib.analysis.statistics import (
+    SWATAnalysis, best_index, to_objective, worst_score,
+)
 from spyswat.swat_calib.analysis.algorithms.glue import GLUE
 from spyswat.swat_calib.analysis.algorithms.parallel_de import ParallelDE
 from spyswat.swat_calib.analysis.algorithms.dds import DDSCalibration
@@ -75,8 +78,19 @@ class SWATCalibration:
             output_variable: str = "FLOW_OUTcms",
             param_methods: Optional[Dict[str, str]] = None,
             param_subbasins: Optional[Dict[str, list]] = None,
+            on_failure: str = "raise",
     ) -> Dict:
-        """Single-threaded scipy optimisation (DE or Nelder-Mead/SLSQP)."""
+        """
+        Single-threaded scipy optimisation (DE or Nelder-Mead/SLSQP).
+
+        on_failure : "raise" (default) -- an exception from run_iteration propagates;
+                     "penalize" -- the run is recorded as NaN, treated as the worst
+                     value and the search continues.
+        A non-finite score returned under "raise" raises RuntimeError.
+        """
+        if on_failure not in ("raise", "penalize"):
+            raise ValueError(f"on_failure must be 'raise' or 'penalize', got {on_failure!r}")
+        to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
         self.optimization_history = []
         bounds_dict, _m, _s = CalibrationManager._parse_spec(param_ranges)
         methods   = {**_m, **(param_methods   or {})}
@@ -87,33 +101,52 @@ class SWATCalibration:
 
         def objective(x):
             raw   = dict(zip(names, x))
-            score = self.manager.run_iteration(
-                raw, observed_series, metric, reach_id, output_variable,
-                methods=methods, subbasins=subbasins
-            )
+            if on_failure == "penalize":
+                try:
+                    score = float(self.manager.run_iteration(
+                        raw, observed_series, metric, reach_id, output_variable,
+                        methods=methods, subbasins=subbasins
+                    ))
+                except Exception as exc:
+                    logger.warning("optimize: run failed (%s)", exc)
+                    score = float("nan")
+            else:
+                score = float(self.manager.run_iteration(
+                    raw, observed_series, metric, reach_id, output_variable,
+                    methods=methods, subbasins=subbasins
+                ))
+                if not np.isfinite(score):
+                    raise RuntimeError(
+                        f"run produced no valid score ({metric}={score}); "
+                        "use on_failure='penalize' to continue past failed runs"
+                    )
             step = len(self.optimization_history) + 1
             self.optimization_history.append({
                 "step":  step,
                 **dict(zip(names, x)),
                 "score": score,
             })
-            return -score if metric in ("nse", "r2", "kge") else score
+            if not np.isfinite(score):
+                score = worst_score(metric)
+            # scipy minimises: smaller objective is always better (|pbias| for pbias)
+            return to_objective(metric, score)
 
         if method == "differential_evolution":
             res = differential_evolution(objective, bounds, maxiter=max_iter)
         else:
             res = minimize(objective, [(b[0] + b[1]) / 2 for b in bounds], bounds=bounds)
 
-        # scipy always minimises; for maximize metrics the objective was negated,
-        # so negate back to return the true score to the caller.
-        _maximize_metrics = ("nse", "r2", "kge")
-        best_value = -res.fun if metric in _maximize_metrics else res.fun
-        best_raw   = dict(zip(names, res.x))
+        # Report the real metric value (not the negated / abs objective) of the
+        # best evaluation seen; raises RuntimeError if every run failed.
+        history_df = pd.DataFrame(self.optimization_history)
+        best_row   = history_df.iloc[best_index(history_df["score"], metric)]
+        best_value = float(best_row["score"])
+        best_raw   = {n: float(best_row[n]) for n in names}
         return {
             # ── standard contract ─────────────────────────────────────
             "best_params":  best_raw,
             "best_score":   best_value,
-            "history":      pd.DataFrame(self.optimization_history),
+            "history":      history_df,
             # ── scipy-specific extras ─────────────────────────────────
             "scipy_result": res,
             # ── backward-compat aliases (deprecated) ─────────────────
@@ -161,7 +194,7 @@ class SWATCalibration:
         )
         all_results = glue_result["all_results"]
 
-        best_row    = all_results.loc[all_results[metric].idxmax()]
+        best_row    = all_results.iloc[best_index(all_results[metric], metric)]
         bounds_dict = glue_result["parameter_ranges"]
         best_raw    = {name: float(best_row[name]) for name in bounds_dict}
         best_params = self.manager._format_params(best_raw, methods, subbasins)
