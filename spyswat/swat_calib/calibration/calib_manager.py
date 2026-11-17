@@ -15,6 +15,43 @@ from spyswat.logger import Logger
 logger = logging.getLogger(__name__)
 
 
+def check_observation_step(obs_index: pd.DatetimeIndex, sim_freq: str) -> None:
+    """
+    Raise ValueError unless the observation step matches the simulation print step.
+
+    Observations count as monthly when every timestamp is the first day of a month at
+    midnight and no two timestamps fall in the same month; otherwise they count as
+    daily (gaps are fine; pd.infer_freq is deliberately not used). A single observation
+    is always accepted. Observations are never resampled: aggregate them to the model's
+    print step (IPRINT in file.cio) before calibrating.
+    """
+    if sim_freq not in ('D', 'MS'):
+        raise ValueError(
+            f"Unsupported simulation frequency {sim_freq!r}: only daily ('D') and "
+            f"monthly ('MS') print steps are supported."
+        )
+    idx = pd.DatetimeIndex(obs_index)
+    if len(idx) <= 1:
+        return
+    monthly = bool(
+        (idx.day == 1).all()
+        and (idx == idx.normalize()).all()
+        and not idx.to_period('M').duplicated().any()
+    )
+    if monthly and sim_freq == 'D':
+        raise ValueError(
+            "Observations are monthly but the simulation prints daily output (IPRINT in "
+            "file.cio). Aggregate the observations to the model's print step first, or "
+            "change IPRINT."
+        )
+    if not monthly and sim_freq == 'MS':
+        raise ValueError(
+            "Observations are daily but the simulation prints monthly output (IPRINT in "
+            "file.cio). Aggregate the observations to the model's print step first "
+            "(e.g. monthly means for flow), or change IPRINT."
+        )
+
+
 class CalibrationManager:
     def __init__(self, project):
         self.project = project
@@ -95,14 +132,25 @@ class CalibrationManager:
             score = self.project.Statistic.calculate_statistics(
                 obs_aligned, sim_aligned, metrics=[metric]
             )[metric]
-            return score
-
         except Exception as e:
-            raise RuntimeError(f"Iteration failed: {e}") from e
-        finally:
             # Always restore baseline inputs so that relative-change methods ('r', 'a')
             # start from the original parameter values on the next iteration.
-            self._restore_state()
+            try:
+                self._restore_state()
+            except Exception as restore_err:
+                raise RuntimeError(
+                    f"Iteration failed: {e}; additionally the input files could not be "
+                    f"restored: {restore_err}"
+                ) from e
+            raise RuntimeError(f"Iteration failed: {e}") from e
+        except BaseException:
+            try:
+                self._restore_state()
+            except Exception as restore_err:
+                logger.error(f"Restore after interruption failed: {restore_err}")
+            raise
+        self._restore_state()
+        return score
 
     def _txinout_dir(self) -> Path | None:
         """The project's TxtInOut directory as a Path (None if it cannot be resolved)."""
@@ -133,7 +181,15 @@ class CalibrationManager:
     def _backup_state(self):
         """Back up only the input files that calibration can modify (never outputs)."""
         if self._backup_dir is not None:
-            self._restore_state()
+            # A previous restore failed: finish it first, never overwrite that backup.
+            try:
+                self._restore_state()
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Cannot take a new backup: the original input files are still kept "
+                    f"unrestored in {self._backup_dir}. Close whatever locks the TxtInOut "
+                    f"files, then retry (or copy that folder's files back by hand). {exc}"
+                ) from exc
         backup = Path(tempfile.mkdtemp(prefix="spyswat_backup_"))
         try:
             for f in self._input_files():
@@ -144,16 +200,34 @@ class CalibrationManager:
         self._backup_dir = backup
 
     def _restore_state(self):
-        """Copy the backed-up input files back; the TxtInOut folder itself is never removed."""
+        """
+        Copy the backed-up input files back; the TxtInOut folder itself is never removed.
+
+        The backup is deleted only after EVERY file was copied back. If any copy fails the
+        backup is kept (its path is logged and named in the RuntimeError) so the next
+        ``_backup_state`` / ``_restore_state`` can finish the job.
+        """
         if self._backup_dir is None:
             return
+        backup = self._backup_dir
         dst_dir = Path(self.project.txinout.directory)
-        try:
-            for f in self._backup_dir.iterdir():
+        failed = []
+        for f in sorted(backup.iterdir()):
+            try:
                 _copy_over(f, dst_dir / f.name)
-        finally:
-            shutil.rmtree(self._backup_dir, ignore_errors=True)
-            self._backup_dir = None
+            except Exception as exc:
+                failed.append((f.name, exc))
+        if failed:
+            logger.error(
+                f"Could not restore {len(failed)} input file(s) ({failed[0][0]}: "
+                f"{failed[0][1]}); backup kept in {backup}"
+            )
+            raise RuntimeError(
+                f"Could not restore {len(failed)} input file(s) in {dst_dir} "
+                f"(first: {failed[0][0]}: {failed[0][1]}). The backup is kept in {backup}."
+            ) from failed[0][1]
+        shutil.rmtree(backup, ignore_errors=True)
+        self._backup_dir = None
 
     def setup_parallel(self, overwrite: bool = False) -> None:
         """Create worker directories for parallel execution."""
@@ -267,7 +341,7 @@ class CalibrationManager:
         logger.info(f"[run_batch] Done — {total} runs complete")
         return pd.DataFrame(all_rows, columns=metrics)
 
-    _FREQ_LEVEL = {'D': 0, 'MS': 1, 'YS': 2}
+    _FREQ_LEVEL = {'D': 0, 'MS': 1, 'YS': 2}  # IPRINT values accepted from file.cio
 
     def _sim_freq(self, obs: pd.Series | None = None) -> str:
         """Simulation output frequency from IPRINT in file.cio (contract C4)."""
@@ -286,10 +360,12 @@ class CalibrationManager:
 
         The simulation frequency comes from IPRINT in file.cio. Raises ValueError
         when the simulated length does not match the simulation period (partial-year
-        runs via IDAF/IDAL are not supported), when the observations are coarser than
-        the simulation step, or when there is no common date.
+        runs via IDAF/IDAL are not supported), when the observation step differs from
+        the simulation step (see ``check_observation_step``), or when there is no
+        common date.
         """
         freq = self._sim_freq(obs)
+        check_observation_step(obs.index, freq)
         date_range = self.project.get_date_range(freq=freq)
         sim = sim.reset_index(drop=True)
         if len(sim) != len(date_range):
@@ -299,23 +375,6 @@ class CalibrationManager:
                 f"Partial-year runs (IDAF/IDAL) are not supported."
             )
         sim.index = date_range
-
-        if len(obs.index) >= 2:
-            step_days = float(np.median(np.diff(obs.index.values).astype('timedelta64[s]')
-                                        .astype(float))) / 86400.0
-            obs_level = 0 if step_days <= 1.5 else (1 if step_days <= 40 else 2)
-            sim_level = self._FREQ_LEVEL[freq]
-            if obs_level > sim_level:
-                raise ValueError(
-                    f"Observations are coarser (~{step_days:.0f} days) than the simulation "
-                    f"output step (freq={freq}, IPRINT in file.cio). Set IPRINT to match the "
-                    f"observation frequency or provide finer observations."
-                )
-            if obs_level < sim_level:
-                logger.warning(
-                    f"Observations ({step_days:.1f}-day step) are finer than the simulation "
-                    f"output (freq={freq}); only coinciding dates are compared."
-                )
 
         common = obs.index.intersection(sim.index)
         if len(common) == 0:

@@ -74,3 +74,39 @@ def test_timeout_kills_child(tx, tmp_path):
     pid = int(pidfile.read_text())
     if os.path.isdir("/proc"):
         assert not os.path.exists(f"/proc/{pid}")
+
+
+def test_kill_uses_taskkill_tree_on_windows(monkeypatch):
+    from spyswat.swat_calib.run import run as run_mod
+    calls = []
+
+    class FakeProc:
+        pid = 4321
+        killed = False
+        def kill(self):
+            self.killed = True
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(run_mod.sys, "platform", "win32")
+    monkeypatch.setattr(run_mod.subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+    proc = FakeProc()
+    SWATRun._kill(proc)
+    assert calls[0][0] == ["taskkill", "/F", "/T", "/PID", "4321"]
+    assert calls[0][1]["timeout"] > 0
+    assert proc.killed   # Popen.kill() is still the fallback
+
+
+def test_kill_does_not_call_taskkill_on_posix(monkeypatch):
+    from spyswat.swat_calib.run import run as run_mod
+    calls = []
+
+    class FakeProc:
+        pid = 1
+        def kill(self): pass
+        def communicate(self, timeout=None): return "", ""
+
+    monkeypatch.setattr(run_mod.sys, "platform", "linux")
+    monkeypatch.setattr(run_mod.subprocess, "run", lambda *a, **k: calls.append(a))
+    SWATRun._kill(FakeProc())
+    assert calls == []

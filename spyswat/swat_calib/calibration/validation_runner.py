@@ -4,6 +4,9 @@ from dataclasses import dataclass
 import pandas as pd
 
 from spyswat.swat_calib.calibration import CalibrationManager
+from spyswat.swat_calib.core.workingFolder_manager import (
+    _stamp_output_rch, _check_fresh_output_rch,
+)
 
 
 @dataclass
@@ -46,17 +49,27 @@ class ValidationRunner:
         _, methods, subbasins = manager._parse_spec(self.param_ranges)
         formatted = (manager._format_params(best_params, methods, subbasins)
                      if manager._is_raw(best_params) else best_params)
-        self.project.HRU.update_params(formatted)
-        self.project.run()
+        # The best parameters are applied only temporarily: the input files are restored
+        # afterwards (outputs of this run stay in place) so 'r'/'a' never compound.
+        manager._backup_state()
+        try:
+            self.project.HRU.update_params(formatted)
+            out_dir = manager._txinout_dir()
+            before = _stamp_output_rch(out_dir) if out_dir is not None else None
+            self.project.run()
+            if out_dir is not None:
+                _check_fresh_output_rch(out_dir, before)
 
-        sim = self.project.Output.read_rch(
-            columns=['RCH', 'MON', output_variable], reach_id=reach_id
-        )[output_variable]
+            sim = self.project.Output.read_rch(
+                columns=['RCH', 'MON', output_variable], reach_id=reach_id
+            )[output_variable]
 
-        # 3. Kiem dinh (validation period)
-        obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
-        obs_a, sim_a = manager._align_series(obs_valid, sim)
-        valid_stats = self.project.Statistic.calculate_statistics(obs_a, sim_a)
+            # 3. Kiem dinh (validation period)
+            obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
+            obs_a, sim_a = manager._align_series(obs_valid, sim)
+            valid_stats = self.project.Statistic.calculate_statistics(obs_a, sim_a)
+        finally:
+            manager._restore_state()
 
         return {
             'best_parameters': best_params,

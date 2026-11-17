@@ -57,17 +57,31 @@ def _force_remove(func, path, _):
 
 
 def _copy_over(src, dst, retries: int = 4) -> None:
-    """Copy ``src`` over ``dst`` even if ``dst`` is read-only (retry on PermissionError)."""
+    """
+    Copy ``src`` over ``dst`` even if ``dst`` is read-only (retry on PermissionError).
+
+    The data goes to a temporary file next to ``dst`` and is moved into place with
+    ``os.replace``, so an interrupted copy never leaves a truncated ``dst``.
+    """
+    dst = Path(dst)
+    tmp = dst.with_name(f".{dst.name}.spyswat.tmp")
     last: Optional[Exception] = None
     for attempt in range(retries):
         try:
             if os.path.exists(dst):
                 os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
-            shutil.copyfile(src, dst)
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dst)
             return
         except PermissionError as exc:
             last = exc
             time.sleep(0.1 * (attempt + 1))
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
     assert last is not None
     raise last
 
@@ -115,6 +129,19 @@ def _param_exts(param_path: Optional[str], names=None) -> List[str]:
     keys = swat_param.available_keys() if names is None else list(names)
     exts = {_ext_with_dot(swat_param.get(k).ext) for k in keys}
     return sorted(exts)
+
+
+def _validate_param_sets(param_sets, param_path: Optional[str]) -> None:
+    """Raise KeyError (naming parameter and file) for unknown parameter names."""
+    if not param_sets or not param_path:
+        return
+    swat_param = SWATParam(param_path)
+    for params in param_sets:
+        for key in (params or {}):
+            try:
+                swat_param.get(key)
+            except KeyError as exc:
+                raise KeyError(f"{exc.args[0]} (parameter file: {param_path})") from None
 
 
 def _baseline_files(txinout: TxInOut, exts) -> List[Path]:
@@ -339,6 +366,9 @@ class WorkingFolderManager:
             overlays:   Optional list (one per job) of {dest_file_name: source_path}
                         copied into the worker dir before the run.
             prepare:    Optional picklable ``prepare(worker_dir)`` run before params.
+                        It may only modify file.cio or files delivered as ``overlays``:
+                        anything else it changes is NOT restored from the baseline and
+                        would carry over into later jobs of the same worker folder.
                         Either one callable applied to every job, or a list/tuple with
                         one entry (callable or None) per job, index-aligned with the jobs.
             extract:    Optional picklable ``extract(worker_dir) -> payload`` run after
@@ -375,6 +405,7 @@ class WorkingFolderManager:
                 return list(fn)
             return [fn] * n
 
+        _validate_param_sets(param_sets, str(self._param_path) if self._param_path else None)
         prepares = _per_job(prepare, "prepare")
         extracts = _per_job(extract, "extract")
 

@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 import logging
 
@@ -78,6 +79,16 @@ class SWATRun:
 
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
+        if sys.platform == "win32":
+            # Also end children of the process (e.g. swat.exe started by a .bat wrapper).
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False,
+                )
+            except Exception:
+                pass
         try:
             proc.kill()
         except OSError:

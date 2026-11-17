@@ -8,7 +8,10 @@ import pandas as pd
 import pytest
 
 from spyswat.logger import Logger
-from spyswat.swat_calib.calibration import CalibrationManager
+from spyswat.swat_calib.calibration import CalibrationManager, ValidationRunner
+from spyswat.swat_calib.calibration import calib_manager as cm
+from spyswat.swat_calib.calibration.calib_manager import check_observation_step
+from spyswat.swat_calib.calibration.validation_runner import PeriodConfig
 from spyswat.swat_calib.core import TxInOut, HRUManager
 from spyswat.swat_calib.core.workingFolder_manager import WorkingFolderManager
 from spyswat.swat_calib.io import SWATParam
@@ -196,11 +199,152 @@ def test_align_series_never_returns_range_index(proj, obs):
         assert not isinstance(s.index, pd.RangeIndex)
 
 
-def test_align_series_coarser_obs_and_empty_intersection(proj):
+def test_align_series_step_mismatch_and_empty_intersection(proj):
     mgr = CalibrationManager(proj)
     monthly = pd.Series(np.arange(5.0), index=pd.date_range("2000-01-01", periods=5, freq="MS"))
-    with pytest.raises(ValueError, match="coarser"):
+    with pytest.raises(ValueError, match="monthly but the simulation prints daily"):
         mgr._align_series(monthly, pd.Series(np.zeros(10)))
     other = pd.Series(np.arange(10.0), index=pd.date_range("1990-01-01", periods=10, freq="D"))
     with pytest.raises(ValueError, match="No common dates"):
         mgr._align_series(other, pd.Series(np.zeros(10)))
+
+
+def test_align_series_daily_obs_with_monthly_sim_raises(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = build_txinout(tmp_path)
+    p = StubProject(base, build_param_file(tmp_path), tmp_path / "work", iprint="MS",
+                    dates=pd.date_range("2000-01-01", periods=3, freq="MS"))
+    daily = pd.Series(np.arange(10.0), index=DATES)
+    with pytest.raises(ValueError, match="daily but the simulation prints monthly"):
+        CalibrationManager(p)._align_series(daily, pd.Series(np.zeros(3)))
+    monthly = pd.Series([1.0, 2.0, 3.0], index=p._dates)
+    o, s_ = CalibrationManager(p)._align_series(monthly, pd.Series([1.0, 2.0, 3.0]))
+    assert len(o) == 3 and isinstance(s_.index, pd.DatetimeIndex)
+
+
+# ── check_observation_step ───────────────────────────────────────────
+
+def _idx(*dates):
+    return pd.DatetimeIndex(pd.to_datetime(list(dates)))
+
+
+@pytest.mark.parametrize("dates, freq, ok", [
+    (["2000-01-01", "2000-02-01", "2000-05-01"], "MS", True),      # monthly with gaps
+    (["2000-01-01", "2000-02-01", "2000-05-01"], "D", False),
+    (["2000-01-01", "2000-01-02", "2000-01-04"], "D", True),       # daily with gap
+    (["2000-01-01", "2000-01-02", "2000-01-04"], "MS", False),
+    (["2000-01-15", "2000-02-15"], "MS", False),                   # not first of month -> daily
+    (["2000-01-15", "2000-02-15"], "D", True),
+    (["2000-01-01", "2000-01-01 12:00"], "MS", False),             # same month twice -> daily
+    (["2000-01-01 06:00", "2000-02-01 06:00"], "D", True),         # not midnight -> daily
+    (["2000-03-01"], "D", True),                                   # single observation
+    (["2000-03-01"], "MS", True),
+    ([], "D", True),
+])
+def test_check_observation_step(dates, freq, ok):
+    idx = pd.DatetimeIndex(pd.to_datetime(dates, format="mixed"))
+    if ok:
+        check_observation_step(idx, freq)
+    else:
+        with pytest.raises(ValueError):
+            check_observation_step(idx, freq)
+
+
+@pytest.mark.parametrize("freq", ["YS", "M", "H", None])
+def test_check_observation_step_unsupported_freq(freq):
+    with pytest.raises(ValueError, match="Unsupported"):
+        check_observation_step(_idx("2000-01-01", "2000-01-02"), freq)
+
+
+# ── restore failure handling ─────────────────────────────────────────
+
+def _flaky_copy(monkeypatch, fail_times):
+    state = {"n": 0}
+    real = cm._copy_over
+
+    def flaky(src, dst, *a, **k):
+        if Path(dst).suffix == ".mgt" and state["n"] < fail_times:
+            state["n"] += 1
+            raise PermissionError("locked by antivirus")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(cm, "_copy_over", flaky)
+    return state
+
+
+def test_failed_restore_keeps_backup_and_never_compounds(proj, obs, monkeypatch):
+    seen = []
+
+    def run_impl(p):
+        seen.append(read_cn2(str(p.txinout.directory)))
+        _run_writes_rch(p)
+
+    base, before = _setup_iteration(proj, run_impl)
+    mgr = CalibrationManager(proj)
+    _flaky_copy(monkeypatch, fail_times=1)
+
+    with pytest.raises(RuntimeError, match="Could not restore"):
+        mgr.run_iteration({"CN2.mgt": 0.5}, obs, metric="nse", methods={"CN2.mgt": "r"})
+    kept = mgr._backup_dir
+    assert kept is not None and kept.is_dir()
+    assert snapshot(base) != before                    # user files still hold calibrated values
+
+    # next iteration finishes the pending restore first, so relative changes start from 35
+    mgr.run_iteration({"CN2.mgt": 0.5}, obs, metric="nse", methods={"CN2.mgt": "r"})
+    assert seen == [pytest.approx(52.5), pytest.approx(52.5)]
+    assert snapshot(base) == before
+    assert mgr._backup_dir is None and not kept.exists()
+
+
+def test_backup_refused_while_unrestored_backup_exists(proj, monkeypatch):
+    mgr = CalibrationManager(proj)
+    base = proj.txinout.directory
+    before = snapshot(base)
+    mgr._backup_state()
+    kept = mgr._backup_dir
+    for f in base.glob("0*.mgt"):
+        f.write_text("changed")
+    _flaky_copy(monkeypatch, fail_times=10 ** 6)
+    with pytest.raises(RuntimeError, match=kept.name):
+        mgr._backup_state()
+    assert mgr._backup_dir == kept and kept.is_dir()
+    monkeypatch.undo()
+    mgr._restore_state()
+    assert snapshot(base) == before and mgr._backup_dir is None
+
+
+def test_run_error_and_restore_error_are_both_reported(proj, obs, monkeypatch):
+    def boom(p):
+        raise OSError("swat crashed")
+    _setup_iteration(proj, boom)
+    mgr = CalibrationManager(proj)
+    _flaky_copy(monkeypatch, fail_times=10 ** 6)
+    with pytest.raises(RuntimeError) as ei:
+        mgr.run_iteration({"CN2.mgt": 0.5}, obs, metric="nse", methods={"CN2.mgt": "r"})
+    msg = str(ei.value)
+    assert "swat crashed" in msg and "could not be restored" in msg
+    assert isinstance(ei.value.__cause__, OSError)
+    monkeypatch.undo()
+    mgr._restore_state()
+
+
+# ── ValidationRunner ─────────────────────────────────────────────────
+
+def test_validation_runner_leaves_inputs_unchanged(proj, obs, monkeypatch):
+    seen = []
+
+    def run_impl(p):
+        seen.append(read_cn2(str(p.txinout.directory)))
+        _run_writes_rch(p)
+
+    base, before = _setup_iteration(proj, run_impl)
+    monkeypatch.setattr(ValidationRunner, "_calibrate",
+                        lambda self, *a: ({"CN2.mgt": 0.1}, 0.5))
+    period = PeriodConfig("2000-01-01", "2000-01-05", "2000-01-06", "2000-01-10")
+    runner = ValidationRunner(proj, {"CN2.mgt": ((-0.2, 0.2), "r")}, obs, period)
+    out = runner.run()
+    out2 = runner.run()
+    assert seen == [pytest.approx(38.5), pytest.approx(38.5)]
+    assert out["validation"]["nse"] == pytest.approx(3.0) and out2 == out
+    assert snapshot(base) == before
+    assert (base / "output.rch").read_text().startswith("3.0")

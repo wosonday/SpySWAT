@@ -338,3 +338,28 @@ def test_busy_probe_fails_only_the_locked_worker(env, monkeypatch):
     assert not results[0].ok and "still using this folder" in results[0].error
     assert results[1].ok, results[1].error
     assert calls == ["TxInOut2"]
+
+
+def test_unknown_parameter_raises_keyerror_before_any_worker_starts(env):
+    wf = make_wf(env, n=2)
+    calls = []
+
+    def never(worker_dir: str) -> None:
+        calls.append(worker_dir)
+
+    with pytest.raises(KeyError, match=r"NOPE.*swatParam"):
+        wf.run_parallel("exe", param_sets=[{"CN2.mgt": [(50.0, "v")]},
+                                           {"NOPE.mgt": [(1.0, "v")]}], runner=never)
+    with pytest.raises(KeyError, match="CN2"):
+        wf.run_parallel("exe", param_sets=[{"CN2": [(50.0, "v")]}], runner=never)
+    assert calls == []
+
+
+def test_copy_over_leaves_no_temp_file_and_survives_readonly(tmp_path):
+    src, dst = tmp_path / "a.txt", tmp_path / "b.txt"
+    src.write_text("new")
+    dst.write_text("old")
+    os.chmod(dst, stat.S_IREAD)
+    wfm._copy_over(src, dst)
+    assert dst.read_text() == "new"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt", "b.txt"]
