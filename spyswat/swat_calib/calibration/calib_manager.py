@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import csv
 import os
+from collections.abc import Mapping
 import time
 import shutil, tempfile
 import logging
@@ -75,6 +76,8 @@ class CalibrationManager:
         self._session_n = 1
         self._session_id: str | None = None
         self._session_dir: Path | None = None
+        self._session_claimed = False
+        self._prev_metrics: Path | None = None
         self._run_counter = 0
         self._log_columns: Tuple[Tuple[str, ...], Tuple[str, ...]] | None = None
         self._warned: set = set()
@@ -125,53 +128,80 @@ class CalibrationManager:
         self._results_dir = None if value is None else Path(value)
         self._session_id = None
         self._session_n = 1
+        self._session_claimed = False
+        self._prev_metrics = None
         self._log_columns = None
         self._run_counter = 0
 
-    def _new_session(self, d: Path) -> str | None:
-        """Pick the next free session id and create its metrics file exclusively."""
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            self._warn_once(("mkdir", str(d)), f"[Results] Cannot create {d}: {exc}")
-            return None
-        n = self._session_n
-        while True:
-            sid = self._session_base if n == 1 else f"{self._session_base}_{n}"
-            path = d / f"{sid}_metrics.csv"
-            try:
-                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                break
-            except FileExistsError:
-                n += 1
-            except OSError as exc:
-                self._warn_once(("create", str(path)), f"[Results] Cannot create {path}: {exc}")
-                return None
-        self._session_n, self._session_id, self._session_dir = n, sid, d
-        self._run_counter = 0
-        logger.info(f"[Results] Per-run results are appended to {path} and "
-                    f"{d / (sid + '_outputs.csv')}")
-        return sid
-
-    def _resolve_session(self) -> str | None:
-        """Current session id (created on first use); None when logging is disabled."""
+    def _plan_session(self) -> str | None:
+        """
+        Session id that WILL be used (first id with no existing result file). Touches
+        nothing on disk; None when logging is disabled.
+        """
         d = self.results_dir
         if d is None:
             return None
         if self._session_id is not None and self._session_dir == d:
             return self._session_id
-        return self._new_session(d)
+        n = self._session_n
+        while True:
+            sid = self._session_base if n == 1 else f"{self._session_base}_{n}"
+            if not any((d / f"{sid}_{k}.csv").exists()
+                       for k in ("metrics", "outputs", "best_params", "validation")):
+                break
+            n += 1
+        self._session_n, self._session_id, self._session_dir = n, sid, d
+        self._session_claimed = False
+        return sid
+
+    def _claim_session(self) -> bool:
+        """
+        Create the planned session's metrics file exclusively (O_EXCL), only when its first
+        row is about to be written. On a name collision the next free id is taken.
+        """
+        if self._plan_session() is None:
+            return False
+        if self._session_claimed:
+            return True
+        d = self._session_dir
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._warn_once(("mkdir", str(d)), f"[Results] Cannot create {d}: {exc}")
+            return False
+        while True:
+            path = d / f"{self._session_id}_metrics.csv"
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                break
+            except FileExistsError:
+                self._session_n += 1
+                self._session_id = (self._session_base if self._session_n == 1
+                                    else f"{self._session_base}_{self._session_n}")
+            except OSError as exc:
+                self._warn_once(("create", str(path)), f"[Results] Cannot create {path}: {exc}")
+                return False
+        self._session_claimed = True
+        self._run_counter = 0
+        prev = self._prev_metrics
+        logger.info(
+            f"[Results] Per-run results are appended to {path} and "
+            f"{d / (self._session_id + '_outputs.csv')}"
+            + (f" (columns changed; previous session: {prev})" if prev else "")
+        )
+        self._prev_metrics = path
+        return True
 
     def session_path(self, suffix: str) -> Path | None:
-        """Path ``<results_dir>/<session>_<suffix>.csv`` (None when logging is disabled)."""
-        sid = self._resolve_session()
+        """Path ``<results_dir>/<session>_<suffix>.csv`` that will be used (nothing is created)."""
+        sid = self._plan_session()
         return None if sid is None else self._session_dir / f"{sid}_{suffix}.csv"
 
     @property
     def session_files(self) -> dict:
         """{'metrics': Path, 'outputs': Path} of the current session ({} when disabled)."""
-        if self._resolve_session() is None:
+        if self._plan_session() is None:
             return {}
         return {"metrics": self.session_path("metrics"), "outputs": self.session_path("outputs")}
 
@@ -285,26 +315,34 @@ class CalibrationManager:
                     mode="sequential", reach_id=None, output_variable=None,
                     obs_index=None) -> None:
         try:
-            if self._resolve_session() is None:
+            # 1. validate the record BEFORE any session/column decision
+            if not isinstance(params, Mapping):
+                raise TypeError(f"params must be a mapping, got {type(params).__name__}")
+            if scores is not None and not isinstance(scores, Mapping):
+                raise TypeError(f"scores must be a mapping or None, got {type(scores).__name__}")
+            if status not in ("ok", "failed"):
+                raise ValueError(f"status must be 'ok' or 'failed', got {status!r}")
+            if sim is not None and not hasattr(sim, "items"):
+                raise TypeError(f"sim must be a pandas Series or None, got {type(sim).__name__}")
+            if self._plan_session() is None:
                 return
-            formatted = (self._format_params(params)
-                         if (params and self._is_raw(params)) else (params or {}))
+            formatted = self._format_params(params) if (params and self._is_raw(params)) else params
             pcols = self._param_columns(formatted)
             mnames = list(scores) if scores else (self._logged_metric_names() or [])
+
+            # 2. column set: unchanged / first / changed (new session, created lazily)
             if self._log_columns is None:
                 self._log_columns = (tuple(pcols), tuple(mnames))
             elif (set(self._log_columns[0]) != set(pcols)
                   or set(self._log_columns[1]) != set(mnames)):
-                old = self.session_files
                 self._log_columns = (tuple(pcols), tuple(mnames))
-                self._session_n += 1
-                self._session_id = None
-                if self._resolve_session() is None:
-                    return
-                logger.info(
-                    f"[Results] Parameter/metric columns changed; new session started: "
-                    f"{old.get('metrics')} -> {self.session_files.get('metrics')}"
-                )
+                if self._session_claimed:               # rows already written: switch session
+                    self._session_n += 1
+                    self._session_id = None
+                    self._session_claimed = False
+                    self._plan_session()
+            if not self._claim_session():
+                return
             pnames, metric_cols = self._log_columns
             self._run_counter += 1
             run_id = self._run_counter

@@ -537,11 +537,63 @@ def test_outputs_use_six_significant_digits(proj):
     assert text[1].endswith(",1.23457") and text[2].endswith(",1e+06")
 
 
-def test_session_file_is_created_exclusively(proj):
+def test_session_file_is_created_exclusively_at_first_write(proj):
     a, b = CalibrationManager(proj), CalibrationManager(proj)
     b._session_base = a._session_base
-    fa, fb = a.session_files["metrics"], b.session_files["metrics"]   # neither wrote any row yet
-    assert fa != fb and fa.exists() and fb.exists()
+    a.record_run({"CN2.mgt": 1.0}, {"nse": 1.0})
+    b.session_files                                  # planned before a's file is taken ...
+    b._session_id = None                             # ... and forget the plan (race simulation)
+    b._session_id, b._session_dir = a._session_id, a._session_dir
+    b._session_claimed = False
+    b._session_n = a._session_n
+    b.record_run({"CN2.mgt": 2.0}, {"nse": 1.0})     # O_EXCL fails on a's file -> next id
+    fa = a.session_path("metrics")
+    fb = b.session_path("metrics")
+    assert fa != fb and fb.name.endswith("_2_metrics.csv")
+    assert len(pd.read_csv(fa)) == 1 and len(pd.read_csv(fb)) == 1
+
+
+def _tree(d: Path):
+    return sorted(str(p.relative_to(d)) for p in d.rglob("*")) if d.exists() else []
+
+
+def test_reading_properties_creates_nothing(proj):
+    mgr = CalibrationManager(proj)
+    work = proj.working_folder
+    before = _tree(work)
+    _ = mgr.results_dir, mgr.log_outputs, mgr.session_files, mgr.session_path("best_params")
+    assert _tree(work) == before
+    assert not (work / "calibration_results").exists()
+    assert set(mgr.session_files) == {"metrics", "outputs"}      # paths that WILL be used
+
+
+def test_invalid_records_create_nothing_and_keep_session(proj):
+    mgr = CalibrationManager(proj)
+    work = proj.working_folder
+    mgr.record_run(None, "not-a-dict", status=123)
+    mgr.record_run({"CN2.mgt": 1.0}, {"nse": 1.0}, status="weird")
+    mgr.record_run({"CN2.mgt": 1.0}, ["nse"])
+    mgr.record_run({"CN2.mgt": 1.0}, {"nse": 1.0}, sim=42)
+    assert not (work / "calibration_results").exists()
+    mgr.record_run({"CN2.mgt": 1.0}, {"nse": 1.0})              # one valid session
+    files = mgr.session_files
+    snap = _tree(work)
+    mgr.record_run({"ALPHA_BF.gw": 1.0}, "garbage")             # invalid: no switch
+    mgr.record_run(None, None, status=123)
+    assert mgr.session_files == files and _tree(work) == snap
+
+
+def test_every_metrics_file_has_header_and_a_row_after_switches(proj, obs):
+    mgr = CalibrationManager(proj)
+    mgr.record_run({"CN2.mgt": 1.0}, {"nse": 1.0})
+    mgr.record_run({"CN2.mgt": 1.0, "ALPHA_BF.gw": 2.0}, {"nse": 1.0})   # switch 1
+    mgr.record_run({"CN2.mgt": 1.0, "ALPHA_BF.gw": 2.0}, {"kge": 1.0})   # switch 2
+    mgr.record_run(None, None, status=123)                                 # invalid
+    files = sorted((proj.working_folder / "calibration_results").glob("*_metrics.csv"))
+    assert len(files) == 3
+    for f in files:
+        lines = [l for l in f.read_text().splitlines() if l.strip()]
+        assert len(lines) >= 2 and lines[0].startswith("run_id,"), f
 
 
 def test_validation_run_is_logged_with_mode_validation(proj, obs, monkeypatch):
