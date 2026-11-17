@@ -123,19 +123,48 @@ class SWATSensitivity:
         return results_df, sensitivity_indices
 
     def _calculate_oat_sensitivity(self, results_df: pd.DataFrame) -> pd.DataFrame:
-        """Tính sensitivity indices từ kết quả OAT."""
-        sensitivity = []
+        """
+        Sensitivity indices from OAT results.
+
+        sensitivity_index = metric_range of the parameter's sweep divided by the
+        largest metric_range over all parameters (the most influential parameter
+        gets 1.0, 0 means no effect); rows are ranked by it. metric_range and
+        metric_std are kept, and range_over_std (the former index, which does not
+        depend on the size of the effect) is listed for transparency only.
+        A parameter with fewer than 2 successful runs gets NaN (and a warning),
+        never 0.
+        """
+        rows = []
         for param in results_df['parameter'].unique():
             d = results_df[results_df['parameter'] == param]['metric'].dropna()
-            metric_range = d.max() - d.min()
-            metric_std = d.std()
-            sensitivity.append({
+            if len(d) < 2:
+                logger.warning(
+                    f"OAT: parameter '{param}' has {len(d)} successful run(s); "
+                    "sensitivity is NaN"
+                )
+                rows.append({'parameter': param, 'metric_range': np.nan,
+                             'metric_std': np.nan, 'range_over_std': np.nan})
+                continue
+            metric_range = float(d.max() - d.min())
+            metric_std = float(d.std())
+            rows.append({
                 'parameter': param,
                 'metric_range': metric_range,
                 'metric_std': metric_std,
-                'sensitivity_index': metric_range / metric_std if metric_std > 0 else 0
+                'range_over_std': metric_range / metric_std if metric_std > 0 else 0.0,
             })
-        return pd.DataFrame(sensitivity).sort_values('sensitivity_index', ascending=False)
+        out = pd.DataFrame(rows)
+        ranges = out['metric_range']
+        top = ranges.max()   # NaN-skipping; NaN when every parameter failed
+        if pd.isna(top):
+            out['sensitivity_index'] = np.nan
+        elif top > 0:
+            out['sensitivity_index'] = ranges / top
+        else:
+            out['sensitivity_index'] = ranges.where(ranges.isna(), 0.0)
+        out = out[['parameter', 'metric_range', 'metric_std', 'range_over_std',
+                   'sensitivity_index']]
+        return out.sort_values('sensitivity_index', ascending=False, na_position='last')
 
     # ==================== Morris Method ====================
     def morris_method(
@@ -403,6 +432,7 @@ class SWATSensitivity:
         Si = morris_analyze.analyze(
             problem, X, Y,
             conf_level=conf_level,
+            num_levels=num_levels,
             print_to_console=False,
             num_resamples=num_resamples,
         )

@@ -139,3 +139,60 @@ class TestSALib:
         s._manager.run_batch = batch_fn()
         r = s.sobol_method(RANGES, obs, N=16, num_resamples=50)
         assert r.iloc[0]["parameter"] == "B.gw"
+
+
+# ── OAT index, num_levels, < 2 successes ────────────────────────────────────
+
+class TestOATIndex:
+    RANGES3 = {"x1": (0.0, 1.0), "x2": (0.0, 1.0), "x3": (0.0, 1.0)}
+
+    def _run(self, obs, fail=None):
+        s = make_sens()
+
+        def fn(param_sets, o, metrics, *a, **kw):
+            vals = []
+            for ps in param_sets:
+                x = {k: v[0][0] for k, v in ps.items()}
+                vals.append(3.0 * x["x1"] + 1.0 * x["x2"] + 0.0 * x["x3"])
+            if fail:
+                vals = [float("nan") if (i % 4 in fail.get(k, ())) else v
+                        for i, (k, v) in enumerate(zip(["x1"] * 4 + ["x2"] * 4 + ["x3"] * 4, vals))]
+            return pd.DataFrame({metrics[0]: vals})
+        s._manager.run_batch = fn
+        return s.one_at_a_time(self.RANGES3, n_steps=4, observed_series=obs,
+                               baseline_params={"x1": 0.5, "x2": 0.5, "x3": 0.5})[1]
+
+    def test_ranking_follows_effect_size(self, obs):
+        idx = self._run(obs)
+        assert idx["parameter"].tolist() == ["x1", "x2", "x3"]
+        d = idx.set_index("parameter")
+        assert d.loc["x1", "sensitivity_index"] == pytest.approx(1.0)
+        assert d.loc["x2", "sensitivity_index"] == pytest.approx(1.0 / 3.0)
+        assert d.loc["x3", "sensitivity_index"] == 0.0
+        assert {"metric_range", "metric_std", "range_over_std"} <= set(idx.columns)
+
+    def test_fewer_than_two_successes_is_nan(self, obs, caplog):
+        with caplog.at_level(logging.WARNING):
+            idx = self._run(obs, fail={"x2": (0, 1, 2)})   # x2: one success only
+        d = idx.set_index("parameter")
+        assert np.isnan(d.loc["x2", "sensitivity_index"])
+        assert d.loc["x1", "sensitivity_index"] == pytest.approx(1.0)
+        assert "parameter 'x2' has 1 successful" in caplog.text
+        assert idx["parameter"].iloc[-1] == "x2"
+
+
+class TestMorrisLevels:
+    def test_num_levels_6_recovers_linear_mu_star(self, obs):
+        pytest.importorskip("SALib")
+        ranges = {"x1": (0, 1), "x2": (0, 1), "x3": (0, 1)}
+        s = make_sens()
+
+        def fn(param_sets, o, metrics, *a, **kw):
+            X = np.array([[ps[n][0][0] for n in ("x1", "x2", "x3")] for ps in param_sets])
+            return pd.DataFrame({metrics[0]: 2.0 * X[:, 0] + 1.0 * X[:, 1]})
+        s._manager.run_batch = fn
+        r = s.morris_salib(ranges, obs, n_trajectories=10, num_levels=6,
+                           num_resamples=20).set_index("parameter")["mu_star"]
+        assert r["x1"] == pytest.approx(2.0, abs=1e-9)
+        assert r["x2"] == pytest.approx(1.0, abs=1e-9)
+        assert r["x3"] == pytest.approx(0.0, abs=1e-9)
