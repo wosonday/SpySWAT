@@ -88,9 +88,13 @@ def atomic_write_lines(path, lines: List[str], retries: int = 5) -> None:
             except OSError:
                 pass
         try:
-            os.unlink(tmp_name)
+            os.chmod(tmp_name, stat.S_IREAD | stat.S_IWRITE)  # a read-only temp cannot be unlinked on Windows
         except OSError:
             pass
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            logger.warning(f"Could not remove temporary file {tmp_name}")
         raise
 
 
@@ -138,10 +142,17 @@ class HRUWriter(ReadFileLine):
         if not self.changed:
             logger.debug(f"No change for {self.hru_file}; not written.")
             return False
-        assert len(self.lines) == len(self._original), \
-            f"{self._name}: line count changed ({len(self._original)} -> {len(self.lines)})"
+        if len(self.lines) != len(self._original):
+            raise SWATFileFormatError(
+                f"{self._name}: line count changed ({len(self._original)} -> {len(self.lines)}); "
+                f"nothing written."
+            )
         for i, (a, b) in enumerate(zip(self._original, self.lines)):
-            assert len(a) == len(b), f"{self._name}: length of line {i + 1} changed"
+            if len(a) != len(b):
+                raise SWATFileFormatError(
+                    f"{self._name}, line {i + 1}: line length changed "
+                    f"({len(a)} -> {len(b)}); nothing written."
+                )
         atomic_write_lines(self.hru_file, self.lines)
         self._original = list(self.lines)
         logger.debug(f"Saved changes to {self.hru_file}")

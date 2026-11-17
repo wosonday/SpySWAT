@@ -323,16 +323,83 @@ def test_update_by_df_single_pass(env, monkeypatch):
     assert float((root / "000020001.gw").read_text(encoding="latin-1").splitlines()[1][:16]) == pytest.approx(0.75)
 
 
-def test_read_only_file_is_updated_and_stays_read_only(env):
+def test_read_only_file_is_updated_and_stays_read_only(env, monkeypatch):
+    root, _, mgr = env
+    f = root / "000010001.mgt"
+    os.chmod(f, stat.S_IREAD)
+    real = os.replace
+
+    def windows_like(src, dst):
+        # Windows refuses to replace a read-only destination
+        if not os.access(dst, os.W_OK) and os.geteuid() != 0 if hasattr(os, "geteuid") else False:
+            raise PermissionError(13, "read-only destination", str(dst))
+        return real(src, dst)
+
+    monkeypatch.setattr(writers.os, "replace", windows_like)
+    try:
+        mgr.update_params({"CN2.mgt": (60.0, "replace")}, subbasin=1)
+        assert "60.00" in f.read_text(encoding="latin-1")
+        assert not os.access(f, os.W_OK) or os.name == "nt" or os.geteuid() == 0  # mode restored
+    finally:
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_replace_failure_leaves_no_temp_file_and_original_intact(env, monkeypatch):
+    root, _, mgr = env
+    before = snapshot(root)
+
+    def failing(src, dst):
+        raise PermissionError(13, "locked", str(dst))
+
+    monkeypatch.setattr(writers.os, "replace", failing)
+    monkeypatch.setattr(writers.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        mgr.update_params({"CN2.mgt": (60.0, "replace")}, subbasin=1)
+    monkeypatch.undo()
+    assert snapshot(root) == before
+    assert not [p for p in root.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_replace_failure_on_read_only_original_restores_mode(env, monkeypatch):
     root, _, mgr = env
     f = root / "000010001.mgt"
     os.chmod(f, stat.S_IREAD)
     try:
-        mgr.update_params({"CN2.mgt": (60.0, "replace")}, subbasin=1)
-        assert "60.00" in f.read_text(encoding="latin-1")
-        assert not os.access(f, os.W_OK) or os.name == "nt" or os.geteuid() == 0
+        monkeypatch.setattr(writers.os, "replace",
+                            lambda s, d: (_ for _ in ()).throw(PermissionError(13, "locked")))
+        monkeypatch.setattr(writers.time, "sleep", lambda s: None)
+        with pytest.raises(PermissionError):
+            mgr.update_params({"CN2.mgt": (60.0, "replace")}, subbasin=1)
+        monkeypatch.undo()
+        assert stat.S_IMODE(os.stat(f).st_mode) & stat.S_IWRITE == 0 or os.name == "nt" or os.geteuid() == 0
+        assert not [p for p in root.iterdir() if p.name.endswith(".tmp")]
     finally:
         os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_unknown_parameter_raises_keyerror_before_any_write(env):
+    root, _, mgr = env
+    before = snapshot(root)
+    with pytest.raises(KeyError, match="CN3.mgt"):
+        mgr.update_params({"SFTMP.bsn": (2.0, "replace"), "CN3.mgt": (1.0, "replace")})
+    assert snapshot(root) == before
+    df = pd.DataFrame({"param": ["SFTMP.bsn", "NOPE.gw"], "method": ["replace"] * 2, "value": [1.0, 1.0]})
+    with pytest.raises(KeyError, match="NOPE.gw"):
+        mgr.update_by_df(df)
+    assert snapshot(root) == before
+
+
+def test_save_shape_check_is_not_an_assert(env):
+    root, _, _ = env
+    w = HRUWriter(root / "000010001.mgt")
+    before = _read_bytes(root / "000010001.mgt")
+    w.lines[1] = w.lines[1][:-5] + "\r\n"
+    with pytest.raises(SWATFileFormatError, match="length"):
+        w.save()
+    w.lines = w.lines[:1]
+    with pytest.raises(SWATFileFormatError, match="line count"):
+        w.save()
+    assert _read_bytes(root / "000010001.mgt") == before
 
 
 # ------------------------------------------------------------------ validate_inputs

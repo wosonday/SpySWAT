@@ -1,3 +1,4 @@
+import difflib
 from collections import defaultdict
 from pathlib import Path
 
@@ -152,10 +153,14 @@ class HRUManager:
         self._apply_updates(all_updates)
 
     def _collect_file_updates(self, pname: str, val: float, mth: str, subbasin_filter) -> list:
-        par_info = self.swat_param.get(pname)
-        if par_info is None:
-            logger.warning(f"Param '{pname}' not found. Skipping.")
-            return []
+        try:
+            par_info = self.swat_param.get(pname)
+        except KeyError:
+            close = difflib.get_close_matches(pname, self.swat_param.available_keys(), n=3)
+            raise KeyError(
+                f"Unknown parameter '{pname}'."
+                + (f" Close matches: {close}." if close else "")
+            ) from None
 
         hru_files = self._resolve_files(par_info.ext, subbasin_filter)
 
