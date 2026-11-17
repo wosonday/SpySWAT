@@ -1,5 +1,10 @@
 import logging
-__version__ = '0.1.0'
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    __version__ = _dist_version("SpySWAT")
+except PackageNotFoundError:  # running from a source checkout that is not installed
+    __version__ = "0+unknown"
 
 __author__ = 'Sondayyyy'
 
