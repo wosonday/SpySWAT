@@ -13,10 +13,14 @@ Reference:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 
+from spyswat.swat_calib.core.workingFolder_manager import (
+    _check_fresh_output_rch, _stamp_output_rch,
+)
 from spyswat.swat_calib.analysis.statistics import (
     best_index, is_maximize, to_objective,
 )
@@ -194,23 +198,53 @@ class GLUE:
         # Each run is aligned to the observations by the manager (single source of
         # truth for frequency handling); keep only timesteps present in every run.
         sims: List[pd.Series] = []
+        kept: List[int] = []
+        n_stale = 0
         obs_aligned: Optional[pd.Series] = None
-        for _, row in behavioral_df.iterrows():
+        for pos, (_, row) in enumerate(behavioral_df.iterrows()):
             raw = {name: float(row[name]) for name in param_names}
             self._manager._backup_state()
             try:
                 self._manager.project.HRU.update_params(
                     self._manager._format_params(raw, param_methods, param_subbasins)
                 )
+                out_dir = getattr(self._manager, "_txinout_dir", lambda: None)()
+                if not isinstance(out_dir, Path):
+                    out_dir = None
+                before = _stamp_output_rch(out_dir) if out_dir is not None else None
                 self._manager.project.run()
-                sim_raw = self._manager.project.Output.read_rch(
-                    columns=["RCH", "MON", output_variable], reach_id=reach_id
-                )[output_variable]
+                fresh = True
+                if out_dir is not None:
+                    try:
+                        _check_fresh_output_rch(out_dir, before)
+                    except RuntimeError as exc:
+                        fresh = False
+                        n_stale += 1
+                        logger.warning(
+                            "GLUE 95PPU: behavioural run %d excluded (%s)", pos, exc
+                        )
+                if fresh:
+                    sim_raw = self._manager.project.Output.read_rch(
+                        columns=["RCH", "MON", output_variable], reach_id=reach_id
+                    )[output_variable]
             finally:
                 self._manager._restore_state()
+            if not fresh:
+                continue
             obs_a, sim_a = self._manager._align_series(observed_series, sim_raw)
             obs_aligned = obs_a
             sims.append(sim_a)
+            kept.append(pos)
+
+        if n_stale:
+            logger.warning(
+                "GLUE 95PPU: %d of %d behavioural runs had no fresh output and were "
+                "excluded from the band", n_stale, len(behavioral_df)
+            )
+        if kept:
+            weights = weights[kept]
+            w_sum   = weights.sum()
+            weights = weights / w_sum if w_sum > 0 else np.ones(len(weights)) / len(weights)
 
         common = None
         for sim_a in sims:

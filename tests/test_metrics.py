@@ -326,6 +326,7 @@ class TestUncertaintyBand:
         calib.manager._restore_state = MagicMock(side_effect=lambda: order.append("restore"))
         calib.manager.project.run = MagicMock(side_effect=lambda *a, **k: order.append("run"))
         calib.manager._format_params = MagicMock(return_value={"X": [(1.0, "r")]})
+        calib.manager._txinout_dir = lambda: None   # mock project: no real TxtInOut
         return calib, order
 
     def test_methods_subbasins_forwarded_and_state_restored(self, obs):
@@ -365,3 +366,32 @@ class TestUncertaintyBand:
         kw = calib.glue.uncertainty_band.call_args.kwargs
         assert kw["param_methods"]["CN2.mgt"] == "r"
         assert kw["param_subbasins"]["CN2.mgt"] == [3]
+
+
+# ── uncertainty_band freshness check ─────────────────────────────────────────
+
+class TestUncertaintyBandFreshness:
+    def test_stale_run_excluded_with_warning(self, obs, tmp_path, caplog):
+        import logging
+        (tmp_path / "output.rch").write_text("old")
+        calib = make_calib()
+        calib.manager.project.get_date_range.return_value = obs.index
+        calib.manager.project.Output.read_rch.side_effect = (
+            lambda **kw: {"FLOW_OUTcms": pd.Series(np.linspace(1, 9, len(obs)))})
+        calib.manager._backup_state = MagicMock()
+        calib.manager._restore_state = MagicMock()
+        calib.manager._format_params = MagicMock(return_value={"X": [(1.0, "v")]})
+        calib.manager._txinout_dir = lambda: tmp_path
+        n = [0]
+
+        def run():
+            n[0] += 1
+            if n[0] != 2:                       # run 2 never writes output.rch
+                (tmp_path / "output.rch").write_text("new %d" % n[0])
+        calib.manager.project.run = MagicMock(side_effect=run)
+        df = pd.DataFrame({"CN2.mgt": [50.0, 60.0, 70.0], "nse": [0.6, 0.7, 0.8]})
+        with caplog.at_level(logging.WARNING):
+            res = calib.glue.uncertainty_band(df, obs)
+        assert "excluded" in caplog.text
+        assert res["uncertainty_band"] is not None
+        assert calib.manager._restore_state.call_count == 3

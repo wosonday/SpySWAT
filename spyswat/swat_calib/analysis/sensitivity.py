@@ -4,8 +4,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import logging
 
-from .statistics import worst_score
-
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +18,36 @@ class SWATSensitivity:
         # CalibrationManager cho parallel execution
         from spyswat.swat_calib.calibration import CalibrationManager
         self._manager = CalibrationManager(project)
+        # Raw samples / scores (NaN = failed run) of the last Sobol / Morris (SALib) batch,
+        # kept so that an expensive batch is never lost when the analysis aborts.
+        self.last_samples: Optional[np.ndarray] = None
+        self.last_scores: Optional[np.ndarray] = None
+
+    @staticmethod
+    def _log_failures(label: str, scores) -> int:
+        """Log ``failed X of N runs`` (WARNING when X > 0); return X. NaN/inf count as failed."""
+        arr = np.asarray(scores, dtype=float)
+        n_failed = int((~np.isfinite(arr)).sum())
+        msg = f"{label}: failed {n_failed} of {arr.size} runs"
+        if n_failed:
+            logger.warning(msg)
+        else:
+            logger.info(msg)
+        return n_failed
+
+    def _sequential_mean(self, params: dict, output_variable: str, reach_id: int) -> float:
+        """One sequential run (no observations) returning the mean output; inputs are
+        backed up before and restored after, so the user's TxtInOut is left untouched."""
+        self._manager._backup_state()
+        try:
+            self.project.HRU.update_params(params)
+            self.project.run()
+            sim = self.project.Output.read_rch(
+                columns=['RCH', 'MON', output_variable], reach_id=reach_id
+            )[output_variable]
+            return float(sim.mean())
+        finally:
+            self._manager._restore_state()
 
     def _batch_scores(self, param_sets, observed_series, metric, reach_id, output_variable) -> np.ndarray:
         """Run a batch and return the ``metric`` column as a float array (NaN = failed run)."""
@@ -77,17 +105,15 @@ class SWATSensitivity:
             scores = []
             for param_name, value, params in all_configs:
                 try:
-                    self.project.HRU.update_params(params)
-                    self.project.run()
-                    sim = self.project.Output.read_rch(
-                        columns=['RCH', 'MON', output_variable],
-                        reach_id=reach_id
-                    )[output_variable]
-                    scores.append(float(sim.mean()))
+                    scores.append(self._sequential_mean(params, output_variable, reach_id))
                 except Exception as e:
                     logger.error(f"OAT {param_name}={value}: {e}")
                     scores.append(float('nan'))
 
+        n_failed = self._log_failures("OAT", scores)
+        if n_failed:
+            logger.warning("OAT: failed runs are reported as NaN and excluded from the "
+                           "sensitivity of their parameter")
         results = [
             {'parameter': name, 'value': value, 'metric': score}
             for (name, value, _), score in zip(all_configs, scores)
@@ -157,16 +183,12 @@ class SWATSensitivity:
             all_scores = []
             for ps in all_steps:
                 try:
-                    self.project.HRU.update_params(ps)
-                    self.project.run()
-                    sim = self.project.Output.read_rch(
-                        columns=['RCH', 'MON', output_variable],
-                        reach_id=reach_id
-                    )[output_variable]
-                    all_scores.append(float(sim.mean()))
+                    all_scores.append(self._sequential_mean(ps, output_variable, reach_id))
                 except Exception as e:
                     logger.error(f"Morris step error: {e}")
                     all_scores.append(float('nan'))
+
+        self._log_failures("Morris", all_scores)
 
         # Tái cấu trúc scores theo trajectory
         traj_metrics: Dict[int, List[float]] = {i: [] for i in range(n_trajectories)}
@@ -175,9 +197,23 @@ class SWATSensitivity:
             traj_metrics[t_idx].append(score)
             traj_params[t_idx].append({k: v[0][0] for k, v in ps.items()})
 
+        # Drop every trajectory that contains a failed run (never substitute a value)
+        valid_traj = [t for t in range(n_trajectories)
+                      if np.all(np.isfinite(np.asarray(traj_metrics[t], dtype=float)))]
+        n_dropped = n_trajectories - len(valid_traj)
+        if n_dropped:
+            logger.warning(
+                f"Morris: dropped {n_dropped} of {n_trajectories} trajectories containing failed runs"
+            )
+        if len(valid_traj) < 2:
+            raise RuntimeError(
+                f"Morris: only {len(valid_traj)} of {n_trajectories} trajectories have no "
+                f"failed run (need at least 2); dropped {n_dropped}"
+            )
+
         # Tính Elementary Effects
         elementary_effects = {name: [] for name in param_names}
-        for t_idx in range(n_trajectories):
+        for t_idx in valid_traj:
             metrics = traj_metrics[t_idx]
             params_list = traj_params[t_idx]
             for s in range(1, len(metrics)):
@@ -341,8 +377,27 @@ class SWATSensitivity:
             param_sets, observed_series, metric, reach_id, output_variable
         )
 
-        # Thay NaN/Inf bằng bad score để SALib không lỗi
-        Y = np.where(np.isfinite(Y), Y, worst_score(metric))
+        self.last_samples, self.last_scores = X, Y.copy()
+        self._log_failures("Morris (SALib)", Y)
+
+        # Rows come in blocks of k+1 per trajectory: drop every block with a failed run
+        # (no substitute value is ever fed to SALib).
+        block      = k + 1
+        n_traj     = n_runs // block
+        ok_rows    = np.isfinite(Y).reshape(n_traj, block).all(axis=1)
+        n_dropped  = int((~ok_rows).sum())
+        if n_dropped:
+            logger.warning(
+                f"Morris (SALib): dropped {n_dropped} of {n_traj} trajectories containing failed runs"
+            )
+        if int(ok_rows.sum()) < 2:
+            raise RuntimeError(
+                f"Morris (SALib): only {int(ok_rows.sum())} of {n_traj} trajectories have no "
+                f"failed run (need at least 2); dropped {n_dropped}. Raw samples and scores "
+                "are available as last_samples / last_scores."
+            )
+        keep = np.repeat(ok_rows, block)
+        X, Y = X[keep], Y[keep]
 
         # --- Phân tích Morris qua SALib ---
         Si = morris_analyze.analyze(
@@ -433,7 +488,14 @@ class SWATSensitivity:
             param_sets, observed_series, metric, reach_id, output_variable
         )
 
-        Y = np.where(np.isfinite(Y), Y, worst_score(metric))
+        self.last_samples, self.last_scores = X, Y.copy()
+        n_failed = self._log_failures("Sobol (SALib)", Y)
+        if n_failed:
+            raise RuntimeError(
+                f"Sobol: {n_failed} of {len(Y)} runs failed; Sobol indices cannot be computed "
+                "with missing runs. The sample matrix and raw scores (NaN = failed) are kept "
+                "in self.last_samples / self.last_scores."
+            )
 
         # --- Phân tích Sobol ---
         Si = sobol_analyze.analyze(
