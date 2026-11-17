@@ -8,7 +8,7 @@ import multiprocessing
 import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from spyswat.swat_calib.run import SWATRun
 from spyswat.swat_calib.core import TxInOut, HRUManager
@@ -319,8 +319,8 @@ class WorkingFolderManager:
                            param_sets: Optional[List[dict]] = None,
                            log_queue=None, *,
                            overlays: Optional[List[Dict[str, Any]]] = None,
-                           prepare: Optional[Callable[[str], Any]] = None,
-                           extract: Optional[Callable[[str], Any]] = None,
+                           prepare: Union[None, Callable[[str], Any], Sequence[Optional[Callable[[str], Any]]]] = None,
+                           extract: Union[None, Callable[[str], Any], Sequence[Optional[Callable[[str], Any]]]] = None,
                            runner: Optional[Callable[[str], Any]] = None,
                            timeout_s: Optional[float] = None) -> List[WorkerResult]:
         """
@@ -339,8 +339,11 @@ class WorkingFolderManager:
             overlays:   Optional list (one per job) of {dest_file_name: source_path}
                         copied into the worker dir before the run.
             prepare:    Optional picklable ``prepare(worker_dir)`` run before params.
+                        Either one callable applied to every job, or a list/tuple with
+                        one entry (callable or None) per job, index-aligned with the jobs.
             extract:    Optional picklable ``extract(worker_dir) -> payload`` run after
-                        a successful run (payload must be picklable).
+                        a successful run (payload must be picklable). Same forms as
+                        ``prepare``. A failing prepare/extract marks the job failed.
             runner:     Optional picklable ``runner(worker_dir)``; default runs SWAT.
             timeout_s:  Kill the default SWAT run after this many seconds.
 
@@ -365,6 +368,16 @@ class WorkingFolderManager:
         if overlays is not None and len(overlays) != n:
             raise ValueError(f"overlays has {len(overlays)} entries, expected {n}")
 
+        def _per_job(fn, name):
+            if isinstance(fn, (list, tuple)):
+                if len(fn) != n:
+                    raise ValueError(f"{name} has {len(fn)} entries, expected {n}")
+                return list(fn)
+            return [fn] * n
+
+        prepares = _per_job(prepare, "prepare")
+        extracts = _per_job(extract, "extract")
+
         active_dirs   = self._worker_dirs[:n]
         active_params = list(param_sets) if param_sets is not None else [None] * n
         active_over   = list(overlays) if overlays is not None else [None] * n
@@ -384,7 +397,7 @@ class WorkingFolderManager:
                     _worker_job,
                     str(active_dirs[i]), baseline_str, str(swat_exe),
                     active_params[i], param_path_str, active_over[i],
-                    prepare, extract, runner, timeout_s, log_queue,
+                    prepares[i], extracts[i], runner, timeout_s, log_queue,
                 ): i
                 for i in range(n)
             }

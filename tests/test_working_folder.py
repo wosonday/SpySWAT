@@ -246,3 +246,95 @@ def test_timeout_kills_child_and_gives_failed_result(env):
     assert len(res) == 1 and not res[0].ok
     assert "Timeout" in res[0].error
     assert res[0].duration_s < 20
+
+
+# ── per-job prepare / extract ─────────────────────────────────────────
+
+def prep_marker_a(worker_dir: str) -> None:
+    Path(worker_dir, "marker.txt").write_text("A:" + Path(worker_dir).name)
+
+
+def prep_marker_b(worker_dir: str) -> None:
+    Path(worker_dir, "marker.txt").write_text("B:" + Path(worker_dir).name)
+
+
+def extract_marker(worker_dir: str):
+    return Path(worker_dir, "marker.txt").read_text()
+
+
+def extract_name(worker_dir: str):
+    return "job-" + Path(worker_dir).name
+
+
+def extract_raises(worker_dir: str):
+    raise ValueError("extract failed")
+
+
+def test_per_job_prepare_and_extract_are_index_aligned(env):
+    wf = make_wf(env, n=3)
+    res = wf.run_parallel("exe", param_sets=[None, None, None], runner=fake_runner_always,
+                          prepare=[prep_marker_a, prep_marker_b, None],
+                          extract=[extract_marker, extract_name, None])
+    assert all(r.ok for r in res), [r.error for r in res]
+    assert res[0].payload == "A:TxInOut1"
+    assert res[1].payload == "job-TxInOut2"
+    assert res[2].payload is None
+    assert not (wf.worker_dirs[2] / "marker.txt").exists()
+    assert (wf.worker_dirs[1] / "marker.txt").read_text() == "B:TxInOut2"
+
+
+def test_single_callable_still_applies_to_every_job(env):
+    wf = make_wf(env, n=2)
+    res = wf.run_parallel("exe", param_sets=[None, None], runner=fake_runner_always,
+                          prepare=prep_marker_a, extract=extract_marker)
+    assert [r.payload for r in res] == ["A:TxInOut1", "A:TxInOut2"]
+
+
+def test_wrong_length_prepare_or_extract_raises(env):
+    wf = make_wf(env, n=2)
+    with pytest.raises(ValueError, match="prepare"):
+        wf.run_parallel("exe", param_sets=[None, None], runner=fake_runner_always,
+                        prepare=[prep_marker_a])
+    with pytest.raises(ValueError, match="extract"):
+        wf.run_parallel("exe", param_sets=[None, None], runner=fake_runner_always,
+                        extract=(extract_name, extract_name, extract_name))
+
+
+def test_failing_extract_marks_job_failed(env):
+    wf = make_wf(env, n=2)
+    res = wf.run_parallel("exe", param_sets=[None, None], runner=fake_runner_always,
+                          extract=[extract_raises, extract_name])
+    assert not res[0].ok and "extract failed" in res[0].error
+    assert res[1].ok and res[1].payload == "job-TxInOut2"
+
+
+# ── busy probe ────────────────────────────────────────────────────────
+
+def test_busy_probe_fails_only_the_locked_worker(env, monkeypatch):
+    import builtins
+    wf = make_wf(env, n=2)
+    for w in wf.worker_dirs:
+        (w / "output.rch").write_text("old\n")
+    real_open = builtins.open
+
+    def fake_open(file, mode="r", *a, **k):
+        p = Path(str(file))
+        if mode == "ab" and p.name == "output.rch" and p.parent.name == "TxInOut1":
+            raise PermissionError("locked")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(wfm, "open", fake_open, raising=False)
+    calls = []
+
+    def recording_runner(worker_dir: str) -> None:
+        calls.append(Path(worker_dir).name)
+        fake_runner_always(worker_dir)
+
+    results = [
+        _worker_job(str(w), str(env[1]), "exe", None, str(env[2]), None,
+                    None, None, recording_runner, None)
+        for w in wf.worker_dirs
+    ]
+    assert not results[0].ok and "still using this folder" in results[0].error
+    assert results[1].ok, results[1].error
+    assert calls == ["TxInOut2"]
