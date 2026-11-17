@@ -98,3 +98,4 @@ class OutputFileManager:
     def __repr__(self):
         cached = list(self._cache.keys()) if self._cache else []
         return "SWATOutputManager(cached=" + str(cached) + ")"
+

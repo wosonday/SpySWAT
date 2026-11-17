@@ -85,7 +85,7 @@ class SWATProject:
         return self._file_cio.get_date_range_sim(freq, year_start_non_skip)
 
     def read_params_values(self, param: list):
-        return self._hru_manager.read_muti_hru_param_values(param)
+        return self._hru_manager.read_multi_hru_param_values(param)
 
     def run(self):
         return self.swat_exe.run(self.txinout.directory)
