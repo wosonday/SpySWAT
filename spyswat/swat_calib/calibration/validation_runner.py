@@ -42,20 +42,21 @@ class ValidationRunner:
         )
 
         # 2. Ap dung best params va chay SWAT
-        self.project.HRU.update_params(best_params)
+        manager = CalibrationManager(self.project)
+        _, methods, subbasins = manager._parse_spec(self.param_ranges)
+        formatted = (manager._format_params(best_params, methods, subbasins)
+                     if manager._is_raw(best_params) else best_params)
+        self.project.HRU.update_params(formatted)
         self.project.run()
 
         sim = self.project.Output.read_rch(
             columns=['RCH', 'MON', output_variable], reach_id=reach_id
         )[output_variable]
-        sim.index = self.project.get_date_range()
 
         # 3. Kiem dinh (validation period)
         obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
-        common = obs_valid.index.intersection(sim.index)
-        valid_stats = self.project.Statistic.calculate_statistics(
-            obs_valid.loc[common], sim.loc[common]
-        )
+        obs_a, sim_a = manager._align_series(obs_valid, sim)
+        valid_stats = self.project.Statistic.calculate_statistics(obs_a, sim_a)
 
         return {
             'best_parameters': best_params,
