@@ -203,11 +203,10 @@ class GLUE:
         obs_aligned: Optional[pd.Series] = None
         for pos, (_, row) in enumerate(behavioral_df.iterrows()):
             raw = {name: float(row[name]) for name in param_names}
+            formatted = self._manager._format_params(raw, param_methods, param_subbasins)
             self._manager._backup_state()
             try:
-                self._manager.project.HRU.update_params(
-                    self._manager._format_params(raw, param_methods, param_subbasins)
-                )
+                self._manager.project.HRU.update_params(formatted)
                 out_dir = getattr(self._manager, "_txinout_dir", lambda: None)()
                 if not isinstance(out_dir, Path):
                     out_dir = None
@@ -220,6 +219,11 @@ class GLUE:
                     except RuntimeError as exc:
                         fresh = False
                         n_stale += 1
+                        self._manager.record_run(
+                            formatted, None, status="failed", error=str(exc), sim=None,
+                            mode="uncertainty_band", reach_id=reach_id,
+                            output_variable=output_variable,
+                        )
                         logger.warning(
                             "GLUE 95PPU: behavioural run %d excluded (%s)", pos, exc
                         )
@@ -227,11 +231,22 @@ class GLUE:
                     sim_raw = self._manager.project.Output.read_rch(
                         columns=["RCH", "MON", output_variable], reach_id=reach_id
                     )[output_variable]
+            except Exception as exc:
+                self._manager.record_run(
+                    formatted, None, status="failed", error=str(exc), sim=None,
+                    mode="uncertainty_band", reach_id=reach_id,
+                    output_variable=output_variable,
+                )
+                raise
             finally:
                 self._manager._restore_state()
             if not fresh:
                 continue
             obs_a, sim_a = self._manager._align_series(observed_series, sim_raw)
+            self._manager.record_run(
+                formatted, None, status="ok", sim=sim_a, mode="uncertainty_band",
+                reach_id=reach_id, output_variable=output_variable,
+            )
             obs_aligned = obs_a
             sims.append(sim_a)
             kept.append(pos)

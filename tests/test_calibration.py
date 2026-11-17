@@ -112,6 +112,7 @@ class TestComputeUncertaintyBand:
         calib.manager._backup_state  = MagicMock()
         calib.manager._restore_state = MagicMock()
         calib.manager._txinout_dir   = lambda: None   # mock project: no real TxtInOut
+        calib.manager.record_run     = MagicMock()
         return calib
 
     def _behavioral_df(self, rng, n, idx):

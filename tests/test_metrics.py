@@ -327,6 +327,7 @@ class TestUncertaintyBand:
         calib.manager.project.run = MagicMock(side_effect=lambda *a, **k: order.append("run"))
         calib.manager._format_params = MagicMock(return_value={"X": [(1.0, "r")]})
         calib.manager._txinout_dir = lambda: None   # mock project: no real TxtInOut
+        calib.manager.record_run = MagicMock()
         return calib, order
 
     def test_methods_subbasins_forwarded_and_state_restored(self, obs):
@@ -340,6 +341,27 @@ class TestUncertaintyBand:
             assert c.args[1] == methods and c.args[2] == subs
         assert order == ["backup", "run", "restore"] * 3
         assert 0.0 <= res["p_factor"] <= 1.0
+
+    def test_record_run_once_per_run_with_sim(self, obs):
+        calib, _ = self._setup(obs)
+        df = pd.DataFrame({"CN2.mgt": [50.0, 60.0, 70.0], "nse": [0.6, 0.7, 0.8]})
+        calib.glue.uncertainty_band(df, obs, reach_id=2, output_variable="FLOW_OUTcms")
+        calls = calib.manager.record_run.call_args_list
+        assert len(calls) == 3
+        for c in calls:
+            assert c.kwargs["mode"] == "uncertainty_band" and c.kwargs["status"] == "ok"
+            assert c.kwargs["reach_id"] == 2
+            assert isinstance(c.kwargs["sim"], pd.Series)
+            assert c.args[1] is None
+
+    def test_record_run_failed_when_run_raises(self, obs):
+        calib, _ = self._setup(obs)
+        calib.manager.project.run = MagicMock(side_effect=RuntimeError("swat died"))
+        df = pd.DataFrame({"CN2.mgt": [50.0], "nse": [0.6]})
+        with pytest.raises(RuntimeError):
+            calib.glue.uncertainty_band(df, obs)
+        (c,) = calib.manager.record_run.call_args_list
+        assert c.kwargs["status"] == "failed" and "swat died" in c.kwargs["error"]
 
     def test_uses_manager_align_series(self, obs):
         calib, _ = self._setup(obs)
@@ -382,6 +404,7 @@ class TestUncertaintyBandFreshness:
         calib.manager._restore_state = MagicMock()
         calib.manager._format_params = MagicMock(return_value={"X": [(1.0, "v")]})
         calib.manager._txinout_dir = lambda: tmp_path
+        calib.manager.record_run = MagicMock()
         n = [0]
 
         def run():
@@ -395,3 +418,7 @@ class TestUncertaintyBandFreshness:
         assert "excluded" in caplog.text
         assert res["uncertainty_band"] is not None
         assert calib.manager._restore_state.call_count == 3
+        modes = [(c.kwargs["mode"], c.kwargs["status"])
+                 for c in calib.manager.record_run.call_args_list]
+        assert modes == [("uncertainty_band", "ok"), ("uncertainty_band", "failed"),
+                         ("uncertainty_band", "ok")]

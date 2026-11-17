@@ -20,6 +20,7 @@ def make_sens():
     project.WorkingFolder.n_parallel = 4
     s = SWATSensitivity(project)
     s._manager.setup_parallel = MagicMock()
+    s._manager.record_run = MagicMock()
     return s
 
 
@@ -65,6 +66,26 @@ class TestOAT:
         s.one_at_a_time(RANGES, n_steps=3)
         assert f.read_bytes() == original
         assert s._manager._backup_state.call_count == s._manager._restore_state.call_count == 6
+
+    def test_no_obs_records_every_run(self):
+        s = make_sens()
+        s._manager._backup_state = MagicMock()
+        s._manager._restore_state = MagicMock()
+        s.project.Output.read_rch.return_value = {"FLOW_OUTcms": pd.Series([1.0, 3.0])}
+        calls = {"n": 0}
+
+        def run():
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("boom")
+        s.project.run.side_effect = run
+        s.one_at_a_time(RANGES, n_steps=2)           # 4 runs, the 2nd fails
+        rec = s._manager.record_run.call_args_list
+        assert len(rec) == 4
+        assert all(c.kwargs["mode"] == "sensitivity" for c in rec)
+        assert [c.kwargs["status"] for c in rec] == ["ok", "failed", "ok", "ok"]
+        assert rec[0].args[1] == {"mean_FLOW_OUTcms": 2.0}
+        assert rec[1].args[1] is None and "boom" in rec[1].kwargs["error"]
 
     def test_no_obs_restores_when_run_fails(self, tmp_path):
         s = make_sens()

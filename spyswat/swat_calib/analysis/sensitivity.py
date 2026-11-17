@@ -39,13 +39,26 @@ class SWATSensitivity:
         """One sequential run (no observations) returning the mean output; inputs are
         backed up before and restored after, so the user's TxtInOut is left untouched."""
         self._manager._backup_state()
+        key = f"mean_{output_variable}"
         try:
             self.project.HRU.update_params(params)
             self.project.run()
             sim = self.project.Output.read_rch(
                 columns=['RCH', 'MON', output_variable], reach_id=reach_id
             )[output_variable]
-            return float(sim.mean())
+            value = float(sim.mean())
+        except Exception as exc:
+            self._manager.record_run(
+                params, None, status="failed", error=str(exc), sim=None,
+                mode="sensitivity", reach_id=reach_id, output_variable=output_variable,
+            )
+            raise
+        else:
+            self._manager.record_run(
+                params, {key: value}, status="ok", sim=None,
+                mode="sensitivity", reach_id=reach_id, output_variable=output_variable,
+            )
+            return value
         finally:
             self._manager._restore_state()
 
