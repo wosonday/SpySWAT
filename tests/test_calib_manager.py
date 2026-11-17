@@ -439,13 +439,14 @@ def test_log_survives_exception_in_later_run(proj, obs):
     assert set(_outputs(mgr)["run_id"]) == {1}
 
 
-def test_locked_log_file_only_warns_and_calibration_continues(proj, obs, monkeypatch, caplog):
+def test_locked_log_file_warns_once_buffers_rows_and_flushes_later(proj, obs, monkeypatch, caplog):
     _setup_iteration(proj, _run_writes_rch)
     mgr = CalibrationManager(proj)
     real_open = open
+    state = {"locked": True}
 
     def locked_open(file, *a, **k):
-        if str(file).endswith("_metrics.csv"):
+        if state["locked"] and str(file).endswith("_metrics.csv"):
             raise PermissionError("open in Excel")
         return real_open(file, *a, **k)
 
@@ -456,18 +457,109 @@ def test_locked_log_file_only_warns_and_calibration_continues(proj, obs, monkeyp
         assert _iter(mgr, obs) == pytest.approx(3.0)
     warns = [r for r in caplog.records if "Cannot write" in r.message and "_metrics.csv" in r.message]
     assert len(warns) == 1                                   # once per file
-    assert not mgr.session_files["metrics"].exists()
+    assert mgr.session_files["metrics"].stat().st_size == 0  # nothing written yet
     assert len(_outputs(mgr)) == 20                          # other file unaffected
+    state["locked"] = False
+    assert mgr.flush_log() is True
+    assert _metrics(mgr)["run_id"].tolist() == [1, 2]        # buffered rows were kept
 
 
-def test_column_set_change_raises_value_error(proj, obs):
+def test_pending_buffer_is_bounded(proj, obs, monkeypatch):
+    mgr = CalibrationManager(proj)
+    monkeypatch.setattr(CalibrationManager, "_MAX_PENDING_ROWS", 3)
+    monkeypatch.setattr(cm.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cm, "open", lambda *a, **k: (_ for _ in ()).throw(PermissionError("x")),
+                        raising=False)
+    for i in range(6):
+        mgr.record_run({"CN2.mgt": float(i)}, {"nse": 1.0})
+    (rows,) = [v for k, v in mgr._pending.items() if k.name.endswith("_metrics.csv")]
+    assert len(rows) == 3
+
+
+def test_column_change_starts_new_session_without_raising(proj, obs):
+    """glue-like batch (nse) then a run with kge and one more parameter: two sessions."""
+    mgr = CalibrationManager(proj)
+    df = mgr.run_batch([_v(50.0), _v(FAIL_CN2), _v(60.0)], obs, metrics=["nse"])
+    first = mgr.session_files["metrics"]
+    _setup_iteration(proj, _run_writes_rch)
+    score = mgr.run_iteration({"CN2.mgt": 0.1, "ALPHA_BF.gw": 0.2}, obs, metric="kge",
+                              methods={"CN2.mgt": "r", "ALPHA_BF.gw": "a"})
+    second = mgr.session_files["metrics"]
+    assert score == pytest.approx(3.0)
+    assert df["nse"].isna().tolist() == [False, True, False] and len(df) == 3
+    assert first != second and second.name.endswith("_2_metrics.csv")
+    m1, m2 = pd.read_csv(first), pd.read_csv(second)
+    assert m1["run_id"].tolist() == [1, 2, 3] and "kge" not in m1.columns
+    assert m2["run_id"].tolist() == [1] and {"kge", "ALPHA_BF.gw"} <= set(m2.columns)
+    assert len(pd.read_csv(second.with_name(second.name.replace("metrics", "outputs")))) == 10
+
+
+def test_record_run_is_public_and_never_raises(proj):
+    mgr = CalibrationManager(proj)
+    sim = pd.Series(np.arange(10.0), index=DATES)
+    mgr.record_run({"CN2.mgt": 55.0}, {"nse": 0.5}, sim=sim, mode="uncertainty",
+                   reach_id=2, output_variable="FLOW_OUTcms")
+    mgr.record_run({"CN2.mgt": [(0.1, "r"), (0.05, "r", [71, 45])]}, None,
+                   status="failed", error="bad")
+    m = _metrics(mgr)
+    assert m["mode"].tolist() == ["uncertainty", "sequential"]
+    assert m["CN2.mgt__spec"].tolist() == ["55:v:All", "0.1:r:All|0.05:r:71,45"]
+    assert m.loc[1, "CN2.mgt"] == 0.1 and m.loc[1, "CN2.mgt__method"] == "r"
+    assert m.loc[1, "status"] == "failed" and np.isnan(m.loc[1, "nse"])
+    assert set(_outputs(mgr)["run_id"]) == {1}
+    mgr.record_run(object(), "not a dict", sim=42)          # garbage must not raise
+
+
+def test_log_outputs_options(proj, obs):
     _setup_iteration(proj, _run_writes_rch)
     mgr = CalibrationManager(proj)
+    with pytest.raises(ValueError):
+        mgr.log_outputs = "some"
+    mgr.log_outputs = "none"
     _iter(mgr, obs)
-    with pytest.raises(ValueError, match="column mismatch"):
-        mgr.run_iteration({"ALPHA_BF.gw": 0.5}, obs, metric="nse")
-    assert len(_metrics(mgr)) == 1
-    assert mgr._backup_dir is None                         # inputs were still restored
+    assert len(_metrics(mgr)) == 1 and not mgr.session_path("outputs").exists()
+
+    m2 = CalibrationManager(proj)
+    m2._session_base = "obsonly"
+    m2.log_outputs = "observed"
+    _iter(m2, obs.iloc[:4])
+    o = _outputs(m2)
+    assert len(o) == 4 and o["date"].iloc[-1] == "2000-01-04"
+    m2.record_run({"CN2.mgt": 1.0}, {"nse": 1.0}, sim=pd.Series(np.arange(10.0), index=DATES))
+    assert len(_outputs(m2)) == 14          # no observations known -> all dates
+
+
+def test_outputs_use_six_significant_digits(proj):
+    mgr = CalibrationManager(proj)
+    mgr.record_run({"CN2.mgt": 1.0}, {"nse": 1.0},
+                   sim=pd.Series([1.23456789, 1000000.5], index=DATES[:2]))
+    text = mgr.session_files["outputs"].read_text().splitlines()
+    assert text[1].endswith(",1.23457") and text[2].endswith(",1e+06")
+
+
+def test_session_file_is_created_exclusively(proj):
+    a, b = CalibrationManager(proj), CalibrationManager(proj)
+    b._session_base = a._session_base
+    fa, fb = a.session_files["metrics"], b.session_files["metrics"]   # neither wrote any row yet
+    assert fa != fb and fa.exists() and fb.exists()
+
+
+def test_validation_run_is_logged_with_mode_validation(proj, obs, monkeypatch):
+    base, before, runner = _validation_setup(proj, monkeypatch, obs)
+    runner.run()
+    m = pd.read_csv(runner.manager.session_files["metrics"])
+    assert m["mode"].tolist() == ["validation"]
+
+
+def test_project_without_working_folder_warns_once_mock_stays_silent(proj, caplog):
+    from unittest.mock import MagicMock
+    with caplog.at_level("WARNING"):
+        silent = CalibrationManager(MagicMock())
+        assert silent.results_dir is None
+        assert not [r for r in caplog.records if "working_folder" in r.message]
+        bare = CalibrationManager(types.SimpleNamespace())
+        assert bare.results_dir is None and bare.results_dir is None
+    assert len([r for r in caplog.records if "working_folder" in r.message]) == 1
 
 
 def test_results_dir_none_disables_and_session_collision_gets_counter(proj, obs):
@@ -484,3 +576,9 @@ def test_results_dir_none_disables_and_session_collision_gets_counter(proj, obs)
     _iter(b, obs)
     assert a.session_files["metrics"] != b.session_files["metrics"]
     assert b.session_files["metrics"].name.endswith("_2_metrics.csv")
+
+
+def test_month_end_observations_get_a_specific_message():
+    idx = pd.date_range("2000-01-31", periods=4, freq="ME")
+    with pytest.raises(ValueError, match=r"END of each month.*to_period"):
+        check_observation_step(idx, "MS")

@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 import csv
+import os
 import time
 import shutil, tempfile
 import logging
@@ -49,6 +50,13 @@ def check_observation_step(obs_index: pd.DatetimeIndex, sim_freq: str) -> None:
             "file.cio). Aggregate the observations to the model's print step first, or "
             "change IPRINT."
         )
+    if (not monthly and sim_freq == 'MS' and bool(idx.is_month_end.all())
+            and not idx.to_period('M').duplicated().any()):
+        raise ValueError(
+            "Observations look monthly but are dated at the END of each month (pandas "
+            "resample('M') default). Monthly observations must be dated on the 1st of the "
+            "month: use obs.index = obs.index.to_period('M').to_timestamp()."
+        )
     if not monthly and sim_freq == 'MS':
         raise ValueError(
             "Observations are daily but the simulation prints monthly output (IPRINT in "
@@ -64,19 +72,51 @@ class CalibrationManager:
         # per-run result log (see _log_run)
         self._results_dir = _UNSET
         self._session_base = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._session_n = 1
         self._session_id: str | None = None
         self._session_dir: Path | None = None
         self._run_counter = 0
         self._log_columns: Tuple[Tuple[str, ...], Tuple[str, ...]] | None = None
-        self._warned_paths: set = set()
+        self._warned: set = set()
+        self._pending: Dict[Path, list] = {}     # unsaved rows per file (locked file)
+        self._pending_header: Dict[Path, list] = {}
+        self._log_outputs = "all"
 
     # ── Per-run result log ───────────────────────────────────────────
+    #
+    # Every run (sequential, parallel, validation, or reported through record_run)
+    # is appended to <session>_metrics.csv / <session>_outputs.csv. Nothing here
+    # may raise into the calibration: problems are logged once as WARNING.
+
+    _MAX_PENDING_ROWS = 10_000
+
+    def _warn_once(self, key, message: str) -> None:
+        if key not in self._warned:
+            self._warned.add(key)
+            logger.warning(message)
+
+    @property
+    def log_outputs(self) -> str:
+        """What goes to <session>_outputs.csv: 'all' | 'observed' | 'none'."""
+        return self._log_outputs
+
+    @log_outputs.setter
+    def log_outputs(self, value: str) -> None:
+        if value not in ("all", "observed", "none"):
+            raise ValueError(f"log_outputs must be 'all', 'observed' or 'none', got {value!r}")
+        self._log_outputs = value
 
     @property
     def results_dir(self) -> Path | None:
         """Folder of the per-run result files (None disables logging)."""
         if self._results_dir is _UNSET:
-            wf = getattr(self.project, "working_folder", None)
+            wf = getattr(self.project, "working_folder", _UNSET)
+            if wf is _UNSET:
+                self._warn_once("no-working-folder",
+                                "[Results] The project has no 'working_folder' attribute, so "
+                                "per-run results are not saved. Set manager.results_dir to "
+                                "enable the log.")
+                return None
             return Path(wf) / "calibration_results" if isinstance(wf, (str, Path)) else None
         return self._results_dir
 
@@ -84,63 +124,108 @@ class CalibrationManager:
     def results_dir(self, value) -> None:
         self._results_dir = None if value is None else Path(value)
         self._session_id = None
+        self._session_n = 1
+        self._log_columns = None
+        self._run_counter = 0
+
+    def _new_session(self, d: Path) -> str | None:
+        """Pick the next free session id and create its metrics file exclusively."""
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._warn_once(("mkdir", str(d)), f"[Results] Cannot create {d}: {exc}")
+            return None
+        n = self._session_n
+        while True:
+            sid = self._session_base if n == 1 else f"{self._session_base}_{n}"
+            path = d / f"{sid}_metrics.csv"
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                break
+            except FileExistsError:
+                n += 1
+            except OSError as exc:
+                self._warn_once(("create", str(path)), f"[Results] Cannot create {path}: {exc}")
+                return None
+        self._session_n, self._session_id, self._session_dir = n, sid, d
+        self._run_counter = 0
+        logger.info(f"[Results] Per-run results are appended to {path} and "
+                    f"{d / (sid + '_outputs.csv')}")
+        return sid
 
     def _resolve_session(self) -> str | None:
-        """Session id (unique inside results_dir); None when logging is disabled."""
+        """Current session id (created on first use); None when logging is disabled."""
         d = self.results_dir
         if d is None:
             return None
         if self._session_id is not None and self._session_dir == d:
             return self._session_id
-        sid, n = self._session_base, 1
-        while any((d / f"{sid}_{k}.csv").exists()
-                  for k in ("metrics", "outputs", "best_params", "validation")):
-            n += 1
-            sid = f"{self._session_base}_{n}"
-        self._session_id, self._session_dir = sid, d
-        logger.info(f"[Results] Per-run results are appended to {d / (sid + '_metrics.csv')} "
-                    f"and {d / (sid + '_outputs.csv')}")
-        return sid
+        return self._new_session(d)
 
     def session_path(self, suffix: str) -> Path | None:
         """Path ``<results_dir>/<session>_<suffix>.csv`` (None when logging is disabled)."""
         sid = self._resolve_session()
-        return None if sid is None else self.results_dir / f"{sid}_{suffix}.csv"
+        return None if sid is None else self._session_dir / f"{sid}_{suffix}.csv"
 
     @property
     def session_files(self) -> dict:
-        """{'metrics': Path, 'outputs': Path} of this session ({} when logging is disabled)."""
+        """{'metrics': Path, 'outputs': Path} of the current session ({} when disabled)."""
         if self._resolve_session() is None:
             return {}
         return {"metrics": self.session_path("metrics"), "outputs": self.session_path("outputs")}
 
     def _append_csv(self, path: Path, header: list, rows: list) -> bool:
-        """Append rows (header on creation); retry on PermissionError; never raises."""
-        if not rows:
-            return True
-        last: Exception | None = None
-        for attempt in range(4):
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                new = (not path.exists()) or path.stat().st_size == 0
-                with open(path, "a", newline="", encoding="utf-8") as fh:
-                    w = csv.writer(fh)
-                    if new:
-                        w.writerow(header)
-                    w.writerows(rows)
-                    fh.flush()
+        """
+        Append rows (header on creation). Rows that cannot be written (file locked) are
+        buffered and written together with the next successful append / flush_log().
+        Never raises.
+        """
+        try:
+            combined = self._pending.get(path, []) + list(rows)
+            if not combined:
                 return True
-            except PermissionError as exc:      # e.g. file open in Excel
-                last = exc
-                time.sleep(0.2 * (attempt + 1))
-            except OSError as exc:
-                last = exc
-                break
-        if path not in self._warned_paths:
-            self._warned_paths.add(path)
-            logger.warning(f"[Results] Cannot write {path} ({last}); results for this file "
-                           f"are not saved while it stays locked. Calibration continues.")
-        return False
+            last: Exception | None = None
+            for attempt in range(4):
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    new = (not path.exists()) or path.stat().st_size == 0
+                    with open(path, "a", newline="", encoding="utf-8") as fh:
+                        w = csv.writer(fh)
+                        if new:
+                            w.writerow(header)
+                        w.writerows(combined)
+                        fh.flush()
+                    self._pending.pop(path, None)
+                    self._pending_header.pop(path, None)
+                    return True
+                except PermissionError as exc:      # e.g. file open in Excel
+                    last = exc
+                    time.sleep(0.2 * (attempt + 1))
+                except OSError as exc:
+                    last = exc
+                    break
+            if len(combined) > self._MAX_PENDING_ROWS:
+                self._warn_once(("drop", str(path)),
+                                f"[Results] Too many unsaved rows for {path}; dropping the oldest.")
+                combined = combined[-self._MAX_PENDING_ROWS:]
+            self._pending[path] = combined
+            self._pending_header[path] = header
+            self._warn_once(("write", str(path)),
+                            f"[Results] Cannot write {path} ({last}); rows are kept in memory "
+                            f"and written at the next successful append (or flush_log()). "
+                            f"Calibration continues.")
+            return False
+        except Exception as exc:  # noqa: BLE001
+            self._warn_once(("append", str(path), str(exc)), f"[Results] Log error for {path}: {exc}")
+            return False
+
+    def flush_log(self) -> bool:
+        """Try to write rows buffered while a log file was locked. True if nothing is left."""
+        ok = True
+        for path in list(self._pending):
+            ok = self._append_csv(path, self._pending_header.get(path, []), []) and ok
+        return ok
 
     @staticmethod
     def _fmt(v):
@@ -151,58 +236,103 @@ class CalibrationManager:
         return "nan" if np.isnan(f) else repr(f)
 
     @staticmethod
+    def _g(v):
+        try:
+            return "%.6g" % float(v)
+        except (TypeError, ValueError):
+            return v
+
+    @staticmethod
     def _param_columns(params: dict) -> Dict[str, tuple]:
-        """{name: (value, method)} of the first pass of every formatted parameter."""
+        """{name: (first value, first method, full spec text)} of every formatted parameter."""
         out = {}
         for name, groups in (params or {}).items():
             if isinstance(groups, tuple):
                 groups = [groups]
+            parts = []
+            for g in groups:
+                subs = g[2] if len(g) > 2 else None
+                subs_txt = ("All" if subs is None or subs == "All" else
+                            ",".join(str(x) for x in (subs if isinstance(subs, (list, tuple, set))
+                                                      else [subs])))
+                parts.append(f"{format(float(g[0]), '.10g')}:{g[1] if len(g) > 1 else 'v'}:{subs_txt}")
             first = groups[0]
-            out[name] = (first[0], first[1] if len(first) > 1 else "v")
+            out[name] = (first[0], first[1] if len(first) > 1 else "v", "|".join(parts))
         return out
 
     def _logged_metric_names(self) -> List[str] | None:
         return list(self._log_columns[1]) if self._log_columns else None
 
-    def _log_run(self, mode: str, status: str, error, reach_id, output_variable,
-                 params: dict, scores: dict | None, sim_dated: pd.Series | None = None,
-                 metrics: List[str] | None = None) -> None:
+    def record_run(self, params: dict, scores: dict | None, *, status: str = "ok",
+                   error: str | None = None, sim: "pd.Series | None" = None,
+                   mode: str = "sequential", reach_id=None,
+                   output_variable: str | None = None) -> None:
         """
-        Append one run to ``<session>_metrics.csv`` (and its simulated series to
-        ``<session>_outputs.csv`` when status is 'ok'). Raises ValueError if the
-        parameter/metric column set differs from the first run of the session; IO errors
-        only produce a warning.
-        """
-        if self._resolve_session() is None:
-            return
-        pcols = self._param_columns(params)
-        mnames = list(metrics) if metrics is not None else list(scores or {})
-        if self._log_columns is None:
-            self._log_columns = (tuple(pcols), tuple(mnames))
-        elif (set(self._log_columns[0]) != set(pcols)
-              or set(self._log_columns[1]) != set(mnames)):
-            raise ValueError(
-                f"Run log column mismatch: this session was started with parameters "
-                f"{list(self._log_columns[0])} and metrics {list(self._log_columns[1])}, "
-                f"but this run has parameters {list(pcols)} and metrics {mnames}. "
-                f"Use a new CalibrationManager (new session) for a different column set."
-            )
-        pnames, metric_cols = self._log_columns
-        self._run_counter += 1
-        run_id = self._run_counter
-        header = (["run_id", "time", "mode", "status", "error", "reach_id", "output_variable"]
-                  + list(pnames) + [f"{n}__method" for n in pnames] + list(metric_cols))
-        row = [run_id, datetime.now().isoformat(timespec="seconds"), mode, status,
-               "" if error is None else str(error), reach_id, output_variable]
-        row += [self._fmt(pcols[n][0]) for n in pnames] + [pcols[n][1] for n in pnames]
-        row += [self._fmt((scores or {}).get(m, np.nan)) for m in metric_cols]
-        self._append_csv(self.session_path("metrics"), header, [row])
+        Append one run to the per-run log. Public hook for algorithms that run SWAT
+        outside run_iteration/run_batch (GLUE uncertainty runs, sensitivity analysis).
 
-        if status == "ok" and sim_dated is not None:
-            rows = [[run_id, pd.Timestamp(d).date().isoformat(), output_variable, reach_id,
-                     self._fmt(v)] for d, v in sim_dated.items()]
-            self._append_csv(self.session_path("outputs"),
-                             ["run_id", "date", "variable", "reach", "value"], rows)
+        Args:
+            params: raw {name: float} or formatted {name: [(value, method[, subs]), ...]}.
+            scores: {metric: value} (None for a failed run: NaN in the metric columns).
+            sim:    simulated target series already indexed by date (None = no output rows;
+                    only written for status 'ok').
+        A change of the parameter/metric column set starts a new session. Never raises.
+        """
+        self._record_run(params, scores, status=status, error=error, sim=sim, mode=mode,
+                         reach_id=reach_id, output_variable=output_variable)
+
+    def _record_run(self, params, scores, *, status="ok", error=None, sim=None,
+                    mode="sequential", reach_id=None, output_variable=None,
+                    obs_index=None) -> None:
+        try:
+            if self._resolve_session() is None:
+                return
+            formatted = (self._format_params(params)
+                         if (params and self._is_raw(params)) else (params or {}))
+            pcols = self._param_columns(formatted)
+            mnames = list(scores) if scores else (self._logged_metric_names() or [])
+            if self._log_columns is None:
+                self._log_columns = (tuple(pcols), tuple(mnames))
+            elif (set(self._log_columns[0]) != set(pcols)
+                  or set(self._log_columns[1]) != set(mnames)):
+                old = self.session_files
+                self._log_columns = (tuple(pcols), tuple(mnames))
+                self._session_n += 1
+                self._session_id = None
+                if self._resolve_session() is None:
+                    return
+                logger.info(
+                    f"[Results] Parameter/metric columns changed; new session started: "
+                    f"{old.get('metrics')} -> {self.session_files.get('metrics')}"
+                )
+            pnames, metric_cols = self._log_columns
+            self._run_counter += 1
+            run_id = self._run_counter
+            header = (["run_id", "time", "mode", "status", "error", "reach_id", "output_variable"]
+                      + list(pnames) + [f"{n}__method" for n in pnames]
+                      + [f"{n}__spec" for n in pnames] + list(metric_cols))
+            row = [run_id, datetime.now().isoformat(timespec="seconds"), mode, status,
+                   "" if error is None else str(error),
+                   "" if reach_id is None else reach_id,
+                   "" if output_variable is None else output_variable]
+            row += ([self._fmt(pcols[n][0]) for n in pnames]
+                    + [pcols[n][1] for n in pnames] + [pcols[n][2] for n in pnames])
+            row += [self._fmt((scores or {}).get(m, np.nan)) for m in metric_cols]
+            self._append_csv(self.session_path("metrics"), header, [row])
+
+            if status == "ok" and sim is not None and self._log_outputs != "none":
+                series = sim
+                if self._log_outputs == "observed" and obs_index is not None:
+                    series = sim.loc[sim.index.intersection(obs_index)]
+                rows = [[run_id, pd.Timestamp(d).date().isoformat(),
+                         "" if output_variable is None else output_variable,
+                         "" if reach_id is None else reach_id, self._g(v)]
+                        for d, v in series.items()]
+                self._append_csv(self.session_path("outputs"),
+                                 ["run_id", "date", "variable", "reach", "value"], rows)
+        except Exception as exc:  # noqa: BLE001 - the log must never break a calibration
+            self._warn_once(("record", type(exc).__name__, str(exc)),
+                            f"[Results] Run not logged: {type(exc).__name__}: {exc}")
 
     # ── Unified param_ranges parser ──────────────────────────────────
 
@@ -294,14 +424,11 @@ class CalibrationManager:
             raise
 
         # Save this run before anything else can go wrong (restore, next run).
-        log_err: Exception | None = None
-        try:
-            self._log_run("sequential", "failed" if err is not None else "ok", err,
-                          reach_id, output_variable, formatted,
-                          None if err is not None else {metric: score},
-                          sim_dated, metrics=[metric])
-        except ValueError as ve:
-            log_err = ve
+        self._record_run(formatted,
+                         {metric: np.nan} if err is not None else {metric: score},
+                         status="failed" if err is not None else "ok", error=err,
+                         sim=sim_dated, mode="sequential", reach_id=reach_id,
+                         output_variable=output_variable, obs_index=observed.index)
 
         # Always restore baseline inputs so that relative-change methods ('r', 'a')
         # start from the original parameter values on the next iteration.
@@ -316,8 +443,6 @@ class CalibrationManager:
             raise
         if err is not None:
             raise RuntimeError(f"Iteration failed: {err}") from err
-        if log_err is not None:
-            raise log_err
         return score
 
     def _txinout_dir(self) -> Path | None:
@@ -495,9 +620,10 @@ class CalibrationManager:
                     batch_scores.append(row)
                     all_rows.append(row)
                     # save every run immediately (before the next job/batch)
-                    self._log_run("parallel", "ok" if run_error is None else "failed",
-                                  run_error, reach_id, output_variable, chunk[j], row,
-                                  sim_dated, metrics=metrics)
+                    self._record_run(chunk[j], row, status="ok" if run_error is None else "failed",
+                                     error=run_error, sim=sim_dated, mode="parallel",
+                                     reach_id=reach_id, output_variable=output_variable,
+                                     obs_index=observed.index)
 
                 # ── progress: tqdm + logger ────────────────────────────
                 done = chunk_start + len(chunk)
@@ -516,6 +642,7 @@ class CalibrationManager:
             if pbar is not None:
                 pbar.close()
             Logger.stop_listener()
+            self.flush_log()
 
         logger.info(f"[run_batch] Done — {total} runs complete")
         return pd.DataFrame(all_rows, columns=metrics)

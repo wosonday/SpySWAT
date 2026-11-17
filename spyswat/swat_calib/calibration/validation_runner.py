@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+import numpy as np
 import pandas as pd
 
 from spyswat.swat_calib.calibration import CalibrationManager
@@ -93,7 +94,7 @@ class ValidationRunner:
                 raise
             self._save_validation(manager, metric, calib_score, valid_stats)
             self._log_validation_run(manager, "ok", None, reach_id, output_variable,
-                                     formatted, valid_stats, sim_dated)
+                                     formatted, valid_stats, sim_dated, obs_valid.index)
         finally:
             if restore:
                 manager._restore_state()
@@ -119,7 +120,7 @@ class ValidationRunner:
         if path is None:
             return
         rows = []
-        for name, (value, method) in manager._param_columns(formatted).items():
+        for name, (value, method, _spec) in manager._param_columns(formatted).items():
             subs = subbasins.get(name)
             rows.append([name, manager._fmt(value), method,
                          "" if subs is None else ";".join(str(x) for x in subs)])
@@ -136,15 +137,15 @@ class ValidationRunner:
 
     @staticmethod
     def _log_validation_run(manager, status, error, reach_id, output_variable,
-                            formatted, valid_stats, sim_dated) -> None:
-        """Append the validation run to the per-run log (a column clash only warns)."""
+                            formatted, valid_stats, sim_dated, obs_index=None) -> None:
+        """Append the validation run (mode 'validation') to the per-run log."""
         names = manager._logged_metric_names()
-        metrics = names if names is not None else list((valid_stats or {}).keys())
-        try:
-            manager._log_run("sequential", status, error, reach_id, output_variable,
-                             formatted, valid_stats, sim_dated, metrics=metrics)
-        except ValueError as exc:
-            logger.warning(f"[Results] Validation run not added to the run log: {exc}")
+        stats = valid_stats or {}
+        scores = ({m: stats.get(m, np.nan) for m in names} if names is not None
+                  else (dict(stats) if status == "ok" else None))
+        manager._record_run(formatted, scores, status=status, error=error, sim=sim_dated,
+                            mode="validation", reach_id=reach_id,
+                            output_variable=output_variable, obs_index=obs_index)
 
     def _calibrate(self, obs_calib, metric, method, max_iter, reach_id, output_variable):
         from spyswat.swat_calib.analysis.calibration import SWATCalibration

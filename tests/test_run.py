@@ -83,6 +83,8 @@ def test_kill_uses_taskkill_tree_on_windows(monkeypatch):
     class FakeProc:
         pid = 4321
         killed = False
+        def poll(self):
+            return None
         def kill(self):
             self.killed = True
         def communicate(self, timeout=None):
@@ -103,10 +105,27 @@ def test_kill_does_not_call_taskkill_on_posix(monkeypatch):
 
     class FakeProc:
         pid = 1
+        def poll(self): return None
         def kill(self): pass
         def communicate(self, timeout=None): return "", ""
 
     monkeypatch.setattr(run_mod.sys, "platform", "linux")
     monkeypatch.setattr(run_mod.subprocess, "run", lambda *a, **k: calls.append(a))
     SWATRun._kill(FakeProc())
+    assert calls == []
+
+
+def test_kill_skips_taskkill_when_process_already_finished(monkeypatch):
+    from spyswat.swat_calib.run import run as run_mod
+    calls = []
+
+    class Done:
+        pid = 99
+        def poll(self): return 0
+        def kill(self): calls.append("kill")
+        def communicate(self, timeout=None): return "", ""
+
+    monkeypatch.setattr(run_mod.sys, "platform", "win32")
+    monkeypatch.setattr(run_mod.subprocess, "run", lambda *a, **k: calls.append("taskkill"))
+    SWATRun._kill(Done())
     assert calls == []

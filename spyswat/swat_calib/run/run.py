@@ -79,6 +79,8 @@ class SWATRun:
 
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:     # already finished: its pid may be reused
+            return
         if sys.platform == "win32":
             # Also end children of the process (e.g. swat.exe started by a .bat wrapper).
             try:
