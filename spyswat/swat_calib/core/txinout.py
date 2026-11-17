@@ -56,15 +56,22 @@ class TxInOut(ReadFileLine, FileMapping):
     #________________________________________________________
 
     def __count_hru(self):
-        hru_ids = {row['HRU'] for row in self.hru_info}
+        # HRU numbers restart in every subbasin, so count files, not distinct ids.
+        hru_count = len(self.hru_info)
         sub_ids = {row['Subbasin'] for row in self.hru_info}
-        return len(hru_ids), len(sub_ids)
+        return hru_count, len(sub_ids)
 
     def __extract_hru_attr(self):
         hru_infos = []
         for file in self.__get_hrus('.hru'):
             line = self._read_file(file, first_line=True)
             att = self._read_hru_attribute(line)
+            if att is None:
+                raise ValueError(
+                    f"Cannot read the HRU header of {file.name}: first line "
+                    f"{line.rstrip(chr(13) + chr(10))!r} does not match "
+                    f"'Watershed HRU:<n> Subbasin:<n> HRU:<n> Luse:<x> Soil:<x> Slope:<x>'."
+                )
             att = {"name": file.stem, **att}
             hru_infos.append(att)
         return hru_infos

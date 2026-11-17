@@ -7,6 +7,11 @@ from spyswat.swat_calib.utils.data_info import DATAParameter
 
 logger = Logger.get_logger(__name__)
 
+# Every TxtInOut text file is read and written with these settings so that a
+# read + save round trip is byte-identical under any locale.
+TXT_ENCODING = 'latin-1'
+TXT_NEWLINE = ''
+
 
 
 class ReadFileLine:
@@ -20,7 +25,9 @@ class ReadFileLine:
             first_line  : bool = False
             ):
 
-        with open(file_path, 'r') as file:
+        # latin-1 + newline='' : byte-transparent for any locale and the line
+        # terminators ('\r\n' or '\n') are returned untouched.
+        with open(file_path, 'r', encoding=TXT_ENCODING, newline=TXT_NEWLINE) as file:
             if first_line:
                 return file.readline()
 

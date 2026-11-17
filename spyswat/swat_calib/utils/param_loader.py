@@ -3,6 +3,8 @@ Utility for loading param_ranges from a clean CSV file.
 
 Expected CSV columns:
     key      – parameter key in SpySWAT format, e.g. "CN2.mgt"
+               (a column named ``name`` is accepted instead; ``key`` wins
+               when both exist)
     method   – "relative" | "replace" | "add"  (or short: "r" | "v" | "a")
     min      – lower bound (float)
     max      – upper bound (float)
@@ -27,7 +29,7 @@ def load_param_ranges(csv_path: str) -> dict:
     Parameters
     ----------
     csv_path : str
-        Path to CSV with columns: key, method, min, max[, subbasin]
+        Path to CSV with columns: key (or name), method, min, max[, subbasin]
 
     Returns
     -------
@@ -39,16 +41,18 @@ def load_param_ranges(csv_path: str) -> dict:
     Raises
     ------
     ValueError
-        If required columns (key, method, min, max) are missing.
+        If required columns (key or name, method, min, max) are missing.
     """
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()
 
-    required = {"name", "method", "min", "max"}
-    missing = required - set(df.columns)
-    if missing:
+    key_col = "key" if "key" in df.columns else ("name" if "name" in df.columns else None)
+    missing = {"method", "min", "max"} - set(df.columns)
+    if key_col is None or missing:
         raise ValueError(
-            f"CSV is missing required columns: {missing}. "
+            f"CSV is missing required columns: "
+            f"{sorted(missing) + ([] if key_col else ['key (or name)'])}. "
+            f"Accepted column names: key (or name), method, min, max, subbasin (optional). "
             f"Found: {list(df.columns)}"
         )
 
@@ -59,9 +63,9 @@ def load_param_ranges(csv_path: str) -> dict:
 
         sub = str(row.get("subbasin", "All")).strip() if "subbasin" in df.columns else "All"
         if sub in ("All", "", "nan"):
-            param_ranges[row["key"]] = (bounds, method)
+            param_ranges[str(row[key_col]).strip()] = (bounds, method)
         else:
             ids = [int(s.strip()) for s in sub.split(",")]
-            param_ranges[row["key"]] = (bounds, method, ids)
+            param_ranges[str(row[key_col]).strip()] = (bounds, method, ids)
 
     return param_ranges
