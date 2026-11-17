@@ -44,14 +44,23 @@ class Scenario:
         cio:         optional dict applied with ``FileCIO.set(**cio)``; allowed keys
                      NBYR, IYR, IDAF, IDAL, IPRINT, NYSKIP (integers), e.g. a
                      different simulation period for a GCM period.
+        evaluate:    True (historical scenario): metrics are computed against the
+                     observations. False (future / GCM projection): never evaluated; no
+                     observation-step check, no metric rows, observations are not sent
+                     to its jobs; its series are written as usual. An evaluated scenario
+                     whose period shares no dates with the observations is treated like
+                     evaluate=False for that job (note in summary.csv).
     """
     name: str
     txinout_dir: Optional[Union[str, Path]] = None
     weather_dir: Optional[Union[str, Path]] = None
     cio: Optional[Dict[str, int]] = None
+    evaluate: bool = True
 
     def __post_init__(self):
         validate_name("Scenario", self.name)
+        if not isinstance(self.evaluate, bool):
+            raise ValueError(f"Scenario {self.name!r}: evaluate must be True or False")
         for attr in ("txinout_dir", "weather_dir"):
             val = getattr(self, attr)
             if val is None:
@@ -175,3 +184,5 @@ class RunResult:
     duration_s: float = 0.0
     n_rows: int = 0
     series_path: Optional[str] = None
+    evaluated: bool = True           # False: no metrics for this job (see eval_note)
+    eval_note: Optional[str] = None

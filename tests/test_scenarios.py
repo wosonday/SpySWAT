@@ -103,8 +103,19 @@ def fake_runner(worker_dir: str) -> None:
             fh.write(f"{Path(worker_dir).name}|{cn2}|{pcp}|{int(extra)}|{nbyr}\n")
     if cn2 == 77.0 and pcp > 20 and not os.environ.get("E5_ALLOW_FAIL"):
         raise RuntimeError("injected failure")
-    dates = pd.date_range(f"{iyr + skip}-01-01", f"{iyr + nbyr - 1}-12-31", freq="D")
     lines = ["header\n"] * 9
+    if int(cio[58][12:16]) == 0:      # monthly: 12 months + annual block per year, then avg
+        for y in range(iyr + skip, iyr + nbyr):
+            for mon in list(range(1, 13)) + [y]:
+                for r in REACHES:
+                    flow = cn2 * pcp / 100.0 * r + (mon if mon <= 12 else 0) * 0.01
+                    lines.append(_rch_line(RCH=r, MON=mon, FLOW_OUTcms=flow,
+                                           SED_OUTtons=flow * 2))
+        for r in REACHES:
+            lines.append(_rch_line(RCH=r, MON=nbyr, FLOW_OUTcms=1.0, SED_OUTtons=1.0))
+        Path(worker_dir, "output.rch").write_text("".join(lines))
+        return
+    dates = pd.date_range(f"{iyr + skip}-01-01", f"{iyr + nbyr - 1}-12-31", freq="D")
     for d, date in enumerate(dates):
         for r in REACHES:
             flow = cn2 * pcp / 100.0 * r + d * 0.01
@@ -307,16 +318,48 @@ def test_reach_labels_metrics_and_two_variables(env, tmp_path):
     assert len(out.metrics) == 4
 
 
-def test_no_common_dates_keeps_series_with_nan_metrics(env, tmp_path):
-    obs = pd.Series([1.0, 2.0, 3.0], index=pd.date_range("1990-01-01", periods=3))
+def test_mixed_historical_and_future_batch(env, tmp_path, monkeypatch):
+    obs = pd.Series(expected(35.0, 10.0, 1, 731),
+                    index=pd.date_range("2000-01-01", periods=731, freq="D"))
+    wet = make_weather(tmp_path, "wet", "30.0")
+    scen = [Scenario("h1"), Scenario("h2", weather_dir=wet),
+            Scenario("future", weather_dir=wet, evaluate=False,
+                     cio={"IPRINT": 0, "IYR": 2030, "NBYR": 2}),
+            Scenario("late", cio={"IYR": 2050})]            # evaluated, but no overlap
     res_dir = tmp_path / "res"
     out = ScenarioBatch(make_project(env), res_dir).run(
-        [Scenario("base")], PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
-        metrics=("nse", "kge"), runner=fake_runner)
-    assert not out.failed and out.results[0].status == "ok"
-    assert (res_dir / "series" / "base__p_none.csv").exists()
+        scen, PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
+        metrics=("nse", "pbias"), runner=fake_runner)
+    assert not out.failed
     m = pd.read_csv(res_dir / "metrics.csv")
-    assert set(m["metric"]) == {"nse", "kge"} and m["value"].isna().all()
+    assert set(m["scenario"]) == {"h1", "h2"} and len(m) == 4
+    assert set(out.metrics["scenario"]) == {"h1", "h2"}
+    s = pd.read_csv(res_dir / "summary.csv").set_index("scenario")
+    assert list(s["status"]) == ["ok"] * 4
+    assert list(s["evaluated"]) == [True, True, False, False]
+    assert s.loc["future", "eval_note"] == "evaluate=False"
+    assert s.loc["late", "eval_note"] == "no overlap with observations"
+    assert pd.isna(s.loc["h1", "eval_note"])
+    fut = pd.read_csv(res_dir / "series" / "future__p_none.csv", index_col="date",
+                      parse_dates=True)
+    assert len(fut) == 24 and fut.index[0] == pd.Timestamp("2030-01-01")
+    assert (res_dir / "series" / "late__p_none.csv").exists()
+    assert [r.evaluated for r in out.results] == [True, True, False, False]
+    # resume keeps the flags
+    out2 = ScenarioBatch(make_project(env), res_dir).run(
+        scen, PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
+        metrics=("nse", "pbias"), runner=fake_runner)
+    assert [r.status for r in out2.results] == ["skipped"] * 4
+    assert [r.evaluated for r in out2.results] == [True, True, False, False]
+
+
+def test_evaluate_flag_is_part_of_resume_signature(env, tmp_path):
+    res_dir = tmp_path / "res"
+    batch = ScenarioBatch(make_project(env), res_dir)
+    batch.run([Scenario("base")], PARAMS[:1], outputs=OUTS, runner=fake_runner)
+    with pytest.raises(ValueError, match="base"):
+        batch.run([Scenario("base", evaluate=False)], PARAMS[:1], outputs=OUTS,
+                  runner=fake_runner)
 
 
 def test_names_with_double_underscore_rejected():

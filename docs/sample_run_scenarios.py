@@ -26,9 +26,11 @@ def main():
 
     # A scenario is a complete TxtInOut folder ...
     scenarios = [Scenario(name, txinout_dir=rf"D:\Project\SWAT\{name}\TxtInOut") for name in LUC]
-    # ... or weather files overlaid on the base TxtInOut (files already in SWAT format):
-    # scenarios.append(Scenario("GCM_ssp245", weather_dir=r"D:\GCM\ssp245",
-    #                           cio={"IYR": 2030, "NBYR": 20, "NYSKIP": 0}))
+    # ... or weather files overlaid on the base TxtInOut (files already in SWAT format).
+    # Future / GCM scenarios use evaluate=False: no observations exist, so no metrics and
+    # no observation-step check (they may even use another print step); series still written.
+    scenarios.append(Scenario("GCM_ssp245", weather_dir=r"D:\GCM\ssp245", evaluate=False,
+                              cio={"IYR": 2030, "NBYR": 20, "NYSKIP": 0}))
 
     # One parameter set per value of TIME; every row is one pass (same parameter may repeat).
     table = pd.read_csv(PARAM_CSV)
@@ -49,8 +51,9 @@ def main():
         # resume=True skips finished jobs; it raises if outputs/metrics/observations or a
         # scenario / parameter set definition changed (use a new RESULTS_DIR or resume=False).
         # Observations must have the same step (daily/monthly) as the simulation print step.
-        # A scenario whose period has no dates in common with the observations (e.g. a
-        # future GCM run) still gives its series; its metrics are NaN.
+        # Historical scenarios (evaluate=True, default) get metrics against the observations;
+        # a scenario that does not overlap them gets none (see evaluated / eval_note in
+        # summary.csv). Future scenarios (evaluate=False) never get metrics.
         resume=True,
     )
 

@@ -26,7 +26,7 @@ from .model import Job, ParamSet, RunResult, Scenario
 logger = Logger.get_logger(__name__)
 
 SUMMARY_COLS = ["job_id", "scenario", "param_set", "status", "error",
-                "duration_s", "n_rows", "series_file"]
+                "duration_s", "n_rows", "series_file", "evaluated", "eval_note"]
 METRIC_COLS = ["job_id", "scenario", "param_set", "variable", "reach", "metric", "value"]
 WORK_SUBDIR = "_scenario_batch"
 SIGNATURE_FILE = ".signature.json"
@@ -83,7 +83,7 @@ def _build_table(worker_dir: str, outputs: Dict[str, List[int]]) -> pd.DataFrame
 def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, List[int]],
                       series_dir: str, observed: Optional[dict],
                       metrics: Tuple[str, ...]) -> dict:
-    job_id = jobs[str(worker_dir)]
+    job_id, evaluate = jobs[str(worker_dir)]
     table = _build_table(worker_dir, outputs)
     fname = f"{job_id}.csv"
     final = os.path.join(series_dir, fname)
@@ -92,8 +92,12 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
     _replace_retry(tmp, final)
 
     rows: List[tuple] = []
-    warnings: List[str] = []
-    if observed:
+    evaluated, note = False, None
+    if not evaluate:
+        note = "evaluate=False"
+    elif not observed:
+        note = "no observations given"
+    else:
         from spyswat.swat_calib.analysis import SWATAnalysis
         stats = SWATAnalysis(None)
         for (variable, reach), (obs_idx, obs_val) in observed.items():
@@ -101,17 +105,15 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
             sim = table[f"{variable}@{reach}"]
             common = obs.index.intersection(sim.index)
             if len(common) == 0:
-                warnings.append(f"{variable}@{reach}: observations share no dates with the "
-                                f"simulation ({table.index[0].date()} .. "
-                                f"{table.index[-1].date()}); metrics are NaN")
-                for m in metrics:
-                    rows.append((variable, int(reach), m, float("nan")))
                 continue
             res = stats.calculate_statistics(obs.loc[common], sim.loc[common], list(metrics))
             for m, val in res.items():
                 rows.append((variable, int(reach), m, float(val)))
+        evaluated = bool(rows)
+        if not evaluated:
+            note = "no overlap with observations"
     return {"n_rows": int(len(table)), "series_file": fname, "metrics": rows,
-            "warnings": warnings}
+            "evaluated": evaluated, "eval_note": note}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -177,7 +179,8 @@ def _scenario_sig(s: Scenario) -> str:
             if f.is_file():
                 st = f.stat()
                 weather.append((f.name, st.st_size, st.st_mtime_ns))
-    return json.dumps([s.txinout_dir, s.weather_dir, weather, s.cio], sort_keys=True)
+    return json.dumps([s.txinout_dir, s.weather_dir, weather, s.cio, s.evaluate],
+                      sort_keys=True)
 
 
 def _param_sig(p: ParamSet) -> str:
@@ -207,8 +210,11 @@ class ScenarioBatch:
     and the definition of every scenario / parameter set name; ``resume=True`` with a
     different signature raises ValueError (use a new ``results_dir`` or ``resume=False``).
     Observations must have the same time step as every scenario's print step (daily vs
-    monthly): a mismatch raises ValueError before any job runs. A scenario whose period
-    shares no dates with the observations still runs; its metrics are NaN (warning).
+    monthly) of every scenario with ``evaluate=True``: a mismatch raises ValueError before
+    any job runs. Scenarios with ``evaluate=False`` (future / GCM projections) are never
+    evaluated and never checked. An evaluated scenario whose period shares no dates
+    with the observations is treated like evaluate=False (no metric rows,
+    ``evaluated=False`` and an ``eval_note`` in summary.csv; one INFO line per scenario).
     """
 
     def __init__(self, project, results_dir):
@@ -225,14 +231,15 @@ class ScenarioBatch:
         return out
 
     def _check_observation_steps(self, jobs: List[Job], observed) -> None:
-        """Raise ValueError when an observation step differs from a scenario's print step."""
+        """Raise ValueError when an observation step differs from the print step of an
+        evaluated scenario (evaluate=False scenarios are skipped)."""
         from spyswat.swat_calib.calibration.calib_manager import check_observation_step
         from spyswat.swat_calib.io import FileCIO
         default_base = str(self.project.txinout.directory)
         freqs: Dict[str, str] = {}
         for j in jobs:
             s = j.scenario
-            if s.name in freqs:
+            if s.name in freqs or not s.evaluate:
                 continue
             if s.cio and "IPRINT" in s.cio:
                 if s.cio["IPRINT"] not in _IPRINT_TO_FREQ:
@@ -296,8 +303,8 @@ class ScenarioBatch:
                       computed for these (each must also be in ``outputs``).
             pairs:    explicit [(scenario_name, param_set_name)]; default = full product.
                       Their time step (daily / monthly) must match every scenario's print
-                      step, else ValueError before any job runs. No common dates with a
-                      scenario's period: job stays 'ok', its metrics are NaN (warning).
+                      step, else ValueError before any job runs (only scenarios with
+                      evaluate=True are checked and evaluated).
             resume:   skip jobs already 'ok' in summary.csv (series file present). Raises
                       ValueError if outputs, metrics, observations or the definition of a
                       scenario / parameter set name differ from the stored signature.
@@ -410,9 +417,13 @@ class ScenarioBatch:
             sf = series_dir / f"{j.job_id}.csv"
             if resume and old is not None and old["status"] == "ok" and sf.is_file():
                 n = old["n_rows"]
+                ev = old.get("evaluated")
+                ev = True if ev is None or pd.isna(ev) else str(ev).lower() == "true"
+                note = old.get("eval_note")
                 results[j.job_id] = RunResult(
                     j.job_id, j.scenario.name, j.param_set.name, "skipped", None, 0.0,
-                    int(n) if pd.notna(n) else 0, str(sf))
+                    int(n) if pd.notna(n) else 0, str(sf), ev,
+                    note if isinstance(note, str) else None)
             else:
                 todo.append(j)
         if len(results):
@@ -423,6 +434,7 @@ class ScenarioBatch:
             groups.setdefault(str(j.scenario.txinout_dir or base_default), []).append(j)
 
         done = 0
+        noted: set = set()
         t_all = time.perf_counter()
         for base, gjobs in groups.items():
             k = min(n_parallel, len(gjobs))
@@ -451,9 +463,12 @@ class ScenarioBatch:
                             if wd else None)
                     extract = partial(
                         _extract_dispatch,
-                        jobs={d: j.job_id for d, j in zip(dirs, chunk)},
+                        jobs={d: (j.job_id, j.scenario.evaluate)
+                              for d, j in zip(dirs, chunk)},
                         outputs=outs, series_dir=str(series_dir),
-                        observed=obs_payload, metrics=tuple(metrics))
+                        observed=(obs_payload if any(j.scenario.evaluate for j in chunk)
+                                  else None),
+                        metrics=tuple(metrics))
                     prepare = partial(
                         _prepare_dispatch,
                         cio_by_dir={d: j.scenario.cio for d, j in zip(dirs, chunk)
@@ -475,15 +490,20 @@ class ScenarioBatch:
                     if w is not None and w.ok and isinstance(w.payload, dict):
                         p = w.payload
                         rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "ok",
-                                       None, float(w.duration_s), int(p["n_rows"]), str(sf))
+                                       None, float(w.duration_s), int(p["n_rows"]), str(sf),
+                                       bool(p["evaluated"]), p["eval_note"])
+                        if (p["eval_note"] == "no overlap with observations"
+                                and j.scenario.name not in noted):
+                            noted.add(j.scenario.name)
+                            logger.info("[Scenarios] scenario %s: simulated period does not "
+                                        "overlap the observations; no metrics (treated as "
+                                        "evaluate=False)", j.scenario.name)
                         new = pd.DataFrame(
                             [(j.job_id, j.scenario.name, j.param_set.name, v, r, m, val)
                              for v, r, m, val in p["metrics"]], columns=METRIC_COLS)
                         metrics_df = pd.concat(
                             [metrics_df[metrics_df["job_id"] != j.job_id], new],
                             ignore_index=True)
-                        for wmsg in p.get("warnings", []):
-                            logger.warning("[Scenarios] job %s: %s", j.job_id, wmsg)
                     else:
                         if w is None:
                             msg = setup_error or setup_error_chunk
@@ -492,7 +512,8 @@ class ScenarioBatch:
                         else:
                             msg = w.error
                         rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "failed",
-                                       msg, float(w.duration_s) if w else 0.0, 0, None)
+                                       msg, float(w.duration_s) if w else 0.0, 0, None,
+                                       j.scenario.evaluate, None)
                         metrics_df = metrics_df[metrics_df["job_id"] != j.job_id]
                         try:
                             sf.unlink()
@@ -503,7 +524,8 @@ class ScenarioBatch:
                         "job_id": rr.job_id, "scenario": rr.scenario,
                         "param_set": rr.param_set, "status": rr.status, "error": rr.error,
                         "duration_s": round(rr.duration_s, 3), "n_rows": rr.n_rows,
-                        "series_file": sf.name if rr.status == "ok" else None}
+                        "series_file": sf.name if rr.status == "ok" else None,
+                        "evaluated": rr.evaluated, "eval_note": rr.eval_note}
                 done += len(chunk)
                 save()
                 logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
@@ -517,7 +539,8 @@ class ScenarioBatch:
             [{"job_id": r.job_id, "scenario": r.scenario, "param_set": r.param_set,
               "status": r.status, "error": r.error, "duration_s": r.duration_s,
               "n_rows": r.n_rows,
-              "series_file": Path(r.series_path).name if r.series_path else None}
+              "series_file": Path(r.series_path).name if r.series_path else None,
+              "evaluated": r.evaluated, "eval_note": r.eval_note}
              for r in ordered], columns=SUMMARY_COLS)
         out_metrics = metrics_df[metrics_df["job_id"].isin(ids)].reset_index(drop=True)
         return BatchResult(res_dir, ordered, out_summary, out_metrics,
