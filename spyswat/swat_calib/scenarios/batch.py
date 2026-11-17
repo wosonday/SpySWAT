@@ -127,6 +127,7 @@ class BatchResult:
     summary: pd.DataFrame
     metrics: pd.DataFrame
     failed: List[RunResult] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
     def series(self, variable: str) -> pd.DataFrame:
         """Date-indexed table, columns MultiIndex (scenario, param_set, reach)."""
@@ -392,17 +393,31 @@ class ScenarioBatch:
         _replace_retry(str(tmp_sig), str(sig_path))
 
         dirty = {"warned": False}
+        warns: List[str] = []
 
         def save(final: bool = False) -> None:
             """metrics.csv first, then summary.csv (an 'ok' row never lacks its metrics)."""
+            summary_df = pd.DataFrame(list(rows.values()), columns=SUMMARY_COLS)
+            if final:
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                for df, path in ((metrics_df, metrics_path), (summary_df, summary_path)):
+                    try:
+                        _atomic_csv(df, path)
+                    except OSError as exc:
+                        alt = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
+                        _atomic_csv(df, alt)       # raises only if this also fails
+                        msg = (f"cannot write {path} ({exc}); results saved to {alt} instead. "
+                               f"resume=True reads {path.name}, not {alt.name}: close the "
+                               f"program using it and copy or re-run to update it.")
+                        logger.warning("[Scenarios] %s", msg)
+                        warns.append(msg)
+                dirty["pending"] = False
+                return
             try:
                 _atomic_csv(metrics_df, metrics_path)
-                _atomic_csv(pd.DataFrame(list(rows.values()), columns=SUMMARY_COLS),
-                            summary_path)
+                _atomic_csv(summary_df, summary_path)
                 dirty["pending"] = False
             except OSError as exc:
-                if final:
-                    raise
                 dirty["pending"] = True
                 if not dirty["warned"]:
                     dirty["warned"] = True
@@ -544,4 +559,4 @@ class ScenarioBatch:
              for r in ordered], columns=SUMMARY_COLS)
         out_metrics = metrics_df[metrics_df["job_id"].isin(ids)].reset_index(drop=True)
         return BatchResult(res_dir, ordered, out_summary, out_metrics,
-                           [r for r in ordered if r.status == "failed"])
+                           [r for r in ordered if r.status == "failed"], warns)

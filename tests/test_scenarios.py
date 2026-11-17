@@ -421,20 +421,40 @@ def test_summary_locked_is_retried_then_written(env, tmp_path, monkeypatch):
     assert len(pd.read_csv(res_dir / "summary.csv")) == 3
 
 
-def test_summary_always_locked_raises_after_all_jobs(env, tmp_path, monkeypatch):
+def test_summary_always_locked_falls_back_to_other_file(env, tmp_path, monkeypatch):
     from spyswat.swat_calib.scenarios import batch as bmod
     monkeypatch.setattr(bmod, "_RETRY_SLEEP", 0.0)
     real = os.replace
 
     def locked(src, dst):
-        if str(dst).endswith("summary.csv"):
+        if Path(dst).name == "summary.csv":
             raise PermissionError("locked")
         return real(src, dst)
 
     monkeypatch.setattr(bmod.os, "replace", locked)
     res_dir = tmp_path / "res"
-    with pytest.raises(PermissionError):
-        ScenarioBatch(make_project(env), res_dir).run(
-            [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
+    out = ScenarioBatch(make_project(env), res_dir).run(
+        [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
+    assert len(out.results) == 3 and not out.failed
+    assert len(out.warnings) == 1 and "summary_" in out.warnings[0]
+    alt = list(res_dir.glob("summary_*.csv"))
+    assert len(alt) == 1 and len(pd.read_csv(alt[0])) == 3
+    assert not (res_dir / "summary.csv").exists()
     assert len(list((res_dir / "series").glob("*.csv"))) == 3
     assert (res_dir / "metrics.csv").exists()
+
+
+def test_fallback_write_failing_too_raises(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    monkeypatch.setattr(bmod, "_RETRY_SLEEP", 0.0)
+    real = os.replace
+
+    def locked(src, dst):
+        if Path(dst).name.startswith("summary"):
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(bmod.os, "replace", locked)
+    with pytest.raises(PermissionError):
+        ScenarioBatch(make_project(env), tmp_path / "res").run(
+            [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
