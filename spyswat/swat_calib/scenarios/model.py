@@ -15,6 +15,10 @@ def validate_name(kind: str, name) -> str:
     """Names end up in file names: letters, digits, '.', '_' and '-' only."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"{kind} name must be a non-empty string, got {name!r}")
+    if "__" in name:
+        raise ValueError(
+            f"{kind} name {name!r} must not contain '__' (two underscores): it separates "
+            f"scenario and parameter set in the job id, so different pairs could collide")
     if not _NAME_RE.match(name) or name.endswith("."):
         raise ValueError(
             f"{kind} name {name!r} is not safe as a file name: use letters, digits, "

@@ -307,10 +307,91 @@ def test_reach_labels_metrics_and_two_variables(env, tmp_path):
     assert len(out.metrics) == 4
 
 
-def test_no_common_dates_is_a_failed_job(env, tmp_path):
-    obs = pd.Series([1.0, 2.0], index=pd.date_range("1990-01-01", periods=2))
-    out = ScenarioBatch(make_project(env), tmp_path / "res").run(
+def test_no_common_dates_keeps_series_with_nan_metrics(env, tmp_path):
+    obs = pd.Series([1.0, 2.0, 3.0], index=pd.date_range("1990-01-01", periods=3))
+    res_dir = tmp_path / "res"
+    out = ScenarioBatch(make_project(env), res_dir).run(
         [Scenario("base")], PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
-        runner=fake_runner)
-    assert out.failed and "no common dates" in out.failed[0].error
-    assert not (tmp_path / "res" / "series" / "base__p_none.csv").exists()
+        metrics=("nse", "kge"), runner=fake_runner)
+    assert not out.failed and out.results[0].status == "ok"
+    assert (res_dir / "series" / "base__p_none.csv").exists()
+    m = pd.read_csv(res_dir / "metrics.csv")
+    assert set(m["metric"]) == {"nse", "kge"} and m["value"].isna().all()
+
+
+def test_names_with_double_underscore_rejected():
+    with pytest.raises(ValueError, match="__"):
+        Scenario("a__x")
+    with pytest.raises(ValueError, match="__"):
+        ParamSet("x__y")
+
+
+def test_observation_step_mismatch_fails_before_any_run(env, tmp_path, monkeypatch):
+    log = tmp_path / "runs.log"
+    monkeypatch.setenv("E5_RUNLOG", str(log))
+    obs = pd.Series(np.arange(731.0), index=pd.date_range("2000-01-01", periods=731, freq="D"))
+    scen = [Scenario("base"), Scenario("monthly", cio={"IPRINT": 0})]
+    with pytest.raises(ValueError, match="monthly"):
+        ScenarioBatch(make_project(env), tmp_path / "res").run(
+            scen, PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
+            runner=fake_runner)
+    assert not log.exists()
+
+
+def test_resume_with_changed_outputs_or_params_raises(env, tmp_path):
+    res_dir = tmp_path / "res"
+    batch = ScenarioBatch(make_project(env), res_dir)
+    batch.run([Scenario("base")], PARAMS[:2], outputs=OUTS, runner=fake_runner)
+    with pytest.raises(ValueError, match="new results_dir"):
+        batch.run([Scenario("base")], PARAMS[:2], outputs={"FLOW_OUTcms": [1, 2]},
+                  runner=fake_runner)
+    changed = [PARAMS[0], ParamSet("p_v60", {"CN2.mgt": [(61, "v")]})]
+    with pytest.raises(ValueError, match="p_v60"):
+        batch.run([Scenario("base")], changed, outputs=OUTS, runner=fake_runner)
+    # a new name is fine, and resume=False accepts the change
+    out = batch.run([Scenario("base")], PARAMS[:2] + PARAMS[2:], outputs=OUTS,
+                    runner=fake_runner)
+    assert [r.status for r in out.results] == ["skipped", "skipped", "ok"]
+    out = batch.run([Scenario("base")], PARAMS[:2], outputs={"FLOW_OUTcms": [1, 2]},
+                    resume=False, runner=fake_runner)
+    assert [r.status for r in out.results] == ["ok", "ok"]
+    assert out.series("FLOW_OUTcms").shape[1] == 4
+
+
+def test_summary_locked_is_retried_then_written(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    monkeypatch.setattr(bmod, "_RETRY_SLEEP", 0.0)
+    real = os.replace
+    state = {"fails": 8}
+
+    def flaky(src, dst):
+        if str(dst).endswith("summary.csv") and state["fails"] > 0:
+            state["fails"] -= 1
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(bmod.os, "replace", flaky)
+    res_dir = tmp_path / "res"
+    out = ScenarioBatch(make_project(env), res_dir).run(
+        [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
+    assert not out.failed
+    assert len(pd.read_csv(res_dir / "summary.csv")) == 3
+
+
+def test_summary_always_locked_raises_after_all_jobs(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    monkeypatch.setattr(bmod, "_RETRY_SLEEP", 0.0)
+    real = os.replace
+
+    def locked(src, dst):
+        if str(dst).endswith("summary.csv"):
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(bmod.os, "replace", locked)
+    res_dir = tmp_path / "res"
+    with pytest.raises(PermissionError):
+        ScenarioBatch(make_project(env), res_dir).run(
+            [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
+    assert len(list((res_dir / "series").glob("*.csv"))) == 3
+    assert (res_dir / "metrics.csv").exists()

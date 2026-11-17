@@ -3,6 +3,8 @@
 The calling script must be guarded by ``if __name__ == "__main__":`` (Windows spawns
 worker processes that re-import it).
 """
+import hashlib
+import json
 import multiprocessing
 import os
 import time
@@ -27,6 +29,21 @@ SUMMARY_COLS = ["job_id", "scenario", "param_set", "status", "error",
                 "duration_s", "n_rows", "series_file"]
 METRIC_COLS = ["job_id", "scenario", "param_set", "variable", "reach", "metric", "value"]
 WORK_SUBDIR = "_scenario_batch"
+SIGNATURE_FILE = ".signature.json"
+_IPRINT_TO_FREQ = {0: "MS", 1: "D", 2: "YS"}
+_RETRY_SLEEP = 0.2   # seconds, times the attempt number (summary.csv open in Excel, ...)
+
+
+def _replace_retry(src: str, dst: str, retries: int = 5) -> None:
+    """os.replace that retries on PermissionError (target locked by another program)."""
+    for attempt in range(retries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(_RETRY_SLEEP * (attempt + 1))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -72,9 +89,10 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
     final = os.path.join(series_dir, fname)
     tmp = final + f".{os.getpid()}.tmp"
     table.to_csv(tmp)
-    os.replace(tmp, final)
+    _replace_retry(tmp, final)
 
     rows: List[tuple] = []
+    warnings: List[str] = []
     if observed:
         from spyswat.swat_calib.analysis import SWATAnalysis
         stats = SWATAnalysis(None)
@@ -83,12 +101,17 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
             sim = table[f"{variable}@{reach}"]
             common = obs.index.intersection(sim.index)
             if len(common) == 0:
-                raise ValueError(f"no common dates between observations and simulation "
-                                 f"for {variable}@{reach}")
+                warnings.append(f"{variable}@{reach}: observations share no dates with the "
+                                f"simulation ({table.index[0].date()} .. "
+                                f"{table.index[-1].date()}); metrics are NaN")
+                for m in metrics:
+                    rows.append((variable, int(reach), m, float("nan")))
+                continue
             res = stats.calculate_statistics(obs.loc[common], sim.loc[common], list(metrics))
             for m, val in res.items():
                 rows.append((variable, int(reach), m, float(val)))
-    return {"n_rows": int(len(table)), "series_file": fname, "metrics": rows}
+    return {"n_rows": int(len(table)), "series_file": fname, "metrics": rows,
+            "warnings": warnings}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -137,7 +160,28 @@ class BatchResult:
 def _atomic_csv(df: pd.DataFrame, path: Path) -> None:
     tmp = path.with_name(path.name + ".tmp")
     df.to_csv(tmp, index=False)
-    os.replace(tmp, path)
+    _replace_retry(str(tmp), str(path))
+
+
+def _series_hash(ser: pd.Series) -> str:
+    h = hashlib.sha1()
+    h.update(ser.index.to_numpy().astype("datetime64[ns]").tobytes())
+    h.update(ser.to_numpy(dtype=float).tobytes())
+    return h.hexdigest()
+
+
+def _scenario_sig(s: Scenario) -> str:
+    weather = []
+    if s.weather_dir:
+        for f in sorted(Path(s.weather_dir).iterdir()):
+            if f.is_file():
+                st = f.stat()
+                weather.append((f.name, st.st_size, st.st_mtime_ns))
+    return json.dumps([s.txinout_dir, s.weather_dir, weather, s.cio], sort_keys=True)
+
+
+def _param_sig(p: ParamSet) -> str:
+    return json.dumps(p.updates, sort_keys=True, default=str)
 
 
 def _read_csv_or_empty(path: Path, cols: List[str]) -> pd.DataFrame:
@@ -159,13 +203,50 @@ class ScenarioBatch:
 
     The batch works in ``<project working dir>/_scenario_batch`` so the project's own
     worker folders are left alone. Needs ``project.param_file`` only when a ParamSet
-    has updates. If the inputs behind a name change, use a new ``results_dir`` (or
-    ``resume=False``): resume trusts names, not contents.
+    has updates. ``results_dir/.signature.json`` records outputs, metrics, observations
+    and the definition of every scenario / parameter set name; ``resume=True`` with a
+    different signature raises ValueError (use a new ``results_dir`` or ``resume=False``).
+    Observations must have the same time step as every scenario's print step (daily vs
+    monthly): a mismatch raises ValueError before any job runs. A scenario whose period
+    shares no dates with the observations still runs; its metrics are NaN (warning).
     """
 
     def __init__(self, project, results_dir):
         self.project = project
         self.results_dir = Path(results_dir)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _signature_diff(old: dict, new: dict) -> List[str]:
+        out = [k for k in ("outputs", "metrics", "observed") if old.get(k) != new.get(k)]
+        for kind in ("scenarios", "param_sets"):
+            o, n = old.get(kind, {}), new.get(kind, {})
+            out += [f"{kind[:-1]} {name!r} changed" for name in n if name in o and o[name] != n[name]]
+        return out
+
+    def _check_observation_steps(self, jobs: List[Job], observed) -> None:
+        """Raise ValueError when an observation step differs from a scenario's print step."""
+        from spyswat.swat_calib.calibration.calib_manager import check_observation_step
+        from spyswat.swat_calib.io import FileCIO
+        default_base = str(self.project.txinout.directory)
+        freqs: Dict[str, str] = {}
+        for j in jobs:
+            s = j.scenario
+            if s.name in freqs:
+                continue
+            if s.cio and "IPRINT" in s.cio:
+                if s.cio["IPRINT"] not in _IPRINT_TO_FREQ:
+                    raise ValueError(f"Scenario {s.name!r}: IPRINT must be 0, 1 or 2")
+                freqs[s.name] = _IPRINT_TO_FREQ[s.cio["IPRINT"]]
+            else:
+                freqs[s.name] = FileCIO(TxInOut(s.txinout_dir or default_base)).get_iprint()
+        for s_name, freq in freqs.items():
+            for key, ser in observed.items():
+                try:
+                    check_observation_step(ser.index, freq)
+                except ValueError as exc:
+                    raise ValueError(f"observed {tuple(key)!r} vs scenario {s_name!r} "
+                                     f"(print step {freq}): {exc}") from None
 
     # ------------------------------------------------------------------
     def _plan(self, scenarios, param_sets, pairs) -> List[Job]:
@@ -179,6 +260,15 @@ class ScenarioBatch:
                 raise ValueError(f"Duplicate {kind} name(s): {dup}")
         by_s = {s.name: s for s in scenarios}
         by_p = {p.name: p for p in param_sets}
+        jobs = self._pairs_to_jobs(scenarios, param_sets, by_s, by_p, pairs)
+        ids = [j.job_id for j in jobs]
+        clash = sorted({i for i in ids if ids.count(i) > 1})
+        if clash:
+            raise ValueError(f"Different jobs share the job id(s) {clash}")
+        return jobs
+
+    @staticmethod
+    def _pairs_to_jobs(scenarios, param_sets, by_s, by_p, pairs) -> List[Job]:
         if pairs is None:
             return [Job(s, p) for s in scenarios for p in param_sets]
         jobs, seen = [], set()
@@ -205,7 +295,12 @@ class ScenarioBatch:
             observed: {(variable, reach): Series with a DatetimeIndex}; metrics are only
                       computed for these (each must also be in ``outputs``).
             pairs:    explicit [(scenario_name, param_set_name)]; default = full product.
-            resume:   skip jobs already 'ok' in summary.csv (series file present).
+                      Their time step (daily / monthly) must match every scenario's print
+                      step, else ValueError before any job runs. No common dates with a
+                      scenario's period: job stays 'ok', its metrics are NaN (warning).
+            resume:   skip jobs already 'ok' in summary.csv (series file present). Raises
+                      ValueError if outputs, metrics, observations or the definition of a
+                      scenario / parameter set name differ from the stored signature.
             runner:   picklable ``runner(worker_dir)`` replacing the SWAT executable
                       (used by tests).
         """
@@ -238,6 +333,7 @@ class ScenarioBatch:
             bad = [m for m in metrics if m not in known_metrics()]
             if bad:
                 raise ValueError(f"Unknown metric(s) {bad}; known: {known_metrics()}")
+            self._check_observation_steps(jobs, observed)
 
         proj = self.project
         param_file = proj.param_file.param_path if proj.param_file is not None else None
@@ -256,9 +352,56 @@ class ScenarioBatch:
         metrics_df = _read_csv_or_empty(metrics_path, METRIC_COLS)
         rows = {r["job_id"]: r for r in summary.to_dict("records")}
 
-        def save():
-            _atomic_csv(pd.DataFrame(list(rows.values()), columns=SUMMARY_COLS), summary_path)
-            _atomic_csv(metrics_df, metrics_path)
+        sig_path = res_dir / SIGNATURE_FILE
+        new_sig = {
+            "outputs": {v: r for v, r in outs.items()},
+            "metrics": list(metrics),
+            "observed": {f"{k[0]}@{int(k[1])}": _series_hash(ser)
+                         for k, ser in (observed or {}).items()},
+            "scenarios": {j.scenario.name: _scenario_sig(j.scenario) for j in jobs},
+            "param_sets": {j.param_set.name: _param_sig(j.param_set) for j in jobs},
+        }
+        old_sig = None
+        if sig_path.is_file():
+            try:
+                old_sig = json.loads(sig_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                old_sig = None
+        diff = self._signature_diff(old_sig, new_sig) if old_sig is not None else []
+        if resume and diff:
+            raise ValueError(
+                "resume=True but this batch differs from the one stored in "
+                f"{res_dir}: {', '.join(diff)}. Use a new results_dir or resume=False.")
+        if diff:   # resume=False: old rows of other jobs no longer match; forget them
+            keep = {j.job_id for j in jobs}
+            rows = {k: v for k, v in rows.items() if k in keep}
+            metrics_df = metrics_df[metrics_df["job_id"].isin(keep)]
+        merged = dict(new_sig)
+        if old_sig is not None and not diff:   # keep definitions of names not in this call
+            merged["scenarios"] = {**old_sig.get("scenarios", {}), **new_sig["scenarios"]}
+            merged["param_sets"] = {**old_sig.get("param_sets", {}), **new_sig["param_sets"]}
+        tmp_sig = sig_path.with_name(sig_path.name + ".tmp")
+        tmp_sig.write_text(json.dumps(merged, sort_keys=True), encoding="utf-8")
+        _replace_retry(str(tmp_sig), str(sig_path))
+
+        dirty = {"warned": False}
+
+        def save(final: bool = False) -> None:
+            """metrics.csv first, then summary.csv (an 'ok' row never lacks its metrics)."""
+            try:
+                _atomic_csv(metrics_df, metrics_path)
+                _atomic_csv(pd.DataFrame(list(rows.values()), columns=SUMMARY_COLS),
+                            summary_path)
+                dirty["pending"] = False
+            except OSError as exc:
+                if final:
+                    raise
+                dirty["pending"] = True
+                if not dirty["warned"]:
+                    dirty["warned"] = True
+                    logger.warning("[Scenarios] cannot write results in %s (%s); is it open "
+                                   "in another program? Continuing, will retry at the end.",
+                                   res_dir, exc)
 
         results: Dict[str, RunResult] = {}
         todo: List[Job] = []
@@ -339,6 +482,8 @@ class ScenarioBatch:
                         metrics_df = pd.concat(
                             [metrics_df[metrics_df["job_id"] != j.job_id], new],
                             ignore_index=True)
+                        for wmsg in p.get("warnings", []):
+                            logger.warning("[Scenarios] job %s: %s", j.job_id, wmsg)
                     else:
                         if w is None:
                             msg = setup_error or setup_error_chunk
@@ -364,8 +509,8 @@ class ScenarioBatch:
                 logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
                             time.perf_counter() - t_all)
 
-        if not todo:
-            save()
+        if not todo or dirty.get("pending"):
+            save(final=True)
         ordered = [results[j.job_id] for j in jobs]
         ids = [r.job_id for r in ordered]
         out_summary = pd.DataFrame(

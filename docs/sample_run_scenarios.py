@@ -17,6 +17,7 @@ WORKING_DIR = r"D:\Project\SWAT\work"
 RESULTS_DIR = r"D:\Project\SWAT\results"
 PARAM_CSV = r"D:\Project\SWAT\best_param_sediment.csv"   # columns PARAM, method, MIN, SUBBASIN, TIME
 OBS_CSV = r"D:\Project\SWAT\obs_flow_reach51.csv"         # columns date, flow
+# Scenario and parameter set names must not contain "__" (two underscores).
 LUC = ["LUC1992", "LUC2000", "LUC2010", "LUC2020"]
 
 
@@ -45,6 +46,11 @@ def main():
         outputs={"FLOW_OUTcms": [51, 55, 73], "SED_OUTtons": [51, 57, 77]},
         observed={("FLOW_OUTcms", 51): obs},
         metrics=("nse", "kge", "pbias"),
+        # resume=True skips finished jobs; it raises if outputs/metrics/observations or a
+        # scenario / parameter set definition changed (use a new RESULTS_DIR or resume=False).
+        # Observations must have the same step (daily/monthly) as the simulation print step.
+        # A scenario whose period has no dates in common with the observations (e.g. a
+        # future GCM run) still gives its series; its metrics are NaN.
         resume=True,
     )
 
