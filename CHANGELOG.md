@@ -5,6 +5,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] – branch `fix/phase1-correctness`
+
+Phase-1 correctness work: SWAT runs, file I/O and metrics now fail loudly instead of
+silently returning wrong numbers. Version in `pyproject.toml` is still `0.2.5`; the next
+release number is the maintainer's decision.
+
+### Added
+
+- **`ScenarioBatch`** (`spyswat.swat_calib.scenarios`) — runs *scenarios × parameter sets*
+  over the parallel workers. `Scenario` is a separate TxtInOut folder or a weather-file
+  overlay plus an optional `file.cio` override (`cio={"IYR": 2030, ...}`); `ParamSet` comes
+  from a dict or a DataFrame. Full product or explicit `pairs`, one series CSV per job,
+  `summary.csv` + metrics, failure isolation, `resume=True` (refuses a changed configuration).
+  `Scenario(evaluate=False)` for future/GCM runs: series written, no metrics, no
+  observation-step check. Example: `docs/sample_run_scenarios.py`.
+- **Per-run result log** — `CalibrationManager` appends `<session>_metrics.csv` (status,
+  parameter values/methods/full spec, metrics) and `<session>_outputs.csv` (target series,
+  long format) under `<working_dir>/calibration_results` after every sequential, parallel,
+  validation, GLUE-uncertainty and sensitivity run. `manager.log_outputs = "all" |
+  "observed" | "none"`, `manager.results_dir` (None disables), `record_run()` for custom
+  algorithms, `flush_log()`, `session_files`.
+- `ValidationRunner` saves `<session>_best_params.csv` and `<session>_validation.csv`.
+- `check_observation_step(obs_index, sim_freq)` — rejects daily vs monthly mismatch and
+  month-end dated monthly observations.
+- Metric registry in `analysis/statistics.py`: `METRIC_DIRECTIONS`, `known_metrics`,
+  `is_maximize`, `worst_score`, `to_objective`, `sanitize_scores`, `best_index`.
+- `on_failure="raise" | "penalize"` for `SWATCalibration.optimize` and `DDSCalibration.run`.
+- `HRUManager.validate_inputs()`, `FileCIO.set(**values)`, `OutputFileManager.invalidate()`
+  and `check_complete()`, verified `output.sed` reader, `SWATFileFormatError`.
+- `WorkingFolderManager.run_parallel(prepare=..., extract=..., overlays=..., timeout_s=...)`
+  with one callable or one per job; returns `WorkerResult(ok, error, duration_s, worker_dir, payload)`.
+
+### Changed
+
+- `ValidationRunner.run()` keeps the best parameters in TxtInOut by default
+  (`restore=True` puts the original files back).
+- The simulation frequency comes from `IPRINT` in `file.cio`, not from the observations.
+- OAT sensitivity index = parameter's metric range / largest range (`range_over_std` kept);
+  parameters with < 2 successful runs get NaN. `morris_salib` passes `num_levels` to SALib.
+- `SWATProject` works without `param_file`; `project.run()` invalidates the output cache.
+- `spyswat.__version__` comes from package metadata. CLI parses `--n_parallel` as int.
+  Dockerfile runs `python -m spyswat`. Sample scripts are `__main__`-guarded.
+
+### Fixed
+
+- Workers restore input files from the baseline before every run, so `r`/`a` changes no
+  longer compound across batches; failed or stale runs score NaN instead of reading old output.
+- SWAT child process: timeout, killed on interrupt (`taskkill /T` on Windows), no inherited stdin.
+- Sequential backup copies only parameter input files, never removes TxtInOut, and is
+  deleted only after every file was restored.
+- Fixed-width writer: no silent `0.0` fallback; latin-1 with `newline=""` (byte-stable);
+  one atomic write per file; unknown parameters raise; no stray temp files.
+- Output cache keyed by file stamp (`mtime_ns`, size); `read_rch` honours IPRINT and splits
+  monthly files structurally; parse errors name file, line and column.
+- NaN scores rank worst in every optimiser; an all-failed batch raises. Fixed undefined
+  `all_results` in `GLUE.run`, RSR rating, DDS history columns and `uncertainty_band`
+  parameter formatting.
+- Failed runs never enter sensitivity indices (Morris drops trajectories, Sobol raises, OAT skips).
+- `summary.csv` locked (e.g. open in Excel) → timestamped fallback file with a warning.
+- Logging never interrupts a calibration; log files are created only when a row is written.
+- `tests/test_project.py`: CRLF fixture written with `newline=""` (failed on Windows).
+
+### Docs
+
+- `AGENTS.md` rewritten; new `CLAUDE.md`; team workflow in `docs/agents/`; `.agents/`
+  notebook with templates.
+- README / README_VI / ARCHITECTURE updated for the changes above.
+
+---
+
 ## [0.2.6] – 2026-06-18
 
 ### Added
@@ -310,4 +380,4 @@ result = calib.analyze(param_ranges, obs, n_samples=1000, metric="nse")
 
 ---
 
-*See also: [README_VI.md](README_VI.md) · [README_EN.md](README_EN.md)*
+*See also: [README_VI.md](README_VI.md) · [README.md](README.md)*
