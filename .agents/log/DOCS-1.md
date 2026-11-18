@@ -14,3 +14,16 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Files changed: `tests/test_project.py` (`newline=""` on the `file.cio` write).
 - Checks after fix: `pytest tests/test_project.py -q` → 19 passed.
 
+## 2026-11-18 · claude-opus-5.5 · step 2/3 — agent workflow
+- Files changed: `AGENTS.md` (rewritten), `CLAUDE.md` (new, imports `AGENTS.md`),
+  `.gitignore` (`.wt/`, `.agents/.runtime/`), `docs/agents/AGENTS-TUTORIAL.md` and
+  `docs/agents/HERDR-CORE-BOT.md` (moved from the repo root), `.agents/README.md`,
+  `.agents/templates/{task,log,review,report,decision}.md`, `.agents/tasks/DOCS-1.md`.
+- Decision: summarise the tutorial in `AGENTS.md` and link the full Vietnamese text,
+  instead of pasting 400 lines into every session's context (the tutorial's "Cách dùng"
+  note was updated to say so).
+- Decision: `dispatch.sh` sample in `HERDR-CORE-BOT.md` now accepts `tier: fast|mid|strong`
+  as well as `nhanh|vừa|mạnh`, matching `.agents/templates/task.md`.
+- Not done: `.opencode/agents/*`, `opencode.json`, bot scripts (`.agents/bot/*.sh`). They
+  depend on model names and `hc` flags still marked [KIỂM] in `HERDR-CORE-BOT.md`.
+- Previous commit: 8c9535b
