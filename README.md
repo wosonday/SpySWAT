@@ -3,11 +3,11 @@
 **Python library for SWAT model calibration, validation, and sensitivity analysis**
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-308%20passed-brightgreen)]()
 [![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
-> Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
+> Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md) · Contributing with AI agents: [AGENTS.md](AGENTS.md)
 
 ---
 
@@ -21,6 +21,8 @@
 - [Calibration](#calibration)
 - [Fig Viewer](#fig-viewer--interactive-watershed-diagram)
 - [Validation](#validation)
+- [Run Log](#run-log)
+- [Scenario Batch](#scenario-batch)
 - [Sensitivity Analysis](#sensitivity-analysis)
 - [Reading and Writing TxtInOut](#reading-and-writing-txtinout)
 - [Reading SWAT Output](#reading-swat-output)
@@ -40,7 +42,10 @@ SpySWAT provides:
 - Uncertainty quantification: 95PPU band, p-factor, r-factor
 - Sensitivity analysis from GLUE results — **zero extra SWAT runs**
 - Performance evaluation following Moriasi et al. (2007)
-- Parallel execution via `ProcessPoolExecutor` with isolated worker copies
+- Parallel execution via `ProcessPoolExecutor` with isolated worker copies; every worker run starts from the baseline TxtInOut
+- **Scenario batches**: land-use / climate scenarios × parameter sets in parallel, with resume
+- **Run log**: metrics and target series of every run appended to CSV as the calibration goes
+- Fail-loud I/O: malformed files, step mismatches and failed SWAT runs raise or score NaN; nothing is silently filled with `0.0`
 
 ---
 
@@ -76,8 +81,16 @@ project = SWATProject(
 | `txinout_dir` | ✓ | Path to TxtInOut directory |
 | `working_dir` | ✓ | Directory for worker copies (auto-created) |
 | `swat_exe` | ✓ | Path to SWAT executable |
-| `param_file` | — | Parameter definition file `.txt` |
+| `param_file` | — | Parameter definition file `.txt` (needed only for parameter editing: `project.HRU`, `read_params_values`) |
 | `n_parallel` | — | Number of parallel workers (default: 1) |
+
+> **Windows:** parallel runs spawn new processes that re-import your script. Put the script's code under `if __name__ == "__main__":` (see `docs/sample_run_*.py`); SpySWAT raises a clear error otherwise.
+
+Check that the parameter file matches your TxtInOut before calibrating:
+
+```python
+problems = project.HRU.validate_inputs()   # empty DataFrame = every location is valid
+```
 
 ---
 
@@ -306,10 +319,13 @@ result = calib.optimize(
     method          = "differential_evolution",  # or "minimize"
     metric          = "nse",
     max_iter        = 100,
+    on_failure      = "raise",                  # or "penalize": a failed run scores the worst value
 )
 print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
+
+Sequential optimisers (`calib.optimize`, `calib.dds.run`) stop on the first failed SWAT run by default (`on_failure="raise"`). Population algorithms (GLUE, DE, PSO) score a failed run as NaN, which always ranks worst; a batch where every run failed raises `RuntimeError`.
 
 ### Unified param_ranges format
 
@@ -422,7 +438,8 @@ The viewer validates `fig.fig` on parse and reports issues per command in the si
 ## Validation
 
 ```python
-# Apply best params from calibration
+# Apply best params from calibration.
+# This edits your TxtInOut in place: keep a copy, or use ValidationRunner below.
 project.HRU.update_params(result["best_params"])
 project.run()
 
@@ -453,10 +470,102 @@ runner = ValidationRunner(
         valid_end   = "2015-12-31"
     )
 )
-r = runner.run(metric="nse", output_variable="FLOW_OUTcms")
+r = runner.run(metric="nse", output_variable="FLOW_OUTcms")   # restore=True to undo
 print("Calib NSE:", r["calibration"]["nse"])
 print("Valid NSE:", r["validation"]["nse"])
+print(r["best_parameters"])
 ```
+
+By default the best parameters **stay in TxtInOut** after `runner.run()` (a warning is logged: applying relative `r`/`a` changes again would compound). Pass `restore=True` to get the original input files back. Best parameters and validation metrics are saved as `<session>_best_params.csv` and `<session>_validation.csv` (see [Run Log](#run-log)).
+
+### Observation time step
+
+Observations must have the same time step as the model's print step (`IPRINT` in `file.cio`): daily observations for daily output, monthly for monthly. SpySWAT never resamples; a mismatch raises `ValueError` before any run. Monthly observations are dated on the **1st** of the month:
+
+```python
+obs_monthly = obs_daily.resample("MS").mean()                 # flow: monthly mean
+# or, if already monthly but dated at month end:
+obs.index = obs.index.to_period("M").to_timestamp()
+
+from spyswat.swat_calib.calibration.calib_manager import check_observation_step
+check_observation_step(obs.index, project.FileCIO.get_iprint())   # raises on mismatch
+```
+
+---
+
+## Run Log
+
+Every run (sequential, parallel, validation, GLUE uncertainty band, sensitivity) is appended to CSV **right after it finishes**, so a crash or Ctrl+C never loses finished runs:
+
+```
+<working_dir>/calibration_results/
+├── <session>_metrics.csv       one row per run: run_id, time, mode, status, error, reach_id,
+│                               output_variable, <param>, <param>__method, <param>__spec, metrics
+├── <session>_outputs.csv       target series, long format: run_id, date, variable, reach, value
+├── <session>_best_params.csv   ValidationRunner
+└── <session>_validation.csv    ValidationRunner
+```
+
+`<session>` is the start time (`YYYYMMDD_HHMMSS`). Files are created only when the first row is written. If the parameter or metric columns change, a new session starts.
+
+```python
+manager = calib.manager
+manager.log_outputs = "observed"      # "all" (default) | "observed" (dates with obs) | "none"
+manager.results_dir = "D:/SWAT/results"   # None disables the log
+print(manager.session_files)          # {'metrics': Path, 'outputs': Path}
+
+# custom algorithms that run SWAT themselves:
+manager.record_run({"CN2.mgt": 75.0}, {"nse": 0.71}, sim=sim_series)
+```
+
+Logging never interrupts a calibration: if a file is locked (e.g. open in Excel), rows are kept in memory, a warning is logged once, and they are written at the next append or `manager.flush_log()`.
+
+---
+
+## Scenario Batch
+
+Run several **scenarios** (land-use maps, climate inputs, simulation periods) with several **parameter sets** in parallel, and export the series and metrics.
+
+```python
+from spyswat.swat_calib.scenarios import Scenario, ParamSet, ScenarioBatch
+
+if __name__ == "__main__":
+    scenarios = [
+        Scenario("LUC2000", txinout_dir="D:/SWAT/LUC2000/TxtInOut"),   # complete TxtInOut
+        Scenario("LUC2020", txinout_dir="D:/SWAT/LUC2020/TxtInOut"),
+        Scenario("GCM_ssp245", weather_dir="D:/GCM/ssp245",            # files copied over the base
+                 cio={"IYR": 2030, "NBYR": 20, "NYSKIP": 0},
+                 evaluate=False),                                     # future: no metrics
+    ]
+    param_sets = [
+        ParamSet.from_dict("best", {"CN2.mgt": (-0.1, "r"), "ALPHA_BF.gw": 0.5}),
+        ParamSet.from_dataframe(table, "par1", param="PARAM", method="method",
+                                value="MIN", sub="SUBBASIN"),
+    ]
+
+    batch = ScenarioBatch(project, "D:/SWAT/results")
+    res = batch.run(
+        scenarios, param_sets,
+        outputs  = {"FLOW_OUTcms": [51, 55], "SED_OUTtons": [51]},
+        observed = {("FLOW_OUTcms", 51): obs},
+        metrics  = ("nse", "kge", "pbias"),
+        # pairs=[("LUC2000", "best")],   # default: every scenario × every parameter set
+        resume   = True,                  # skip jobs already 'ok' in summary.csv
+    )
+    print(res.summary)      # job_id, scenario, param_set, status, error, duration_s, ...
+    print(res.metrics)      # job_id, scenario, param_set, variable, reach, metric, value
+    res.to_csv("FLOW_OUTcms", "D:/SWAT/results/flow_all.csv")
+```
+
+| Option | Meaning |
+|--------|---------|
+| `Scenario(txinout_dir=...)` | A separate, complete TxtInOut folder |
+| `Scenario(weather_dir=...)` | Files copied by name over the base TxtInOut (must already be in SWAT format) |
+| `Scenario(cio={...})` | `file.cio` override: `NBYR`, `IYR`, `IDAF`, `IDAL`, `IPRINT`, `NYSKIP` |
+| `Scenario(evaluate=False)` | Future / GCM run: series written, no metrics, no observation-step check |
+| `resume=True` | Skip finished jobs; raises if outputs, metrics, observations or a definition changed |
+
+A failed job never stops the batch (`status="failed"` with the error in `summary.csv`). Names may use letters, digits, `.`, `_`, `-` but not `__`. Full example: `docs/sample_run_scenarios.py`.
 
 ---
 
@@ -496,7 +605,10 @@ oat_df, indices = sens.one_at_a_time(
     metric          = "nse"
 )
 print(indices)
+# parameter  metric_range  metric_std  range_over_std  sensitivity_index   (sorted, highest first)
 ```
+
+`sensitivity_index` = the parameter's metric range divided by the largest range over all parameters (the most influential parameter gets 1.0). Failed runs are excluded; a parameter with fewer than 2 successful runs gets NaN. Without `observed_series`, OAT and Morris restore your inputs after each run.
 
 ### Morris Method (parallel)
 
@@ -509,6 +621,8 @@ morris = sens.morris_method(
 )
 print(morris["morris_indices"])
 ```
+
+A trajectory that contains a failed run is dropped from the Morris indices. `sens.sobol_method(...)` raises `RuntimeError` if any run failed, because Sobol indices need the complete sample; the expensive batch is not lost: `sens.last_samples` and `sens.last_scores` (NaN = failed) keep it. `morris_salib` and `sobol_method` need `pip install SALib`.
 
 ---
 
@@ -568,6 +682,17 @@ SOL_AWC   .sol    0     0          0        3      0.01   0.5
 
 The code key for each entry = `name + ext`, e.g. `CN2.mgt`, `ALPHA_BF.gw`.
 
+### Strict writes
+
+Input files are read and written byte-for-byte (latin-1, original line endings). A value wider than its fixed-width field, a short line or a slice outside the line raises `SWATFileFormatError` and leaves the file untouched; each file is replaced atomically once per `update_params` call. An unknown parameter key raises `ValueError` before any file is changed.
+
+Simulation settings in `file.cio`:
+
+```python
+project.FileCIO.set(IYR=2000, NBYR=16, NYSKIP=2, IPRINT=0)   # IPRINT: 0 monthly, 1 daily, 2 yearly
+project.FileCIO.get_iprint()                                 # 'MS' | 'D' | 'YS'
+```
+
 ---
 
 ## Reading SWAT Output
@@ -600,6 +725,13 @@ Common `output.rch` variables:
 | `NO3_OUTkg` | kg | Nitrate |
 | `ORG_N_kg` | kg | Organic nitrogen |
 
+`read_rch` reads the print frequency from `file.cio` and splits monthly files into their monthly blocks (annual and average-annual rows are dropped). Results are cached per file stamp (modification time and size), so a new SWAT run is always picked up; `project.run()` also clears the cache. Parse errors name the file, line and column.
+
+```python
+project.Output.check_complete(".rch")   # raises RuntimeError with the reason if output.rch is unusable
+project.Output.invalidate()             # drop the cache by hand
+```
+
 ---
 
 ## Performance Statistics
@@ -609,6 +741,16 @@ stats  = project.Statistic.calculate_statistics(obs, sim,
     metrics=["nse", "kge", "r2", "rmse", "pbias", "rsr"])
 rating = project.Statistic.evaluate_performance(obs, sim)
 ```
+
+One registry (`spyswat.swat_calib.analysis.statistics.METRIC_DIRECTIONS`) tells every algorithm which way is better:
+
+| Direction | Metrics |
+|-----------|---------|
+| larger is better | `nse`, `kge`, `r2`, `correlation` |
+| smaller is better | `rmse`, `mae`, `rsr` |
+| closest to 0 is best | `pbias` (optimised as `abs(pbias)`) |
+
+Helpers: `known_metrics()`, `is_maximize(m)`, `to_objective(m, score)` (smaller is always better), `best_index(scores, m)` (NaN-safe). An unknown metric name raises `ValueError`.
 
 NSE rating (Moriasi et al., 2007):
 
@@ -653,8 +795,16 @@ results = manager.run_batch(
     metrics  = ["nse"],
     reach_id = 1,
 )
-print(results)   # DataFrame: nse
+print(results)   # DataFrame: nse (NaN for a failed run)
 ```
+
+Guarantees of every parallel run:
+
+- **Baseline first:** each worker restores its input files from your TxtInOut before applying parameters, so relative (`r`) and additive (`a`) changes never compound across batches. Your TxtInOut is never modified.
+- **Failure isolation:** a crashed, timed-out or stale run is reported as failed (`WorkerResult(ok=False, error=...)`) and scored NaN; old output is never read as if it were new.
+- **Clean shutdown:** Ctrl+C kills the SWAT child processes (`taskkill /T` on Windows).
+
+Low-level hooks for custom workflows: `project.WorkingFolder.run_parallel(swat_exe, param_sets, prepare=..., extract=..., overlays=..., timeout_s=...)`. `prepare`/`extract` accept one callable or a list with one entry per job; they must be module-level (picklable) functions.
 
 ---
 
@@ -673,8 +823,14 @@ project.Output.read_rch / read_hru / read_sub / read_sed / read_watout
 project.Statistic.calculate_statistics(obs, sim, metrics)
 project.Statistic.evaluate_performance(obs, sim)
 project.Statistic.sensitivity_from_results(df, metric, param_names, method)
+project.HRU.validate_inputs(params=None) → DataFrame of problems (empty = OK)
 project.FileCIO.get_date_range_sim(freq)
+project.FileCIO.get_iprint() → 'MS' | 'D' | 'YS'
+project.FileCIO.set(NBYR=, IYR=, IDAF=, IDAL=, IPRINT=, NYSKIP=)
+project.Output.check_complete(file_type=".rch") / invalidate()
 project.WorkingFolder.setup(overwrite)
+project.WorkingFolder.run_parallel(swat_exe, param_sets, prepare=, extract=,
+                                   overlays=, timeout_s=) → [WorkerResult]
 project.info()
 ```
 
@@ -706,7 +862,7 @@ calib.pso.run(param_ranges, obs, n_particles, max_iterations, w_max, w_min,
 calib.analyze(param_ranges, obs, n_samples, threshold, metric,
               sensitivity_method, seed, param_methods, param_subbasins) → dict
 calib.optimize(param_ranges, obs, method, metric, max_iter,
-               param_methods, param_subbasins) → dict
+               param_methods, param_subbasins, on_failure="raise") → dict
 ```
 
 ### Standalone Algorithm Classes
@@ -746,10 +902,46 @@ CalibrationManager(project)
   .run_batch(param_sets, observed, metrics, reach_id, output_variable,
              methods=None, subbasins=None) → DataFrame
       param_sets: list of raw or formatted dicts — both accepted
+  .record_run(params, scores, status="ok", error=None, sim=None, mode="sequential",
+              reach_id=None, output_variable=None)      append one run to the run log
+  .flush_log() → bool                                    write rows buffered while a file was locked
+  .results_dir        Path | None (default <working_dir>/calibration_results)
+  .log_outputs        "all" | "observed" | "none"
+  .session_files      {"metrics": Path, "outputs": Path}
   ._parse_spec(param_ranges) → (bounds, methods, subbasins)  [staticmethod]
       Raises ValueError if old-format tuple has > 2 elements
   ._format_params(raw_dict, methods=None, subbasins=None) → formatted_dict
   ._align_series(obs, sim) → (obs_aligned, sim_aligned)
+      sim frequency from IPRINT; raises on step mismatch or no common date
+
+check_observation_step(obs_index, sim_freq)              calibration.calib_manager
+```
+
+### ValidationRunner
+
+```
+ValidationRunner(project, param_ranges, observed, PeriodConfig(calib_start, calib_end,
+                 valid_start, valid_end))
+  .run(metric="nse", method="differential_evolution", max_iter=100, reach_id=1,
+       output_variable="FLOW_OUTcms", restore=False)
+      → {"best_parameters", "calibration": {metric: score}, "validation": {all metrics}}
+```
+
+### Scenarios
+
+```
+from spyswat.swat_calib.scenarios import Scenario, ParamSet, ScenarioBatch
+
+Scenario(name, txinout_dir=None, weather_dir=None, cio=None, evaluate=True)
+ParamSet(name, updates={"CN2.mgt": [(value, method[, subbasins]), ...]})
+ParamSet.from_dict(name, {"CN2.mgt": 75.0, "ESCO.hru": (0.1, "r")})
+ParamSet.from_dataframe(df, name, param="param", method="method", value="value", sub="subbasin")
+
+ScenarioBatch(project, results_dir)
+  .run(scenarios, param_sets, *, outputs, pairs=None, observed=None,
+       metrics=("nse", "kge", "pbias"), resume=True, timeout_s=None) → BatchResult
+BatchResult: .summary, .metrics, .results, .failed, .warnings,
+             .series(variable) → DataFrame, .to_csv(variable, path) → Path
 ```
 
 ### FigViewer
@@ -776,10 +968,17 @@ SpySWAT/
 │   └── swat_calib/
 │       ├── core/       TxInOut, HRUManager, OutputFileManager, WorkingFolderManager
 │       ├── io/         SWATParam, readers, writers, mapping_file, FileCIO
-│       ├── calibration/ CalibrationManager, ValidationRunner
-│       └── analysis/   SWATAnalysis, SWATCalibration (facade), SWATSensitivity
-│                       └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
-├── tests/              73 tests (pytest)
+│       ├── calibration/ CalibrationManager (+ run log), ValidationRunner
+│       ├── scenarios/  Scenario, ParamSet, ScenarioBatch
+│       ├── analysis/   SWATAnalysis + metric registry, SWATCalibration (facade), SWATSensitivity
+│       │               └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
+│       ├── run/        SWATRun (subprocess, timeout)
+│       └── visualization/ FigViewer
+├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py,
+│                       agents/ (AI-agent team workflow)
+├── tests/              319 tests (pytest, no SWAT executable needed)
+├── .agents/            per-task notes kept with the code (see AGENTS.md)
+├── AGENTS.md           guide for AI agents and contributors (CLAUDE.md imports it)
 ├── ARCHITECTURE.md     Architecture + connection diagrams
 └── pyproject.toml
 ```
@@ -799,4 +998,4 @@ SpySWAT/
 
 ---
 
-*SpySWAT v0.2.6 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md)*
+*SpySWAT v0.2.6 + unreleased changes · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*

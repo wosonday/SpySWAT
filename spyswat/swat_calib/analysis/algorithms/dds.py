@@ -23,6 +23,8 @@ import numpy as np
 import pandas as pd
 from typing import Callable, Dict, List, Optional, Tuple
 
+from spyswat.swat_calib.analysis.statistics import is_maximize, to_objective
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +51,10 @@ class DDS:
     maximize : bool
         True (default) -- objective is maximised (NSE, KGE, R2).
         False          -- objective is minimised (RMSE, PBIAS).
+    score_key : Callable[[float], float] | None
+        Optional ranking key where SMALLER IS BETTER (e.g. ``|pbias|``); when
+        given it replaces ``maximize``. Reported scores stay the raw values.
+    A NaN/inf score (failed run) is always ranked worst.
     """
 
     def __init__(
@@ -59,6 +65,7 @@ class DDS:
         r: float = 0.2,
         seed: Optional[int] = None,
         maximize: bool = True,
+        score_key: Optional[Callable[[float], float]] = None,
     ) -> None:
         if not param_ranges:
             raise ValueError("param_ranges must not be empty.")
@@ -73,6 +80,7 @@ class DDS:
         self.r = r
         self.rng = np.random.default_rng(seed)
         self.maximize = maximize
+        self.score_key = score_key
 
         self._names: List[str] = list(param_ranges.keys())
         self._lower = np.array([param_ranges[k][0] for k in self._names], dtype=float)
@@ -92,7 +100,11 @@ class DDS:
         dict with keys:
             best_params  : dict[str, float]  -- best parameter set found (raw floats)
             best_score   : float             -- corresponding objective value
-            history      : pd.DataFrame      -- columns = "iteration", param names, "best_score"
+            history      : pd.DataFrame      -- columns = "iteration", param names,
+                                                "score" (this evaluation) and
+                                                "best_score" (running best so far)
+
+        Raises RuntimeError when every evaluation failed (NaN).
         """
         try:
             from tqdm import tqdm as _tqdm
@@ -102,7 +114,7 @@ class DDS:
 
         x_best = self._random_uniform()
         f_best = self._evaluate(x_best)
-        history: List[Dict] = [self._row(x_best, f_best)]
+        history: List[Dict] = [self._row(x_best, f_best, f_best)]
         logger.info("DDS iter 1/%d | score=%.4f", self.n_iterations, f_best)
         if pbar is not None:
             pbar.update(1)
@@ -120,13 +132,12 @@ class DDS:
                 x_new[j] = self._perturb(x_best[j], j)
 
             f_new = self._evaluate(x_new)
-            history.append(self._row(x_new, f_new))
-
             if self._is_better(f_new, f_best):
                 x_best, f_best = x_new, f_new
                 logger.info(
                     "DDS iter %d/%d | improved score=%.4f", i, self.n_iterations, f_best
                 )
+            history.append(self._row(x_new, f_new, f_best))
 
             if pbar is not None:
                 pbar.update(1)
@@ -135,13 +146,17 @@ class DDS:
         if pbar is not None:
             pbar.close()
 
+        if not np.isfinite(self._key(f_best)):
+            raise RuntimeError(
+                f"all runs failed: DDS got no valid score in {self.n_iterations} evaluations"
+            )
         best_dict  = dict(zip(self._names, x_best.tolist()))
         history_df = pd.DataFrame(history)
         history_df.insert(0, "iteration", range(1, len(history_df) + 1))
         return {
             "best_params": best_dict,
             "best_score":  float(f_best),
-            "history":     history_df,   # columns: iteration, [params...], best_score
+            "history":     history_df,   # columns: iteration, [params...], score, best_score
         }
 
     # ------------------------------------------------------------------
@@ -170,12 +185,21 @@ class DDS:
         param_dict = dict(zip(self._names, x.tolist()))
         return float(self.objective(param_dict))
 
-    def _is_better(self, f_new: float, f_best: float) -> bool:
-        return f_new > f_best if self.maximize else f_new < f_best
+    def _key(self, f: float) -> float:
+        """Ranking key, smaller is better; NaN/inf (failed run) -> +inf (worst)."""
+        if not np.isfinite(f):
+            return np.inf
+        if self.score_key is not None:
+            return float(self.score_key(f))
+        return -f if self.maximize else f
 
-    def _row(self, x: np.ndarray, score: float) -> Dict:
+    def _is_better(self, f_new: float, f_best: float) -> bool:
+        return self._key(f_new) < self._key(f_best)
+
+    def _row(self, x: np.ndarray, score: float, best: float) -> Dict:
         row = dict(zip(self._names, x.tolist()))
-        row["best_score"] = score
+        row["score"] = score
+        row["best_score"] = best
         return row
 
 
@@ -217,12 +241,18 @@ class DDSCalibration:
         metric: str = "nse",
         output_variable: str = "FLOW_OUTcms",
         reach_id: int = 1,
-        maximize: bool = True,
+        maximize: Optional[bool] = None,
         param_methods: Optional[Dict[str, str]] = None,
         param_subbasins: Optional[Dict[str, list]] = None,
+        on_failure: str = "raise",
     ) -> dict:
         """
         Run DDS calibration.
+
+        on_failure      : "raise" (default) -- an exception from run_iteration
+                          propagates, and a non-finite score raises RuntimeError;
+                          "penalize" -- the run counts as failed (NaN, ranked worst)
+                          and the search continues.
 
         Parameters
         ----------
@@ -234,8 +264,12 @@ class DDSCalibration:
         n_iterations    : int   total evaluation budget (recommended >= 200)
         r               : float perturbation size as fraction of range (0, 1]
         seed            : int | None  random seed for reproducibility
-        metric          : str   objective metric; higher is better unless maximize=False
-        maximize        : bool  True for NSE/KGE/R2, False for RMSE/PBIAS
+        metric          : str   objective metric (direction from the metric registry:
+                                nse/r2/kge/correlation maximised, rmse/mae/rsr minimised,
+                                pbias -> |pbias| minimised)
+        maximize        : bool | None  explicit override of the direction (plain
+                                maximise / minimise of the raw score); default None
+                                = derive from ``metric``
         param_methods   : optional override for method per param (v/r/a)
         param_subbasins : optional override for subbasin list per param
 
@@ -248,22 +282,54 @@ class DDSCalibration:
         methods   = {**_m, **(param_methods   or {})}
         subbasins = {**_s, **(param_subbasins or {})}
 
+        if on_failure not in ("raise", "penalize"):
+            raise ValueError(f"on_failure must be 'raise' or 'penalize', got {on_failure!r}")
+        to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
+
         # DDS passes {name: float}; manager.run_iteration auto-formats it
         def objective(params: dict) -> float:
-            return self._manager.run_iteration(
+            if on_failure == "penalize":
+                try:
+                    return float(self._manager.run_iteration(
+                        params, observed_series, metric, reach_id, output_variable,
+                        methods=methods, subbasins=subbasins
+                    ))
+                except Exception as exc:  # failed run -> NaN -> ranked worst
+                    logger.warning("DDS: run failed (%s)", exc)
+                    return float("nan")
+            score = float(self._manager.run_iteration(
                 params, observed_series, metric, reach_id, output_variable,
                 methods=methods, subbasins=subbasins
-            )
+            ))
+            if not np.isfinite(score):
+                raise RuntimeError(
+                    f"run produced no valid score ({metric}={score}); "
+                    "use on_failure='penalize' to continue past failed runs"
+                )
+            return score
 
-        dds = DDS(
-            param_ranges = bounds,
-            objective    = objective,
-            n_iterations = n_iterations,
-            r            = r,
-            seed         = seed,
-            maximize     = maximize,
-        )
+        if maximize is None:
+            dds = DDS(
+                param_ranges = bounds,
+                objective    = objective,
+                n_iterations = n_iterations,
+                r            = r,
+                seed         = seed,
+                maximize     = is_maximize(metric),
+                score_key    = lambda s: to_objective(metric, s),
+            )
+        else:
+            dds = DDS(
+                param_ranges = bounds,
+                objective    = objective,
+                n_iterations = n_iterations,
+                r            = r,
+                seed         = seed,
+                maximize     = maximize,
+            )
         result = dds.run()
         # Format raw {name: float} -> {name: [(val, method, ...)]} for consistency
-        result["best_params"] = self._manager._format_params(result["best_params"])
+        result["best_params"] = self._manager._format_params(
+            result["best_params"], methods, subbasins
+        )
         return result

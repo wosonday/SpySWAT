@@ -5,7 +5,9 @@
 **Current implementation:** v0.2.6 — see [ARCHITECTURE.md](../ARCHITECTURE.md) for current state  
 **Scope:** Architecture design for extending SpySWAT with automated calibration, validation, and parameter sensitivity analysis workflows  
 
-> **Note:** This is a historical design record written before implementation. All gaps in §2–§3 have been resolved. Current algorithm set: GLUE, Parallel DE, DDS, PSO (v0.2.6). For up-to-date API see [ARCHITECTURE.md](../ARCHITECTURE.md) and [README_EN.md](../README_EN.md).
+> **Note:** This is a historical design record written before implementation. All gaps in §2–§3 have been resolved. Current algorithm set: GLUE, Parallel DE, DDS, PSO (v0.2.6). For up-to-date API see [ARCHITECTURE.md](../ARCHITECTURE.md) and [README.md](../README.md).
+>
+> **Superseded decisions (phase-1 correctness, 2026-11):** Decision 1 — backup now copies only the parameter input files, not the whole directory (ARCHITECTURE.md §5.6). Decision 4 — there is now a per-run CSV log, written after every run (ARCHITECTURE.md §5.12). Observation frequency is read from `IPRINT` in `file.cio`, not inferred from the observations.
 
 ---
 

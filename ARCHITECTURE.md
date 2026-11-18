@@ -1,6 +1,8 @@
 # SpySWAT — Kiến trúc và Hướng dẫn Kỹ thuật
 
-> Phiên bản: 0.2.5 | Cập nhật: 2026-06-18
+> Phiên bản: 0.2.6 + nhánh `fix/phase1-correctness` | Cập nhật: 2026-11-18
+>
+> Các mục mới: luồng chạy an toàn (2.3, 3.1, 3.2), ScenarioBatch (3.7), quyết định 5.6 và 5.8 → 5.13.
 
 ---
 
@@ -12,23 +14,24 @@ SpySWAT được tổ chức theo **3 tầng** tách biệt rõ ràng:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    TẦNG 1 — NGƯỜI DÙNG (USER LAYER)                  │
 │                                                                       │
-│  SWATProject          SWATCalibration         SWATSensitivity        │
-│      │                   │                        │                  │
-│      │          ┌────────┴────────┐               │                  │
-│      │          │  calib.glue     │               │                  │
-│      │          │  calib.de       │               │                  │
-│      │          │  calib.dds      │               │                  │
-│      │          │  calib.pso      │               │                  │
-│      │          │  calib.analyze()│               │                  │
-│      │          └────────┬────────┘               │                  │
-└──────┼───────────────────┼────────────────────────┼──────────────────┘
-       │                   │                        │
-┌──────▼───────────────────▼────────────────────────▼──────────────────┐
+│  SWATProject   SWATCalibration   SWATSensitivity   ScenarioBatch    │
+│      │                   │                        │         │        │
+│      │          ┌────────┴────────┐               │         │        │
+│      │          │  calib.glue     │               │         │        │
+│      │          │  calib.de       │               │         │        │
+│      │          │  calib.dds      │               │         │        │
+│      │          │  calib.pso      │               │         │        │
+│      │          │  calib.analyze()│               │         │        │
+│      │          └────────┬────────┘               │         │        │
+└──────┼───────────────────┼────────────────────────┼─────────┼────────┘
+       │                   │                        │         │
+┌──────▼───────────────────▼────────────────────────▼─────────▼────────┐
 │                TẦNG 2 — HẠ TẦNG (INFRASTRUCTURE LAYER)               │
 │                                                                       │
-│         CalibrationManager          WorkingFolderManager             │
-│           run_iteration()                 setup()                    │
-│           run_batch()                  n_parallel                    │
+│     CalibrationManager                  WorkingFolderManager         │
+│       run_iteration() / run_batch()       setup()                    │
+│       record_run() → nhật ký CSV          run_parallel() → WorkerResult│
+│     metric registry (statistics.py)                                   │
 └──────────────────────────┬────────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼────────────────────────────────────────────┐
@@ -169,34 +172,38 @@ CalibrationManager(project)
 │     methods/subbasins là dict local — không có shared state
 │
 ├── _align_series(obs, sim)
-│     pd.infer_freq(obs.index) → 'MS' hoặc 'D'
-│     Gán DatetimeIndex cho sim, lấy giao với obs
+│     freq = IPRINT trong file.cio ('MS' | 'D')  (không suy từ obs)
+│     check_observation_step(obs.index, freq)  → ValueError nếu lệch ngày/tháng
+│     Gán ngày mô phỏng cho sim (sai độ dài → ValueError), lấy giao với obs
 │
 ├── _backup_state() / _restore_state()
-│     Tạo tmp dir → copytree TxtInOut vào backup
-│     Nếu backup tồn tại → restore trước khi tạo mới (không leak)
+│     Chỉ chép các file ĐẦU VÀO có thể bị sửa (không chép output, không xóa TxtInOut)
+│     Backup chỉ bị xóa khi MỌI file đã chép lại thành công;
+│     restore lỗi → giữ backup, lần _backup_state() sau hoàn tất nó trước
 │
 ├── run_iteration(param_dict, obs, metric, reach_id, output_var,
 │                methods=None, subbasins=None)
 │   │
-│   ├── 1. _backup_state()
-│   ├── 2. _format_params(param_dict, methods, subbasins)
-│   ├── 3. project.HRU.update_params(formatted)
-│   ├── 4. project.run()
+│   ├── 1. _format_params(param_dict, methods, subbasins)
+│   ├── 2. _backup_state()
+│   ├── 3. project.HRU.update_params(formatted)   (ghi nghiêm ngặt, nguyên tử)
+│   ├── 4. project.run()  + kiểm output.rch là output MỚI
 │   ├── 5. project.Output.read_rch(...)
 │   ├── 6. _align_series(obs, sim)
-│   ├── 7. calculate metric → return float
-│   └── 8. finally: _restore_state()  (luôn khôi phục)
+│   ├── 7. tính metric
+│   ├── 8. _record_run(...)  → <session>_metrics.csv / _outputs.csv
+│   └── 9. _restore_state()  (luôn chạy, kể cả khi lỗi hoặc Ctrl+C)
 │
-└── run_batch(param_sets, observed, metrics, reach_id, output_var,
-              methods=None, subbasins=None)
-    │
-    └── ProcessPoolExecutor(n_parallel)
-          worker_1: formatted_p1 → SWAT → _align_series → metrics
-          worker_2: formatted_p2 → SWAT → _align_series → metrics
-          ...
-          worker_N: formatted_pN → SWAT → _align_series → metrics
-          → DataFrame(metrics)
+├── run_batch(param_sets, observed, metrics, reach_id, output_var,
+│             methods=None, subbasins=None)
+│   │
+│   └── WorkingFolderManager.run_parallel() theo từng lô n_parallel
+│         worker_i: khôi phục file gốc → áp p_i → SWAT → WorkerResult(ok, error)
+│         ok=False → NaN cho mọi metric (không đọc output cũ)
+│         → ghi nhật ký từng lần chạy → DataFrame(metrics)
+│
+└── record_run(params, scores, ...)   hook công khai cho GLUE.uncertainty_band,
+                                      sensitivity và thuật toán tự viết
 ```
 
 ---
@@ -213,13 +220,15 @@ HRUManager.update_params()
      │
      ├── SWATParam.get("CN2.mgt")      → line=8, col=3..12
      ├── SWATParam.get("ALPHA_BF.gw")  → line=6, col=3..12
-     └── HRUWriter.write_column(...)   → ghi fixed-width vào file
+     └── writer: đọc latin-1, newline="" → sửa từng ô → tmp file → os.replace
+         (giá trị rộng hơn ô / dòng ngắn → SWATFileFormatError, file không đổi)
      │
      ▼
-SWATRun.run(TxtInOut/)   → SWAT.exe
+SWATRun.run(TxtInOut/)   → SWAT.exe  (timeout, kill khi Ctrl+C, không kế thừa stdin)
      │
      ▼
 OutputFileManager.read_rch(["FLOW_OUTcms"], reach_id=1)
+     (cache theo (mtime_ns, size); bước in lấy từ IPRINT; file tháng tách theo khối)
      │
      ▼
 SWATAnalysis.calculate_statistics(obs, sim)
@@ -243,17 +252,19 @@ WorkingFolderManager.setup()
      ▼
 ProcessPoolExecutor(8)
   Batch 1 (8 workers, đồng thời):
-    worker_1: p1 → SWAT → NSE_1
-    worker_2: p2 → SWAT → NSE_2
+    worker_1: khôi phục gốc → p1 → SWAT → NSE_1
+    worker_2: khôi phục gốc → p2 → SWAT → NSE_2
     ...
-    worker_8: p8 → SWAT → NSE_8
+    worker_8: khôi phục gốc → p8 → SWAT lỗi → WorkerResult(ok=False) → NaN
   Batch 2: p9..p16 → ...
   ...
   Batch 125: p993..p1000
      │
      ▼
-DataFrame: 1000 hàng × (params + metrics)
+DataFrame: 1000 hàng × (params + metrics); mỗi lô được ghi ngay vào nhật ký
 ```
+
+Vì mỗi lần chạy bắt đầu từ bản gốc, thay đổi `r`/`a` ở lô 2 không cộng dồn lên lô 1. Hàm chạy trong worker (`prepare`, `extract`, `runner`) phải là hàm cấp module để pickle được; `setup()` / `run_parallel()` từ chối chạy bên trong tiến trình con (script thiếu `if __name__ == "__main__":`).
 
 ### 3.3 GLUE → 95PPU
 
@@ -362,6 +373,35 @@ Iter 1..max_iterations:
 
 *(Kennedy & Eberhart, 1995, ICNN; Shi & Eberhart, 1998, ICEC)*
 
+### 3.7 ScenarioBatch — kịch bản × bộ tham số
+
+```
+scenarios = [S1 (TxtInOut riêng), S2 (weather_dir + cio), S3 (evaluate=False)]
+param_sets = [P1, P2]           pairs=None → 6 việc (job_id = "S__P")
+     │
+     ▼
+_plan()  → kiểm tên trùng, job_id trùng, pairs hợp lệ
+_check_observation_steps()  → chỉ với kịch bản evaluate=True; lệch → ValueError trước khi chạy
+signature (.signature.json)  → resume=True mà cấu hình đổi → ValueError
+     │
+     ▼
+<working_dir>/_scenario_batch/   (không đụng worker của project)
+  WorkingFolderManager.run_parallel(
+      overlays = weather files theo việc,
+      prepare  = _prepare_dispatch  (FileCIO.set(**cio) theo worker),
+      extract  = _extract_dispatch  (bảng date × "{biến}@{reach}" → CSV, tính metric))
+     │
+     ▼
+results_dir/
+  series/<job_id>.csv      (ghi tmp → os.replace, thử lại khi file bị khóa)
+  summary.csv              job_id, scenario, param_set, status, error, duration_s,
+                           n_rows, series_file, evaluated, eval_note
+  metrics.csv              job_id, scenario, param_set, variable, reach, metric, value
+  (summary.csv bị khóa → ghi file có dấu thời gian + cảnh báo, không mất kết quả)
+```
+
+Việc lỗi không dừng lô (`status="failed"`); `resume=True` bỏ qua việc đã `ok` và còn file series. Kịch bản lịch sử không có ngày chung với thực đo được xử lý như `evaluate=False` (`eval_note` trong `summary.csv`).
+
 ---
 
 ## 4. Cấu trúc module
@@ -371,33 +411,41 @@ SpySWAT/
 │
 ├── spyswat/
 │   ├── __init__.py                    → export SWATProject
-│   ├── __main__.py                    → CLI entry point
-│   ├── swat_project.py                → SWATProject (façade gốc)
+│   ├── __main__.py                    → CLI entry point (chạy SWAT một lần)
+│   ├── logger.py                      → Logger, queue listener cho worker
+│   ├── swat_project.py                → SWATProject (façade gốc; param_file tùy chọn)
 │   │
 │   └── swat_calib/
 │       ├── __init__.py
 │       │
 │       ├── core/
 │       │   ├── txinout.py             → TxInOut: quản lý đường dẫn
-│       │   ├── hru_manager.py         → HRUManager: đọc/ghi tham số
-│       │   ├── output_manager.py      → OutputFileManager: đọc output
-│       │   └── workingFolder_manager.py → WorkingFolderManager: worker dirs
+│       │   ├── hru_manager.py         → HRUManager: đọc/ghi tham số, validate_inputs()
+│       │   ├── output_manager.py      → OutputFileManager: đọc output, cache theo dấu file
+│       │   └── workingFolder_manager.py → WorkingFolderManager, WorkerResult
 │       │
 │       ├── io/
 │       │   ├── parameters.py          → SWATParam, SWATParamInfo
 │       │   ├── readers.py             → fixed-width readers
-│       │   ├── writers.py             → HRUWriter: column-based write
+│       │   ├── writers.py             → writer nghiêm ngặt, SWATFileFormatError
 │       │   ├── mapping_file.py        → ánh xạ ext → file type
-│       │   └── file_cio.py            → FileCIO: đọc file.cio
+│       │   ├── mapping_output.py      → bố cục file output (rch, hru, sub, sed)
+│       │   └── file_cio.py            → FileCIO: ngày mô phỏng, IPRINT, set()
 │       │
 │       ├── calibration/
 │       │   ├── __init__.py
-│       │   ├── calib_manager.py       → CalibrationManager
+│       │   ├── calib_manager.py       → CalibrationManager, check_observation_step
 │       │   └── validation_runner.py   → ValidationRunner, PeriodConfig
+│       │
+│       ├── scenarios/
+│       │   ├── model.py               → Scenario, ParamSet, Job, RunResult
+│       │   └── batch.py               → ScenarioBatch, BatchResult
+│       │
+│       ├── run/run.py                 → SWATRun: tiến trình con, timeout
 │       │
 │       └── analysis/
 │           ├── __init__.py
-│           ├── statistics.py          → SWATAnalysis
+│           ├── statistics.py          → SWATAnalysis + METRIC_DIRECTIONS (bảng chỉ số)
 │           ├── calibration.py         → SWATCalibration (facade, 159 lines)
 │           ├── sensitivity.py         → SWATSensitivity
 │           │
@@ -408,17 +456,26 @@ SpySWAT/
 │               ├── parallel_de.py     → ParallelDE (standalone)
 │               └── pso.py             → PSO (standalone) + PSOCalibration (wrapper)
 │
-├── tests/
-│   ├── test_calibration.py    (18 tests — facade + GLUE API)
-│   ├── test_calib_manager.py  (12 tests — run_iteration, run_batch)
-│   ├── test_dds.py            (18 tests — DDS algorithm)
-│   ├── test_parallel_de.py    (15 tests — ParallelDE)
-│   ├── test_glue.py           (10 tests — GLUE + 95PPU)
-│   └── ...
-│           73 tests total, ~5s
+├── tests/                     (319 test case; 308 passed, 11 skipped trên Windows, ~3 phút)
+│   ├── test_calib_manager.py  run_iteration, run_batch, backup/restore, nhật ký
+│   ├── test_calibration.py    facade + GLUE API
+│   ├── test_dds.py / test_parallel_de.py
+│   ├── test_inputs.py         writer nghiêm ngặt, FileCIO, validate_inputs
+│   ├── test_outputs.py        read_rch theo IPRINT, cache, output.sed
+│   ├── test_metrics.py        bảng chỉ số, NaN, on_failure
+│   ├── test_statistics.py / test_sensitivity.py
+│   ├── test_working_folder.py run_parallel, khôi phục gốc, prepare/extract
+│   ├── test_scenarios.py      ScenarioBatch, resume, evaluate=False
+│   ├── test_run.py            SWATRun, timeout, kill
+│   └── test_project.py        SWATProject, __version__, CLI
 │
-├── README_VI.md
-├── README_EN.md
+├── docs/
+│   ├── sample_run_*.py        ví dụ chạy đơn, song song, kịch bản
+│   ├── SYSTEM_DESIGN_*.md     bản thiết kế/khảo sát gốc (lịch sử)
+│   └── agents/                quy trình đội AI agent
+├── .agents/                   sổ ghi chép theo đầu việc (xem AGENTS.md)
+├── AGENTS.md / CLAUDE.md      hướng dẫn cho AI agent
+├── README.md / README_VI.md
 ├── ARCHITECTURE.md            (file này)
 ├── CHANGELOG.md
 └── pyproject.toml
@@ -481,9 +538,11 @@ self.manager._subbasins = subbasins
 score = self.manager.run_iteration(..., methods=methods, subbasins=subbasins)
 ```
 
-### 5.6 Backup/restore an toàn (v0.2.5)
+### 5.6 Backup/restore an toàn (v0.2.5, siết lại ở phase 1)
 
-`_backup_state()` kiểm tra nếu backup đang tồn tại thì gọi `_restore_state()` trước — tránh leak temp dir khi `run_iteration` bị gọi lại mà chưa restore. `_restore_state()` luôn được gọi trong `finally` để đảm bảo TxtInOut về trạng thái gốc dù có exception.
+`_backup_state()` kiểm tra nếu backup đang tồn tại thì gọi `_restore_state()` trước — tránh leak temp dir khi `run_iteration` bị gọi lại mà chưa restore. `_restore_state()` luôn chạy (kể cả khi lỗi hoặc Ctrl+C) để TxtInOut về trạng thái gốc.
+
+Phase 1: backup chỉ chép các file đầu vào có thể bị sửa (không chép cả thư mục, không bao giờ xóa TxtInOut). Backup chỉ bị xóa khi mọi file đã được chép lại; nếu một file không chép được (ví dụ đang bị khóa), backup được giữ và đường dẫn được nêu trong `RuntimeError`.
 
 ### 5.7 Strict validation trong _parse_spec (v0.2.5)
 
@@ -495,6 +554,35 @@ Old format `(min, max)` với > 2 phần tử sẽ raise `ValueError` thay vì i
 # → ValueError: old format (min, max) accepts exactly 2 values, got 3.
 #   Use new format: ((min, max), method, subbasins).
 ```
+
+### 5.8 Báo lỗi thay vì trả số sai (phase 1)
+
+Nguyên tắc chung của nhánh `fix/phase1-correctness`: một con số sai mà trông hợp lệ nguy hiểm hơn một lỗi. Vì vậy:
+
+- Writer không còn điền `0.0` khi cắt sai vị trí; báo `SWATFileFormatError` và giữ nguyên file.
+- Lần chạy SWAT không sinh output mới bị coi là lỗi (kiểm dấu `output.rch` trước/sau), không đọc output của lần trước.
+- Thực đo và mô phỏng lệch bước (ngày/tháng) báo lỗi; SpySWAT không tự gộp.
+- Khóa tham số không có trong file tham số báo lỗi trước khi sửa file hoặc khởi động worker.
+
+### 5.9 Worker luôn bắt đầu từ bản gốc
+
+Trước đây worker giữ trạng thái giữa các lô, nên `r`/`a` bị cộng dồn (lô 2 nhân lên kết quả của lô 1). Giờ `run_parallel()` chép lại các file đầu vào từ TxtInOut gốc trước mỗi việc. Chi phí: chép thêm vài file mỗi lần chạy; đổi lại kết quả không phụ thuộc thứ tự lô.
+
+### 5.10 Một bảng chỉ số duy nhất
+
+`METRIC_DIRECTIONS` trong `statistics.py` là nguồn duy nhất cho chiều tối ưu của mỗi chỉ số. Mọi thuật toán dùng `to_objective()` (luôn càng nhỏ càng tốt) và `best_index()` (an toàn với NaN). Lý do: trước đây mỗi thuật toán tự viết chiều tối ưu, và có chỗ coi `pbias` là "càng nhỏ càng tốt" theo giá trị có dấu (PBIAS âm lớn bị xem là tốt), thay vì theo `|pbias|`.
+
+### 5.11 Lần chạy lỗi không bao giờ thành số liệu
+
+NaN luôn xếp cuối khi chọn tốt nhất; lô toàn lỗi báo `RuntimeError`. Phân tích độ nhạy không thay NaN bằng giá trị giả: Morris bỏ quỹ đạo có lỗi, Sobol báo lỗi (giữ mẫu trong `last_samples`/`last_scores`), OAT loại lần lỗi. Thuật toán tuần tự cho người dùng chọn `on_failure="raise"` hoặc `"penalize"`.
+
+### 5.12 Nhật ký lần chạy không bao giờ làm dừng hiệu chỉnh
+
+Hiệu chỉnh có thể chạy nhiều giờ; mất kết quả vì lỗi ghi log là không chấp nhận được, nhưng làm hỏng hiệu chỉnh vì log còn tệ hơn. Vì vậy `_record_run` bắt mọi exception và chỉ cảnh báo một lần; file bị khóa thì giữ dòng trong bộ nhớ (tối đa 10 000 dòng mỗi file) và ghi ở lần sau; file chỉ được tạo (O_EXCL) khi có dòng đầu tiên, nên không để lại file rỗng. Quyết định này thay cho "Decision 4: No persistence layer" trong `docs/SYSTEM_DESIGN_*.md`.
+
+### 5.13 Mọi mã chạy song song phải pickle được
+
+Windows dùng `spawn`: tiến trình con nạp lại script. Hàm truyền vào worker phải ở cấp module (không lambda, không closure); script phải nằm dưới `if __name__ == "__main__":`. Các hàm `setup()`, `run_parallel()`, `ScenarioBatch.run()` kiểm `multiprocessing.parent_process()` và báo lỗi rõ ràng thay vì sinh tiến trình đệ quy.
 
 ---
 
@@ -545,6 +633,10 @@ self.myalgo = MyAlgoCalibration(self.manager)
 | Kiểm định tự động | `ValidationRunner(project, ..., PeriodConfig(...))` |
 | Chạy 1 bộ tham số thủ công | `manager.run_iteration(param_dict, obs, "nse")` |
 | Chạy N bộ song song thủ công | `manager.run_batch(param_sets, obs, ["nse"])` |
+| Kịch bản × bộ tham số | `ScenarioBatch(project, results_dir).run(scenarios, param_sets, outputs=...)` |
+| Ghi lần chạy của thuật toán tự viết | `manager.record_run(params, scores, sim=...)` |
+| Kiểm file tham số khớp TxtInOut | `project.HRU.validate_inputs()` |
+| Kiểm bước thời gian thực đo | `check_observation_step(obs.index, project.FileCIO.get_iprint())` |
 
 ---
 

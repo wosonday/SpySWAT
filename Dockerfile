@@ -75,7 +75,7 @@ COPY --from=builder /usr/local/bin/python                   /usr/local/bin/pytho
 COPY --from=builder --chown=nonroot:nonroot /build/.venv/   /app/.venv/
 
 # Chỉ copy thư viện — không cần bất kỳ file nào từ ngoài
-COPY --chown=nonroot:nonroot spyswat/ ./swat_toolkit/
+COPY --chown=nonroot:nonroot spyswat/ ./spyswat/
 
 ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -83,7 +83,8 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH" \
     PYTHONFAULTHANDLER=1 \
     PYTHONHASHSEED=random \
     LD_LIBRARY_PATH=/lib/multi-arch \
-    VIRTUAL_ENV=/app/.venv
+    VIRTUAL_ENV=/app/.venv \
+    PYTHONPATH=/app
 
 # Chạy như module — hoàn toàn tự chứa
-ENTRYPOINT ["/app/.venv/bin/python", "-m", "swat_toolkit"]
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "spyswat"]

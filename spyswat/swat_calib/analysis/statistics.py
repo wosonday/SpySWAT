@@ -9,6 +9,93 @@ from numpy import floating
 logger = logging.getLogger(__name__)
 
 
+# ==================== Metric registry ====================
+# Single source of truth for the direction of every supported metric.
+#   'max'     : larger is better
+#   'min'     : smaller is better
+#   'min_abs' : the optimum is 0, smaller |value| is better (pbias)
+METRIC_DIRECTIONS: Dict[str, str] = {
+    'nse':         'max',
+    'r2':          'max',
+    'kge':         'max',
+    'correlation': 'max',
+    'rmse':        'min',
+    'mae':         'min',
+    'rsr':         'min',
+    'pbias':       'min_abs',
+}
+
+# Finite stand-in for a failed run (keeps means/variances finite).
+_WORST_MAGNITUDE = 1e6
+
+
+def known_metrics() -> List[str]:
+    """Names of all registered metrics."""
+    return list(METRIC_DIRECTIONS)
+
+
+def _direction(metric: str) -> str:
+    try:
+        return METRIC_DIRECTIONS[metric]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"Unknown metric {metric!r}; known metrics: {', '.join(METRIC_DIRECTIONS)}"
+        ) from None
+
+
+def is_maximize(metric: str) -> bool:
+    """True when a larger score is better (nse, r2, kge, correlation)."""
+    return _direction(metric) == 'max'
+
+
+def worst_score(metric: str) -> float:
+    """Finite score used for a failed (NaN) run: the worst value for this metric."""
+    return -_WORST_MAGNITUDE if is_maximize(metric) else _WORST_MAGNITUDE
+
+
+def to_objective(metric: str, score):
+    """
+    Map a metric score to an objective where SMALLER IS ALWAYS BETTER.
+
+    nse/r2/kge/correlation -> -score; rmse/mae/rsr -> score; pbias -> |score|.
+    Works on scalars and array-likes; NaN stays NaN (use ``sanitize_scores``
+    first, or ``best_index``, to treat failures as the worst value).
+    """
+    d = _direction(metric)
+    arr = np.asarray(score, dtype=float)
+    if d == 'max':
+        out = -arr
+    elif d == 'min_abs':
+        out = np.abs(arr)
+    else:
+        out = arr
+    return float(out) if out.ndim == 0 else out
+
+
+def sanitize_scores(scores, metric: str) -> np.ndarray:
+    """Return a float array with NaN/inf replaced by ``worst_score(metric)``."""
+    arr = np.array(scores, dtype=float)
+    arr[~np.isfinite(arr)] = worst_score(metric)
+    return arr
+
+
+def best_index(scores, metric: str) -> int:
+    """
+    Positional index of the best score for ``metric`` (NaN-safe).
+
+    Raises RuntimeError when every score is NaN/non-finite (all runs failed).
+    """
+    _direction(metric)
+    arr = np.asarray(scores, dtype=float).ravel()
+    finite = np.isfinite(arr)
+    if arr.size == 0 or not finite.any():
+        raise RuntimeError(
+            f"all runs failed: no valid '{metric}' score among {arr.size} evaluations"
+        )
+    obj = np.where(finite, to_objective(metric, np.where(finite, arr, 0.0)), np.inf)
+    return int(np.argmin(obj))
+
+
 class SWATAnalysis:
     """
         >>> analysis = project.analysis
@@ -79,11 +166,15 @@ class SWATAnalysis:
             simulated: Union[pd.Series, np.ndarray]
     ) -> Dict[str, str]:
 
-        stats = self.calculate_statistics(observed, simulated)
+        stats = self.calculate_statistics(
+            observed, simulated, metrics=['nse', 'pbias', 'rsr']
+        )
         ratings = {}
 
         nse = stats.get('nse', np.nan)
-        if nse > 0.75:
+        if np.isnan(nse):
+            ratings['nse'] = 'N/A'
+        elif nse > 0.75:
             ratings['nse'] = 'Very Good'
         elif nse > 0.65:
             ratings['nse'] = 'Good'
@@ -95,7 +186,9 @@ class SWATAnalysis:
             ratings['nse'] = 'Unsatisfactory'
 
         pbias = abs(stats.get('pbias', np.nan))
-        if pbias < 10:
+        if np.isnan(pbias):
+            ratings['pbias'] = 'N/A'
+        elif pbias < 10:
             ratings['pbias'] = 'Very Good'
         elif pbias < 15:
             ratings['pbias'] = 'Good'
@@ -105,7 +198,9 @@ class SWATAnalysis:
             ratings['pbias'] = 'Unsatisfactory'
 
         rsr = stats.get('rsr', np.nan)
-        if rsr <= 0.50:
+        if np.isnan(rsr):
+            ratings['rsr'] = 'N/A'
+        elif rsr <= 0.50:
             ratings['rsr'] = 'Very Good'
         elif rsr <= 0.60:
             ratings['rsr'] = 'Good'

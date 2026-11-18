@@ -3,11 +3,11 @@
 **Thư viện Python cho hiệu chỉnh, kiểm định và phân tích độ nhạy mô hình SWAT**
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-308%20passed-brightgreen)]()
 [![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
-> English version: [README_EN.md](README_EN.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md)
+> English version: [README.md](README.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md) · Làm việc với AI agent: [AGENTS.md](AGENTS.md), [docs/agents/AGENTS-TUTORIAL.md](docs/agents/AGENTS-TUTORIAL.md)
 
 ---
 
@@ -21,6 +21,8 @@
 - [Hiệu chỉnh](#hiệu-chỉnh)
 - [Fig Viewer](#fig-viewer--sơ-đồ-lưu-vực-tương-tác)
 - [Kiểm định](#kiểm-định)
+- [Nhật ký lần chạy](#nhật-ký-lần-chạy)
+- [Chạy theo kịch bản](#chạy-theo-kịch-bản)
 - [Phân tích độ nhạy](#phân-tích-độ-nhạy)
 - [Đọc/ghi TxtInOut](#đọcghi-txtinout)
 - [Đọc kết quả SWAT](#đọc-kết-quả-swat)
@@ -41,6 +43,9 @@ SpySWAT cung cấp:
 - Phân tích độ nhạy từ kết quả GLUE — **không tốn thêm lần chạy SWAT**
 - Đánh giá hiệu suất theo Moriasi et al. (2007)
 - Tính dải bất định 95PPU với p-factor và r-factor
+- **Chạy theo kịch bản**: kịch bản sử dụng đất / khí hậu × bộ tham số, song song, chạy tiếp được
+- **Nhật ký lần chạy**: chỉ số và chuỗi mô phỏng của mỗi lần chạy được ghi nối vào CSV ngay khi chạy xong
+- Báo lỗi rõ ràng: tệp sai định dạng, lệch bước thời gian, lần chạy SWAT lỗi đều báo lỗi hoặc cho điểm NaN; không âm thầm điền `0.0`
 
 ---
 
@@ -76,8 +81,16 @@ project = SWATProject(
 | `txinout_dir` | ✓ | Đường dẫn tới thư mục TxtInOut |
 | `working_dir` | ✓ | Thư mục chứa worker copies (tự tạo) |
 | `swat_exe` | ✓ | Đường dẫn tới file SWAT.exe |
-| `param_file` | — | File định nghĩa tham số `.txt` |
+| `param_file` | — | File định nghĩa tham số `.txt` (chỉ cần khi sửa tham số: `project.HRU`, `read_params_values`) |
 | `n_parallel` | — | Số worker song song (mặc định: 1) |
+
+> **Windows:** chạy song song sẽ sinh tiến trình mới và nạp lại script của bạn. Đặt mã của script dưới `if __name__ == "__main__":` (xem `docs/sample_run_*.py`); nếu không SpySWAT sẽ báo lỗi rõ ràng.
+
+Kiểm tra file tham số có khớp với TxtInOut trước khi hiệu chỉnh:
+
+```python
+problems = project.HRU.validate_inputs()   # DataFrame rỗng = mọi vị trí đều hợp lệ
+```
 
 ---
 
@@ -285,10 +298,13 @@ result = calib.optimize(
     method          = "differential_evolution",  # hoặc "minimize"
     metric          = "nse",
     max_iter        = 100,
+    on_failure      = "raise",                  # hoặc "penalize": lần chạy lỗi nhận giá trị tệ nhất
 )
 print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
+
+Các thuật toán tuần tự (`calib.optimize`, `calib.dds.run`) mặc định dừng ở lần chạy SWAT lỗi đầu tiên (`on_failure="raise"`). Các thuật toán theo quần thể (GLUE, DE, PSO) cho lần chạy lỗi điểm NaN, luôn xếp cuối; nếu mọi lần chạy trong một lô đều lỗi thì báo `RuntimeError`.
 
 ### Định dạng param_ranges thống nhất
 
@@ -398,7 +414,8 @@ path = viewer.build(
 ## Kiểm định
 
 ```python
-# Dùng best_params từ kết quả hiệu chỉnh
+# Dùng best_params từ kết quả hiệu chỉnh.
+# Lệnh này sửa thẳng TxtInOut: hãy giữ bản sao, hoặc dùng ValidationRunner bên dưới.
 project.HRU.update_params(result["best_params"])
 project.run()
 
@@ -430,10 +447,102 @@ runner = ValidationRunner(
         valid_end   = "2015-12-31"
     )
 )
-r = runner.run(metric="nse", output_variable="FLOW_OUTcms")
+r = runner.run(metric="nse", output_variable="FLOW_OUTcms")   # restore=True để hoàn tác
 print("Calib NSE:", r["calibration"]["nse"])
 print("Valid NSE:", r["validation"]["nse"])
+print(r["best_parameters"])
 ```
+
+Mặc định bộ tham số tốt nhất **được giữ lại trong TxtInOut** sau `runner.run()` (có cảnh báo trong log: áp lại thay đổi tương đối `r`/`a` sẽ bị cộng dồn). Truyền `restore=True` để lấy lại các file đầu vào gốc. Bộ tham số tốt nhất và chỉ số kiểm định được lưu vào `<session>_best_params.csv` và `<session>_validation.csv` (xem [Nhật ký lần chạy](#nhật-ký-lần-chạy)).
+
+### Bước thời gian của số liệu thực đo
+
+Số liệu thực đo phải có cùng bước thời gian với bước in kết quả của mô hình (`IPRINT` trong `file.cio`): thực đo ngày cho kết quả ngày, thực đo tháng cho kết quả tháng. SpySWAT không tự gộp; nếu lệch thì báo `ValueError` trước khi chạy. Thực đo tháng phải đặt ngày **mùng 1**:
+
+```python
+obs_monthly = obs_daily.resample("MS").mean()                 # lưu lượng: trung bình tháng
+# hoặc, nếu đã là số liệu tháng nhưng đặt ở cuối tháng:
+obs.index = obs.index.to_period("M").to_timestamp()
+
+from spyswat.swat_calib.calibration.calib_manager import check_observation_step
+check_observation_step(obs.index, project.FileCIO.get_iprint())   # báo lỗi nếu lệch
+```
+
+---
+
+## Nhật ký lần chạy
+
+Mỗi lần chạy (tuần tự, song song, kiểm định, dải bất định GLUE, phân tích độ nhạy) được ghi nối vào CSV **ngay khi chạy xong**, nên dừng giữa chừng (lỗi hoặc Ctrl+C) không mất các lần đã chạy:
+
+```
+<working_dir>/calibration_results/
+├── <session>_metrics.csv       mỗi lần chạy một dòng: run_id, time, mode, status, error, reach_id,
+│                               output_variable, <param>, <param>__method, <param>__spec, các chỉ số
+├── <session>_outputs.csv       chuỗi mô phỏng, dạng dài: run_id, date, variable, reach, value
+├── <session>_best_params.csv   ValidationRunner
+└── <session>_validation.csv    ValidationRunner
+```
+
+`<session>` là thời điểm bắt đầu (`YYYYMMDD_HHMMSS`). File chỉ được tạo khi có dòng đầu tiên. Khi tập cột tham số hoặc chỉ số thay đổi, một session mới bắt đầu.
+
+```python
+manager = calib.manager
+manager.log_outputs = "observed"      # "all" (mặc định) | "observed" (ngày có thực đo) | "none"
+manager.results_dir = "D:/SWAT/results"   # None để tắt nhật ký
+print(manager.session_files)          # {'metrics': Path, 'outputs': Path}
+
+# thuật toán tự viết, tự chạy SWAT:
+manager.record_run({"CN2.mgt": 75.0}, {"nse": 0.71}, sim=sim_series)
+```
+
+Nhật ký không bao giờ làm dừng quá trình hiệu chỉnh: nếu file bị khóa (ví dụ đang mở trong Excel), các dòng được giữ trong bộ nhớ, cảnh báo một lần, và ghi ở lần nối tiếp theo hoặc khi gọi `manager.flush_log()`.
+
+---
+
+## Chạy theo kịch bản
+
+Chạy nhiều **kịch bản** (bản đồ sử dụng đất, dữ liệu khí hậu, giai đoạn mô phỏng) với nhiều **bộ tham số** song song, xuất chuỗi kết quả và chỉ số.
+
+```python
+from spyswat.swat_calib.scenarios import Scenario, ParamSet, ScenarioBatch
+
+if __name__ == "__main__":
+    scenarios = [
+        Scenario("LUC2000", txinout_dir="D:/SWAT/LUC2000/TxtInOut"),   # TxtInOut đầy đủ
+        Scenario("LUC2020", txinout_dir="D:/SWAT/LUC2020/TxtInOut"),
+        Scenario("GCM_ssp245", weather_dir="D:/GCM/ssp245",            # chép đè lên TxtInOut gốc
+                 cio={"IYR": 2030, "NBYR": 20, "NYSKIP": 0},
+                 evaluate=False),                                     # tương lai: không tính chỉ số
+    ]
+    param_sets = [
+        ParamSet.from_dict("best", {"CN2.mgt": (-0.1, "r"), "ALPHA_BF.gw": 0.5}),
+        ParamSet.from_dataframe(table, "par1", param="PARAM", method="method",
+                                value="MIN", sub="SUBBASIN"),
+    ]
+
+    batch = ScenarioBatch(project, "D:/SWAT/results")
+    res = batch.run(
+        scenarios, param_sets,
+        outputs  = {"FLOW_OUTcms": [51, 55], "SED_OUTtons": [51]},
+        observed = {("FLOW_OUTcms", 51): obs},
+        metrics  = ("nse", "kge", "pbias"),
+        # pairs=[("LUC2000", "best")],   # mặc định: mọi kịch bản × mọi bộ tham số
+        resume   = True,                  # bỏ qua việc đã 'ok' trong summary.csv
+    )
+    print(res.summary)      # job_id, scenario, param_set, status, error, duration_s, ...
+    print(res.metrics)      # job_id, scenario, param_set, variable, reach, metric, value
+    res.to_csv("FLOW_OUTcms", "D:/SWAT/results/flow_all.csv")
+```
+
+| Tùy chọn | Ý nghĩa |
+|----------|---------|
+| `Scenario(txinout_dir=...)` | Một thư mục TxtInOut riêng, đầy đủ |
+| `Scenario(weather_dir=...)` | Các file được chép đè theo tên lên TxtInOut gốc (phải đúng định dạng SWAT sẵn) |
+| `Scenario(cio={...})` | Ghi đè `file.cio`: `NBYR`, `IYR`, `IDAF`, `IDAL`, `IPRINT`, `NYSKIP` |
+| `Scenario(evaluate=False)` | Kịch bản tương lai / GCM: vẫn ghi chuỗi, không tính chỉ số, không kiểm bước thời gian |
+| `resume=True` | Bỏ qua việc đã xong; báo lỗi nếu outputs, metrics, thực đo hoặc định nghĩa kịch bản đã đổi |
+
+Một việc lỗi không làm dừng cả lô (`status="failed"`, lỗi ghi trong `summary.csv`). Tên chỉ gồm chữ, số, `.`, `_`, `-` và không được chứa `__`. Ví dụ đầy đủ: `docs/sample_run_scenarios.py`.
 
 ---
 
@@ -468,7 +577,10 @@ oat_df, indices = sens.one_at_a_time(
     metric          = "nse"
 )
 print(indices)
+# parameter  metric_range  metric_std  range_over_std  sensitivity_index   (xếp giảm dần)
 ```
+
+`sensitivity_index` = khoảng biến thiên chỉ số của tham số chia cho khoảng lớn nhất trong mọi tham số (tham số ảnh hưởng nhất được 1.0). Lần chạy lỗi bị loại; tham số có ít hơn 2 lần chạy thành công nhận NaN. Khi không truyền `observed_series`, OAT và Morris khôi phục đầu vào của bạn sau mỗi lần chạy.
 
 ### Morris Method (song song)
 
@@ -481,6 +593,8 @@ morris = sens.morris_method(
 )
 print(morris["morris_indices"])
 ```
+
+Quỹ đạo nào có lần chạy lỗi sẽ bị loại khỏi chỉ số Morris. `sens.sobol_method(...)` báo `RuntimeError` nếu có lần chạy lỗi, vì chỉ số Sobol cần đủ mẫu; lô chạy tốn kém không bị mất: `sens.last_samples` và `sens.last_scores` (NaN = lỗi) vẫn giữ lại. `morris_salib` và `sobol_method` cần `pip install SALib`.
 
 ---
 
@@ -527,6 +641,17 @@ project.HRU.update_by_df(df)
 values = project.read_params_values(["CN2.mgt", "ALPHA_BF.gw", "ESCO.hru"])
 ```
 
+### Ghi nghiêm ngặt
+
+File đầu vào được đọc/ghi giữ nguyên từng byte (latin-1, giữ kiểu xuống dòng gốc). Giá trị rộng hơn ô fixed-width, dòng quá ngắn hoặc vị trí cắt nằm ngoài dòng sẽ báo `SWATFileFormatError` và không đụng tới file; mỗi file được thay thế nguyên tử một lần cho mỗi lần gọi `update_params`. Khóa tham số không có trong file tham số báo `ValueError` trước khi sửa bất kỳ file nào.
+
+Thiết lập mô phỏng trong `file.cio`:
+
+```python
+project.FileCIO.set(IYR=2000, NBYR=16, NYSKIP=2, IPRINT=0)   # IPRINT: 0 tháng, 1 ngày, 2 năm
+project.FileCIO.get_iprint()                                 # 'MS' | 'D' | 'YS'
+```
+
 ---
 
 ## Đọc kết quả SWAT
@@ -559,6 +684,13 @@ Biến phổ biến trong output.rch:
 | `NO3_OUTkg` | kg | Nitrat |
 | `ORG_N_kg` | kg | Nitơ hữu cơ |
 
+`read_rch` đọc bước in từ `file.cio` và tách file tháng thành các khối tháng (bỏ dòng năm và trung bình năm). Kết quả được cache theo dấu file (thời điểm sửa và kích thước), nên lần chạy SWAT mới luôn được đọc lại; `project.run()` cũng xóa cache. Lỗi phân tích nêu rõ file, dòng và cột.
+
+```python
+project.Output.check_complete(".rch")   # báo RuntimeError kèm lý do nếu output.rch không dùng được
+project.Output.invalidate()             # xóa cache thủ công
+```
+
 ---
 
 ## Thống kê hiệu suất
@@ -568,6 +700,16 @@ stats  = project.Statistic.calculate_statistics(obs, sim,
     metrics=["nse", "kge", "r2", "rmse", "pbias", "rsr"])
 rating = project.Statistic.evaluate_performance(obs, sim)
 ```
+
+Một bảng đăng ký duy nhất (`spyswat.swat_calib.analysis.statistics.METRIC_DIRECTIONS`) cho mọi thuật toán biết chiều tốt của từng chỉ số:
+
+| Chiều | Chỉ số |
+|-------|--------|
+| càng lớn càng tốt | `nse`, `kge`, `r2`, `correlation` |
+| càng nhỏ càng tốt | `rmse`, `mae`, `rsr` |
+| càng gần 0 càng tốt | `pbias` (tối ưu theo `abs(pbias)`) |
+
+Hàm hỗ trợ: `known_metrics()`, `is_maximize(m)`, `to_objective(m, score)` (luôn càng nhỏ càng tốt), `best_index(scores, m)` (an toàn với NaN). Tên chỉ số không có trong bảng báo `ValueError`.
 
 Thang đánh giá NSE (Moriasi et al., 2007):
 
@@ -613,8 +755,16 @@ results = manager.run_batch(
     metrics     = ["nse"],
     reach_id    = 1,
 )
-print(results)   # DataFrame: nse
+print(results)   # DataFrame: nse (NaN cho lần chạy lỗi)
 ```
+
+Mọi lần chạy song song đều bảo đảm:
+
+- **Khôi phục gốc trước:** mỗi worker chép lại file đầu vào từ TxtInOut của bạn trước khi áp tham số, nên thay đổi tương đối (`r`) và cộng (`a`) không bị cộng dồn qua các lô. TxtInOut của bạn không bao giờ bị sửa.
+- **Cô lập lỗi:** lần chạy bị lỗi, quá thời gian hoặc không sinh output mới được báo là lỗi (`WorkerResult(ok=False, error=...)`) và nhận điểm NaN; không bao giờ đọc output cũ như output mới.
+- **Dừng sạch:** Ctrl+C kết thúc các tiến trình SWAT con (`taskkill /T` trên Windows).
+
+Hook cấp thấp cho quy trình tự viết: `project.WorkingFolder.run_parallel(swat_exe, param_sets, prepare=..., extract=..., overlays=..., timeout_s=...)`. `prepare`/`extract` nhận một hàm hoặc danh sách một hàm cho mỗi việc; phải là hàm cấp module (picklable).
 
 ---
 
@@ -633,8 +783,14 @@ project.Output.read_rch / read_hru / read_sub / read_sed / read_watout
 project.Statistic.calculate_statistics(obs, sim)
 project.Statistic.evaluate_performance(obs, sim)
 project.Statistic.sensitivity_from_results(df, metric, param_names, method)
+project.HRU.validate_inputs(params=None) → DataFrame các lỗi (rỗng = OK)
 project.FileCIO.get_date_range_sim(freq)
+project.FileCIO.get_iprint() → 'MS' | 'D' | 'YS'
+project.FileCIO.set(NBYR=, IYR=, IDAF=, IDAL=, IPRINT=, NYSKIP=)
+project.Output.check_complete(file_type=".rch") / invalidate()
 project.WorkingFolder.setup(overwrite)
+project.WorkingFolder.run_parallel(swat_exe, param_sets, prepare=, extract=,
+                                   overlays=, timeout_s=) → [WorkerResult]
 project.info()
 ```
 
@@ -660,7 +816,7 @@ calib.pso.run(param_ranges, obs, n_particles, max_iterations, w_max, w_min,
 calib.analyze(param_ranges, obs, n_samples, threshold, metric,
               sensitivity_method, seed, param_methods, param_subbasins) → dict
 calib.optimize(param_ranges, obs, method, metric, max_iter,
-               param_methods, param_subbasins) → dict
+               param_methods, param_subbasins, on_failure="raise") → dict
 
 # Hạ tầng
 calib.manager                          # CalibrationManager
@@ -673,6 +829,37 @@ calib.manager._parse_spec(param_ranges) → (bounds, methods, subbasins)
     Raises ValueError nếu old-format tuple có > 2 phần tử
 calib.manager._format_params(raw_dict, methods=None, subbasins=None) → formatted_dict
 calib.manager._align_series(obs, sim) → (obs_aligned, sim_aligned)
+    tần suất mô phỏng lấy từ IPRINT; báo lỗi khi lệch bước hoặc không có ngày chung
+calib.manager.record_run(params, scores, status="ok", error=None, sim=None, ...)
+calib.manager.flush_log() → bool
+calib.manager.results_dir / log_outputs / session_files
+```
+
+### ValidationRunner
+
+```
+ValidationRunner(project, param_ranges, observed, PeriodConfig(calib_start, calib_end,
+                 valid_start, valid_end))
+  .run(metric="nse", method="differential_evolution", max_iter=100, reach_id=1,
+       output_variable="FLOW_OUTcms", restore=False)
+      → {"best_parameters", "calibration": {metric: score}, "validation": {mọi chỉ số}}
+```
+
+### Scenarios
+
+```
+from spyswat.swat_calib.scenarios import Scenario, ParamSet, ScenarioBatch
+
+Scenario(name, txinout_dir=None, weather_dir=None, cio=None, evaluate=True)
+ParamSet(name, updates={"CN2.mgt": [(value, method[, subbasins]), ...]})
+ParamSet.from_dict(name, {"CN2.mgt": 75.0, "ESCO.hru": (0.1, "r")})
+ParamSet.from_dataframe(df, name, param="param", method="method", value="value", sub="subbasin")
+
+ScenarioBatch(project, results_dir)
+  .run(scenarios, param_sets, *, outputs, pairs=None, observed=None,
+       metrics=("nse", "kge", "pbias"), resume=True, timeout_s=None) → BatchResult
+BatchResult: .summary, .metrics, .results, .failed, .warnings,
+             .series(variable) → DataFrame, .to_csv(variable, path) → Path
 ```
 
 ### Standalone Algorithms
@@ -732,12 +919,19 @@ SpySWAT/
 │   └── swat_calib/
 │       ├── core/       TxInOut, HRUManager, OutputFileManager, WorkingFolderManager
 │       ├── io/         SWATParam, readers, writers, mapping_file, FileCIO
-│       ├── calibration/ CalibrationManager (run_iteration, run_batch),
+│       ├── calibration/ CalibrationManager (run_iteration, run_batch, nhật ký),
 │       │               ValidationRunner
-│       └── analysis/   SWATAnalysis (statistics), SWATCalibration (facade),
-│                       SWATSensitivity
-│                       └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
-├── tests/              73 tests (pytest)
+│       ├── scenarios/  Scenario, ParamSet, ScenarioBatch
+│       ├── analysis/   SWATAnalysis (statistics + bảng chỉ số), SWATCalibration (facade),
+│       │               SWATSensitivity
+│       │               └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
+│       ├── run/        SWATRun (tiến trình con, timeout)
+│       └── visualization/ FigViewer
+├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py,
+│                       agents/ (quy trình đội AI agent)
+├── tests/              319 tests (pytest, không cần file SWAT.exe)
+├── .agents/            sổ ghi chép theo đầu việc, commit cùng code (xem AGENTS.md)
+├── AGENTS.md           hướng dẫn cho AI agent và người đóng góp (CLAUDE.md nạp tệp này)
 ├── ARCHITECTURE.md     Kiến trúc chi tiết + sơ đồ kết nối
 └── pyproject.toml
 ```
@@ -747,9 +941,11 @@ SpySWAT/
 ## Tests
 
 ```bash
-pytest tests/ -v
-# 73 passed in ~5s
+pytest tests/ -q
+# 308 passed, 11 skipped (~3 phút trên Windows)
 ```
+
+Test bị bỏ qua trên Windows: test dùng script POSIX làm exe giả (`tests/test_run.py`) và test SALib khi chưa cài SALib.
 
 ---
 

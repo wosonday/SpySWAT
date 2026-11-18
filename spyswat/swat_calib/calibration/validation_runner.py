@@ -1,9 +1,16 @@
 # spyswat/swat_calib/calibration/validation_runner.py
 
+import logging
 from dataclasses import dataclass
+import numpy as np
 import pandas as pd
 
 from spyswat.swat_calib.calibration import CalibrationManager
+from spyswat.swat_calib.core.workingFolder_manager import (
+    _stamp_output_rch, _check_fresh_output_rch,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,11 +34,22 @@ class ValidationRunner:
         self.param_ranges = param_ranges
         self.observed     = observed
         self.period       = period
+        self.manager      = CalibrationManager(project)
 
     def run(self, metric='nse', method='differential_evolution',
             max_iter=100, reach_id=1,
-            output_variable: str = 'FLOW_OUTcms') -> dict:
+            output_variable: str = 'FLOW_OUTcms',
+            restore: bool = False) -> dict:
         """
+        Calibrate, then run SWAT once with the best parameters and score the validation period.
+
+        By default the best parameters STAY in the user's TxtInOut afterwards (a warning is
+        logged: applying relative 'r'/'a' changes again would compound on top of them).
+        Pass ``restore=True`` to put the original input files back after the validation run.
+        The best parameters, calibration/validation metrics and the validation run are
+        saved in ``manager.results_dir`` (``<session>_best_params.csv``,
+        ``<session>_validation.csv`` and the per-run log) before any restore.
+
         Returns:
             best_parameters, calibration: {metric: score}, validation: {all metrics}
         """
@@ -41,21 +59,52 @@ class ValidationRunner:
             obs_calib, metric, method, max_iter, reach_id, output_variable
         )
 
+        manager = self.manager
+        _, methods, subbasins = manager._parse_spec(self.param_ranges)
+        formatted = (manager._format_params(best_params, methods, subbasins)
+                     if manager._is_raw(best_params) else best_params)
+        self._save_best_params(manager, formatted, subbasins)
+
         # 2. Ap dung best params va chay SWAT
-        self.project.HRU.update_params(best_params)
-        self.project.run()
+        if restore:
+            manager._backup_state()
+        sim_dated = None
+        try:
+            try:
+                self.project.HRU.update_params(formatted)
+                out_dir = manager._txinout_dir()
+                before = _stamp_output_rch(out_dir) if out_dir is not None else None
+                self.project.run()
+                if out_dir is not None:
+                    _check_fresh_output_rch(out_dir, before)
 
-        sim = self.project.Output.read_rch(
-            columns=['RCH', 'MON', output_variable], reach_id=reach_id
-        )[output_variable]
-        sim.index = self.project.get_date_range()
+                sim = self.project.Output.read_rch(
+                    columns=['RCH', 'MON', output_variable], reach_id=reach_id
+                )[output_variable]
 
-        # 3. Kiem dinh (validation period)
-        obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
-        common = obs_valid.index.intersection(sim.index)
-        valid_stats = self.project.Statistic.calculate_statistics(
-            obs_valid.loc[common], sim.loc[common]
-        )
+                # 3. Kiem dinh (validation period)
+                obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
+                obs_a, sim_a = manager._align_series(obs_valid, sim)
+                valid_stats = self.project.Statistic.calculate_statistics(obs_a, sim_a)
+                if manager.results_dir is not None:
+                    sim_dated = manager._to_model_dates(sim, manager._sim_freq(obs_valid))
+            except Exception as exc:
+                self._log_validation_run(manager, "failed", exc, reach_id, output_variable,
+                                         formatted, None, None)
+                raise
+            self._save_validation(manager, metric, calib_score, valid_stats)
+            self._log_validation_run(manager, "ok", None, reach_id, output_variable,
+                                     formatted, valid_stats, sim_dated, obs_valid.index)
+        finally:
+            if restore:
+                manager._restore_state()
+
+        if not restore:
+            logger.warning(
+                "The TxtInOut folder now contains the CALIBRATED parameters. Applying "
+                "relative ('r') or additive ('a') changes again will compound on top of "
+                "them; use restore=True to get the original input files back."
+            )
 
         return {
             'best_parameters': best_params,
@@ -63,9 +112,45 @@ class ValidationRunner:
             'validation':      valid_stats,
         }
 
+    # ── result files ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _save_best_params(manager, formatted: dict, subbasins: dict) -> None:
+        path = manager.session_path("best_params")
+        if path is None:
+            return
+        rows = []
+        for name, (value, method, _spec) in manager._param_columns(formatted).items():
+            subs = subbasins.get(name)
+            rows.append([name, manager._fmt(value), method,
+                         "" if subs is None else ";".join(str(x) for x in subs)])
+        manager._append_csv(path, ["name", "value", "method", "subbasins"], rows)
+
+    @staticmethod
+    def _save_validation(manager, metric, calib_score, valid_stats: dict) -> None:
+        path = manager.session_path("validation")
+        if path is None:
+            return
+        rows = [["calibration", metric, manager._fmt(calib_score)]]
+        rows += [["validation", m, manager._fmt(v)] for m, v in valid_stats.items()]
+        manager._append_csv(path, ["period", "metric", "value"], rows)
+
+    @staticmethod
+    def _log_validation_run(manager, status, error, reach_id, output_variable,
+                            formatted, valid_stats, sim_dated, obs_index=None) -> None:
+        """Append the validation run (mode 'validation') to the per-run log."""
+        names = manager._logged_metric_names()
+        stats = valid_stats or {}
+        scores = ({m: stats.get(m, np.nan) for m in names} if names is not None
+                  else (dict(stats) if status == "ok" else None))
+        manager._record_run(formatted, scores, status=status, error=error, sim=sim_dated,
+                            mode="validation", reach_id=reach_id,
+                            output_variable=output_variable, obs_index=obs_index)
+
     def _calibrate(self, obs_calib, metric, method, max_iter, reach_id, output_variable):
         from spyswat.swat_calib.analysis.calibration import SWATCalibration
         calib = SWATCalibration(self.project)
+        self.manager = calib.manager        # same results session as the calibration runs
         result = calib.optimize(
             self.param_ranges, obs_calib,
             method=method, metric=metric,

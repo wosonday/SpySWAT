@@ -376,3 +376,54 @@ class WatoutMapping(SWATColumnMapping):
     def get_mapping(cls) -> Dict:
         return cls._MAPPING
 
+
+
+# SEDIMENT ROUTING MAPPING (output.sed, daily print)
+# Verified against data/TxtInOut/output.sed (SWAT Rev 670): one header line, then
+# 'REACH ' + RCH(i4) + GIS(i9) + MON(i6) + 20 columns of 12 characters starting at
+# character 25 (line length 265). The header names sit right-aligned in the same
+# 12-character slots; AREA, SED_IN and SED_OUT agree with output.rch row by row.
+def _build_sed_mapping() -> Dict:
+    m = {
+        'RCH': {'colspec': (6, 10), 'dtype': 'int', 'description': 'Reach number',
+                'unit': '-', 'category': 'identifier'},
+        'GIS': {'colspec': (10, 19), 'dtype': 'int', 'description': 'GIS code',
+                'unit': '-', 'category': 'identifier'},
+        'MON': {'colspec': (19, 25), 'dtype': 'int', 'description': 'Day of year (daily print)',
+                'unit': '-', 'category': 'time'},
+    }
+    cols = [
+        ('AREAkm2', 'Drainage area', 'km2', 'area'),
+        ('SED_INtons', 'Sediment into reach', 'tons', 'sediment'),
+        ('SED_OUTtons', 'Sediment out of reach', 'tons', 'sediment'),
+        ('SAND_INtons', 'Sand into reach', 'tons', 'sediment'),
+        ('SAND_OUTtons', 'Sand out of reach', 'tons', 'sediment'),
+        ('SILT_INtons', 'Silt into reach', 'tons', 'sediment'),
+        ('SILT_OUTtons', 'Silt out of reach', 'tons', 'sediment'),
+        ('CLAY_INtons', 'Clay into reach', 'tons', 'sediment'),
+        ('CLAY_OUTtons', 'Clay out of reach', 'tons', 'sediment'),
+        ('SMAG_INtons', 'Small aggregates into reach', 'tons', 'sediment'),
+        ('SMAG_OUTtons', 'Small aggregates out of reach', 'tons', 'sediment'),
+        ('LAG_INtons', 'Large aggregates into reach', 'tons', 'sediment'),
+        ('LAG_OUTtons', 'Large aggregates out of reach', 'tons', 'sediment'),
+        ('GRA_INtons', 'Gravel into reach', 'tons', 'sediment'),
+        ('GRA_OUTtons', 'Gravel out of reach', 'tons', 'sediment'),
+        ('CH_BNKtons', 'Channel bank erosion', 'tons', 'sediment'),
+        ('CH_BEDtons', 'Channel bed degradation', 'tons', 'sediment'),
+        ('CH_DEPtons', 'Channel deposition', 'tons', 'sediment'),
+        ('FP_DEPtons', 'Floodplain deposition', 'tons', 'sediment'),
+        ('TSSmg_L', 'Total suspended solids', 'mg/L', 'sediment'),
+    ]
+    for i, (name, desc, unit, cat) in enumerate(cols):
+        start = 25 + 12 * i
+        m[name] = {'colspec': (start, start + 12), 'dtype': 'float',
+                   'description': desc, 'unit': unit, 'category': cat}
+    return m
+
+
+class SedimentMapping(SWATColumnMapping):
+    _MAPPING = _build_sed_mapping()
+
+    @classmethod
+    def get_mapping(cls) -> Dict:
+        return cls._MAPPING

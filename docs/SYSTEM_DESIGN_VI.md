@@ -6,6 +6,8 @@
 **Phạm vi:** Thiết kế kiến trúc mở rộng cho module calibration, validation và sensitivity analysis  
 
 > **Lưu ý:** Đây là tài liệu thiết kế lịch sử được viết trước khi triển khai. Tất cả các khoảng cách (gaps) ở §2–§3 đã được giải quyết. Tập thuật toán hiện tại: GLUE, Parallel DE, DDS, PSO (v0.2.6). Xem [ARCHITECTURE.md](../ARCHITECTURE.md) và [README_VI.md](../README_VI.md) để biết API cập nhật.
+>
+> **Quyết định đã được thay thế (phase 1, 2026-11):** Quyết định 1 — backup giờ chỉ chép các file đầu vào chứa tham số, không chép cả thư mục (ARCHITECTURE.md §5.6). Quyết định 4 — đã có nhật ký CSV ghi sau mỗi lần chạy (ARCHITECTURE.md §5.12). Tần suất mô phỏng đọc từ `IPRINT` trong `file.cio`, không suy từ số liệu thực đo.
 
 ---
 

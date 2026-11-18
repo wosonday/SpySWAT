@@ -1,9 +1,11 @@
+import difflib
 from collections import defaultdict
+from pathlib import Path
 
 from spyswat.swat_calib.io.parameters import SWATParam
 from spyswat.swat_calib.core.txinout import TxInOut
 from spyswat.swat_calib.io.readers import HRURead
-from spyswat.swat_calib.io.writers import HRUWriter
+from spyswat.swat_calib.io.writers import HRUWriter, atomic_write_lines
 from spyswat.logger import Logger
 import pandas as pd
 
@@ -86,7 +88,14 @@ class HRUManager:
             )
 
     def update_params(self, param: dict, subbasin=None):
+        """
+        Apply all parameter updates. Every file is read once, all updates and
+        passes for it are applied in order in memory and validated, and only then
+        is each changed file written once. A ValueError is raised before any file
+        is written when one update is invalid.
+        """
         self._validate_param_keys(param)
+        all_updates = []
         for param_name, groups in param.items():
             if isinstance(groups, tuple):
                 groups = [groups]
@@ -107,11 +116,14 @@ class HRUManager:
                     f"| Value: {value} | Sub: {subbasin_filter or 'All'}"
                 )
 
-                updates = self._collect_file_updates(param_name, value, method, subbasin_filter)
-                self._apply_updates(updates)
+                all_updates.extend(
+                    self._collect_file_updates(param_name, value, method, subbasin_filter)
+                )
+        self._apply_updates(all_updates)
 
     def update_by_df(self, df: pd.DataFrame, param_name='param', method='method',
                      value='value', sub='subbasin'):
+        all_updates = []
         for row in df.itertuples(index=False):
             p_raw = getattr(row, param_name, None)
             if pd.isna(p_raw):
@@ -137,25 +149,87 @@ class HRUManager:
                 f"Updating | Param: {pname} | Method: {mth} | Value: {val} | Sub: {subbasin_filter}"
             )
 
-            updates = self._collect_file_updates(pname, val, mth, subbasin_filter)
-            self._apply_updates(updates)
+            all_updates.extend(self._collect_file_updates(pname, val, mth, subbasin_filter))
+        self._apply_updates(all_updates)
 
-    def _collect_file_updates(self, pname: str, val: float, mth: str, subbasin_filter) -> dict:
-        par_info = self.swat_param.get(pname)
-        if par_info is None:
-            logger.warning(f"Param '{pname}' not found. Skipping.")
-            return {}
+    def _collect_file_updates(self, pname: str, val: float, mth: str, subbasin_filter) -> list:
+        try:
+            par_info = self.swat_param.get(pname)
+        except KeyError:
+            close = difflib.get_close_matches(pname, self.swat_param.available_keys(), n=3)
+            raise KeyError(
+                f"Unknown parameter '{pname}'."
+                + (f" Close matches: {close}." if close else "")
+            ) from None
 
         hru_files = self._resolve_files(par_info.ext, subbasin_filter)
 
         if not hru_files:
             logger.warning(f"No files found for param '{pname}'. Skipping.")
-            return {}
+            return []
 
-        return {hru_file: (par_info, val, mth) for hru_file in hru_files}
+        return [(hru_file, par_info, val, mth) for hru_file in hru_files]
 
-    def _apply_updates(self, file_updates: dict):
-        for hru_file, (par_info, val, mth) in file_updates.items():
-            writer = HRUWriter(hru_file)
+    def _apply_updates(self, file_updates: list):
+        """
+        file_updates: ordered list of (file, DATAParameter, value, method).
+        Phase 1 reads each file once and applies every update in memory (raises
+        before anything is written); phase 2 writes each changed file once.
+        """
+        writers: dict = {}
+        for hru_file, par_info, val, mth in file_updates:
+            key = str(hru_file)
+            writer = writers.get(key)
+            if writer is None:
+                writer = writers[key] = HRUWriter(hru_file)
             writer.update_param([par_info], {par_info.name: val}, method=mth)
-            writer.save()
+
+        written = []
+        try:
+            for writer in writers.values():
+                original = list(writer._original)
+                if writer.save():
+                    written.append((writer.hru_file, original))
+        except BaseException:
+            # Best effort: put back the files already written in this call.
+            for path, original in written:
+                try:
+                    atomic_write_lines(path, original)
+                except Exception:
+                    logger.error(f"Could not restore {path} after a failed update.")
+            raise
+
+    def validate_inputs(self, params=None) -> pd.DataFrame:
+        """
+        Check, without modifying anything, that every (parameter, file) location
+        matches the layout in the parameter file.
+
+        Args:
+            params: list of 'name.ext' keys; default all keys of the parameter file.
+
+        Returns:
+            DataFrame with columns file, param, line (1-based), problem, text.
+            Empty when everything is fine.
+        """
+        keys = list(params) if params is not None else self.swat_param.available_keys()
+        rows = []
+        cache: dict = {}
+        for key in keys:
+            par = self.swat_param.params.get(key)
+            if par is None or not par.ext:
+                rows.append({'file': '', 'param': key, 'line': 0,
+                             'problem': 'parameter has no file extension or is unknown',
+                             'text': ''})
+                continue
+            for f in self._resolve_files(par.ext, None) or []:
+                fname = Path(f).name
+                try:
+                    if str(f) not in cache:
+                        cache[str(f)] = HRUWriter(f)
+                    problems = cache[str(f)].inspect_param(par)
+                except OSError as e:
+                    problems = [(0, 'file unreadable', str(e))]
+                for line, problem, text in problems:
+                    rows.append({'file': fname, 'param': key, 'line': line,
+                                 'problem': problem, 'text': text})
+        return pd.DataFrame(rows, columns=['file', 'param', 'line', 'problem', 'text'])

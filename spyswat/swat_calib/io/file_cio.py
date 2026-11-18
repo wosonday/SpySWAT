@@ -2,7 +2,10 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+import numbers
+
 from spyswat.swat_calib.io.readers import ReadFileLine
+from spyswat.swat_calib.io.writers import atomic_write_lines, split_terminator
 if TYPE_CHECKING:
     from spyswat.swat_calib.core.txinout import TxInOut
 
@@ -39,12 +42,53 @@ class FileCIO(ReadFileLine):
 
         return pd.date_range(start=start, end=end, freq=freq)
 
+    # name -> 0-based line index in file.cio (value in columns 12:16, label after '|')
+    _CIO_LINES = {'NBYR': 7, 'IYR': 8, 'IDAF': 9, 'IDAL': 10, 'IPRINT': 58, 'NYSKIP': 59}
+
+    def set(self, **values) -> None:
+        """
+        Set integer NBYR, IYR, IDAF, IDAL, IPRINT and/or NYSKIP, write file.cio and
+        refresh begin_year / year_start / year_end. Unknown keys raise ValueError.
+        """
+        unknown = sorted(set(values) - set(self._CIO_LINES))
+        if unknown:
+            raise ValueError(
+                f"Unknown file.cio key(s) {unknown}. Allowed: {sorted(self._CIO_LINES)}."
+            )
+        for key, val in values.items():
+            if isinstance(val, bool) or not isinstance(val, numbers.Integral):
+                raise ValueError(f"{key} must be an integer, got {val!r}.")
+            if val < 0 or val > 9999:
+                raise ValueError(f"{key}={val} is outside 0..9999 (4-char field).")
+        if 'IPRINT' in values and values['IPRINT'] not in self._IPRINT_TO_FREQ:
+            raise ValueError(
+                f"IPRINT must be one of {sorted(self._IPRINT_TO_FREQ)}, got {values['IPRINT']}."
+            )
+
+        new_lines = list(self.lines)
+        for key, val in values.items():
+            idx = self._CIO_LINES[key]
+            if idx >= len(new_lines) or key not in new_lines[idx].split('|', 1)[-1]:
+                raise ValueError(
+                    f"file.cio line {idx + 1} does not hold {key}: "
+                    f"{new_lines[idx].rstrip() if idx < len(new_lines) else '<missing>'!r}"
+                )
+            new_lines[idx] = self.__replaced(new_lines[idx], idx, 12, 16, int(val))
+        self.lines = new_lines
+        self._write_file()
+        self.__update_metadata()
+
+    @staticmethod
+    def __replaced(line: str, line_idx: int, start: int, end: int, value: int) -> str:
+        body, term = split_terminator(line)
+        if len(body) < end:
+            raise ValueError(f"file.cio line {line_idx + 1} too short: {body!r}")
+        return body[:start] + f"{value:4d}" + body[end:] + term
+
     def set_year_skip(self, num_skip: int=2):
         if num_skip < 0:
             raise ValueError("num_skip must be >= 0")
-        self.__replace_value(59, 12, 16, num_skip)
-        self._write_file()
-        self.__update_metadata()
+        self.set(NYSKIP=num_skip)
 
     def update(self, freq: str = 'D'):
         IYR, NBYR, IDAL = self.__get_year_pcp()
@@ -67,15 +111,10 @@ class FileCIO(ReadFileLine):
         self.year_end = self.begin_year + self.__get_number_of_year_sim() - 1
 
     def __replace_value(self, line_idx: int, start: int, end: int, value: int):
-        line = self.lines[line_idx]
-        if len(line) < end:
-            raise ValueError(f"Line {line_idx} too short")
-        formatted = f"{value:4d}"
-        self.lines[line_idx] = line[:start] + formatted + line[end:]
+        self.lines[line_idx] = self.__replaced(self.lines[line_idx], line_idx, start, end, value)
 
     def _write_file(self):
-        with open(self.file_path, 'w') as f:
-            f.writelines(self.lines)
+        atomic_write_lines(self.file_path, self.lines)
 
     def __get_begin_year_sim(self):
         year_line = self.lines[8][12:16].strip()
@@ -89,12 +128,14 @@ class FileCIO(ReadFileLine):
         return int(self.lines[7][12:16].strip())
 
     def __extract_pcp_first_yr(self, date_list):
+        if not date_list:
+            raise ValueError("The .pcp file has no data rows.")
         first_year = date_list[0][:4]
 
         for i, d in enumerate(date_list):
             if d[:4] != first_year:
                 return date_list[:i][-1]
-        return date_list
+        return date_list[-1]  # a single year: still a string, never a list
 
     def __extract_pcp_last_yr(self, date_list):
         return date_list[-1]
@@ -116,7 +157,12 @@ class FileCIO(ReadFileLine):
     def get_iprint(self) -> str:
         """Return current output frequency as freq string ('D', 'MS', 'YS')."""
         iprint = int(self.lines[58][12:16].strip())
-        return self._IPRINT_TO_FREQ.get(iprint, 'D')
+        if iprint not in self._IPRINT_TO_FREQ:
+            raise ValueError(
+                f"Unknown IPRINT code {iprint} in {self.file_path}; "
+                f"expected one of {sorted(self._IPRINT_TO_FREQ)}."
+            )
+        return self._IPRINT_TO_FREQ[iprint]
 
     def set_iprint(self, freq: str) -> None:
         """
@@ -138,6 +184,5 @@ class FileCIO(ReadFileLine):
     # ── Private helpers ───────────────────────────────────────────────
 
     def __set_frequency_of_sim(self, freq: str = 'D'):
-        line = self.lines[58]
         iprint = self._FREQ_TO_IPRINT.get(freq, 1)
-        self.lines[58] = line[:12] + f'{iprint:4d}' + line[16:]
+        self.__replace_value(58, 12, 16, iprint)

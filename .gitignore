@@ -12,3 +12,7 @@ data
 main_test.py
 main.py
 logs/
+
+# Agent workflow (docs/agents/): worktrees and bot scratch are never committed
+.wt/
+.agents/.runtime/
