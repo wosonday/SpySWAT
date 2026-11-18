@@ -43,7 +43,8 @@ def txinout(tmp_path):
     for sub, hru in ((1, 1), (1, 2), (2, 3)):
         (d / f"{sub:05d}{hru:04d}.hru").write_text(
             HRU_HEADER.format(hru=hru, sub=sub), encoding="utf-8")
-    (d / "file.cio").write_text("\r\n".join(_cio_lines()) + "\r\n", encoding="utf-8")
+    # newline="" keeps the CRLF as written; without it Windows turns "\r\n" into "\r\r\n".
+    (d / "file.cio").write_text("\r\n".join(_cio_lines()) + "\r\n", encoding="utf-8", newline="")
     return d
 
 
