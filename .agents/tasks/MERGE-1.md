@@ -108,3 +108,16 @@ Owner: `copilot-git` (GitHub Copilot CLI, terminal `t4q`). Requested by the user
 
 After the merge SHA is reported, the Architect opens `feat/ARCH-1` from `main`
 (`.agents/decisions/ARCH-1.md`, approved 2026-11-20).
+
+## Status update (2026-11-20, Architect)
+
+- First run: Copilot staged C1 exactly, then every shell command was auto-denied
+  (Autopilot mode, "no one to approve"). No commit was made by Copilot.
+- The user said "hãy tiếp tục"; the Architect created C1-C4 on the branch
+  (`25baed9`, `93ac7c8`, `8efef05`, `bad456c`) plus this note. Steps 1-3 are done.
+- Step 4 correction: `git diff --check main...HEAD` also reports **pre-existing** CR/trailing
+  whitespace from older branch commits (`docs/sample_run_*.py`, `Dockerfile`,
+  `.agents/log/DOCS-1.md`, `output_manager.py`). Check only the new commits:
+  `git diff --check fb49870..HEAD` (exit 0).
+- Copilot resumes at **step 4** (pytest on the branch head), then steps 5-8. Shell approvals
+  must be answered by the user in the Copilot terminal (not Autopilot).
