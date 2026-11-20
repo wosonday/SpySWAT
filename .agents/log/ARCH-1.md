@@ -108,3 +108,50 @@ Append-only. Correct a mistake by adding a new entry below it.
   - `spyswat/swat_calib/calibration/param_spec.py` (new)
   - `spyswat/swat_calib/calibration/calib_manager.py`
   - `.agents/log/ARCH-1.md`
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · step 2c — extraction and verification in progress
+- Step 2b committed as `b2f7b5c` after checking `git log -1` against `69596b5`.
+- Structural RED probe for 2c asserted the `run_log` module exists and failed
+  before its implementation.
+- Moved result/session state and logging methods to `RunLog(project)`;
+  `MAX_PENDING_ROWS` remains 10,000. Manager methods/properties delegate to it.
+- Kept exactly the five approved session properties as explicit read/write
+  forwarders; no catch-all attributes and no extra state forwarders.
+- RunLog calls the pure parameter helpers directly. Its logger retains the old
+  `spyswat.swat_calib.calibration.calib_manager` category to preserve log output.
+- Test edits only redirect the moved logging monkeypatch targets and pending
+  buffer access, plus the necessary `run_log` import. No assertions were weakened.
+- `python -m pytest tests/test_calib_manager.py -k "locked_log or pending_buffer or session_file or column_change or outputs_options or reading_properties or results_dir_none" -q`
+  → **7 passed / 47 deselected / 0 failed**, 11.00 s.
+- AST verification: every moved logging method matches its original after the
+  required pure-helper calls and constant rename. All 12 execution/alignment
+  methods remain exactly unchanged. No RunLog lambdas or nested functions.
+- Pickle round trips succeed for the extracted class/static functions and the
+  manager class. Step 2a already verified public helper/exception pickling;
+  Windows spawned-worker tests are included in the full suite.
+- Differential synthetic log scenario against the pre-split manager at `ecf4041`
+  with frozen timestamps: **4 CSV files byte-identical**, covering raw/formatted
+  specs, column switches, failed/invalid records, observed/none output policies,
+  best-parameter CSV append, flush and disabled logging.
+- `calib_manager.py` reduced from **780 to 554 lines**; no CSV/session or
+  parameter-spec implementation remains there, only the approved delegates.
+- Full-suite command `python -m pytest tests/ -q` is running. Do not claim the
+  336-pass gate or commit 2c before its completed result.
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · step 2c gate
+- `python -m pytest tests/ -q` completed:
+  **336 passed / 11 skipped / 0 failed**, 5 existing warnings, 258.97 s.
+- The count is unchanged from step 1, including Windows spawned-worker coverage.
+- `git diff --check` → 0. Test diff contains only the authorized moved-target
+  replacements plus the necessary import; session-race tests remain unchanged.
+- Files changed by 2c:
+  - `spyswat/swat_calib/calibration/run_log.py` (new)
+  - `spyswat/swat_calib/calibration/calib_manager.py`
+  - `tests/test_calib_manager.py`
+  - `.agents/log/ARCH-1.md`
+- Architect announced and committed the separate step-2d task amendment as
+  `81b4f87`; this is the expected HEAD for the 2c commit guard, not an unexplained
+  writer change. Its untracked `MERGE-2.md` task is outside worker scope.
+- Docs step 2d is now assigned explicitly to OpenCode: update only `AGENTS.md`,
+  `ARCHITECTURE.md`, `CHANGELOG.md` and this append-only docs log, in a separate
+  `ARCH-1: docs: ...` commit after 2c. No source changes in that commit.
