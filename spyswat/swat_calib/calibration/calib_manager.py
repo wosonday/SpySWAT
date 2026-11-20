@@ -5,6 +5,7 @@ import numpy as np
 import csv
 import os
 from collections.abc import Mapping
+from contextlib import contextmanager
 import time
 import shutil, tempfile
 import logging
@@ -424,6 +425,53 @@ class CalibrationManager:
 
     # ── Core run methods ─────────────────────────────────────────────
 
+    def run_once(self, params: dict, *, reach_id: int = 1,
+                 output_variable: str = 'FLOW_OUTcms',
+                 methods=None, subbasins=None) -> pd.Series:
+        """
+        Apply ``params`` to the project's TxtInOut, run SWAT once and return the raw
+        simulated series of ``output_variable`` at ``reach_id``.
+
+        The single implementation of the sequential run: every sequential caller
+        (run_iteration, sensitivity, GLUE 95PPU, ValidationRunner) goes through it.
+        ``params`` is formatted ({name: [(value, method, ...)]}) or raw ({name: value},
+        formatted with ``methods`` / ``subbasins``, default absolute 'v').
+
+        Nothing is backed up: wrap the call in ``with manager.sandbox(...)`` unless the
+        change must stay. Raises StaleOutputError (a RuntimeError) when SWAT did not
+        write a fresh output.rch, so an old result is never read as this run's result.
+        """
+        formatted = (self._format_params(params, methods, subbasins)
+                     if self._is_raw(params) else params)
+        self.project.HRU.update_params(formatted)
+        out_dir = self._txinout_dir()
+        before = _stamp_output_rch(out_dir) if out_dir is not None else None
+        self.project.run()
+        if out_dir is not None:
+            _check_fresh_output_rch(out_dir, before)
+        return self.project.Output.read_rch(
+            columns=['RCH', 'MON', output_variable], reach_id=reach_id
+        )[output_variable]
+
+    @contextmanager
+    def sandbox(self, names=None):
+        """
+        Back up the input files that ``names`` ('name.ext' keys; None = every parameter
+        extension) can change, and restore them when the block exits -- normally, on an
+        exception or on KeyboardInterrupt. Outputs are never touched.
+
+            with manager.sandbox(names=["CN2.mgt"]):
+                sim = manager.run_once({"CN2.mgt": 60.0})
+        """
+        if names is None:
+            self._backup_state()
+        else:
+            self._backup_state(names=list(names))
+        try:
+            yield self
+        finally:
+            self._restore_state()
+
     def run_iteration(self, param_dict, observed, metric=None,
                       reach_id=1, output_variable='FLOW_OUTcms',
                       methods=None, subbasins=None) -> float:
@@ -435,18 +483,7 @@ class CalibrationManager:
         score = None
         sim_dated = None
         try:
-            self.project.HRU.update_params(formatted)
-
-            out_dir = self._txinout_dir()
-            before = _stamp_output_rch(out_dir) if out_dir is not None else None
-            self.project.run()
-            if out_dir is not None:
-                _check_fresh_output_rch(out_dir, before)
-
-            sim = self.project.Output.read_rch(
-                columns=['RCH', 'MON', output_variable],
-                reach_id=reach_id
-            )[output_variable]
+            sim = self.run_once(formatted, reach_id=reach_id, output_variable=output_variable)
 
             obs_aligned, sim_aligned = self._align_series(observed, sim)
             score = self.project.Statistic.calculate_statistics(

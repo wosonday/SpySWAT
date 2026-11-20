@@ -110,11 +110,15 @@ def _stamp_output_rch(directory) -> Optional[Tuple[int, int]]:
     return _rch_signature(directory)
 
 
+class StaleOutputError(RuntimeError):
+    """SWAT ended without writing a fresh output.rch (the run produced no result)."""
+
+
 def _check_fresh_output_rch(directory, before: Optional[Tuple[int, int]]) -> None:
-    """Raise RuntimeError unless output.rch was (re)written since ``before``."""
+    """Raise StaleOutputError unless output.rch was (re)written since ``before``."""
     after = _rch_signature(directory)
     if after is None or after[1] == 0 or (before is not None and after[0] == before[0]):
-        raise RuntimeError("SWAT ended without writing a fresh output.rch")
+        raise StaleOutputError("SWAT ended without writing a fresh output.rch")
 
 
 def _ext_with_dot(ext: str) -> str:

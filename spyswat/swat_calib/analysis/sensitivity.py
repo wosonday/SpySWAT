@@ -4,9 +4,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import logging
 
-from spyswat.swat_calib.core.workingFolder_manager import (
-    _stamp_output_rch, _check_fresh_output_rch,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +39,11 @@ class SWATSensitivity:
     def _sequential_mean(self, params: dict, output_variable: str, reach_id: int) -> float:
         """One sequential run (no observations) returning the mean output; inputs are
         backed up before and restored after, so the user's TxtInOut is left untouched."""
-        self._manager._backup_state()
         key = f"mean_{output_variable}"
         try:
-            self.project.HRU.update_params(params)
-            out_dir = self._manager._txinout_dir()
-            before = _stamp_output_rch(out_dir) if out_dir is not None else None
-            self.project.run()
-            if out_dir is not None:
-                _check_fresh_output_rch(out_dir, before)    # stale output = failed run
-            sim = self.project.Output.read_rch(
-                columns=['RCH', 'MON', output_variable], reach_id=reach_id
-            )[output_variable]
+            with self._manager.sandbox():               # stale output.rch = failed run
+                sim = self._manager.run_once(params, reach_id=reach_id,
+                                             output_variable=output_variable)
             value = float(sim.mean())
         except Exception as exc:
             self._manager.record_run(
@@ -61,14 +51,11 @@ class SWATSensitivity:
                 mode="sensitivity", reach_id=reach_id, output_variable=output_variable,
             )
             raise
-        else:
-            self._manager.record_run(
-                params, {key: value}, status="ok", sim=None,
-                mode="sensitivity", reach_id=reach_id, output_variable=output_variable,
-            )
-            return value
-        finally:
-            self._manager._restore_state()
+        self._manager.record_run(
+            params, {key: value}, status="ok", sim=None,
+            mode="sensitivity", reach_id=reach_id, output_variable=output_variable,
+        )
+        return value
 
     def _batch_scores(self, param_sets, observed_series, metric, reach_id, output_variable) -> np.ndarray:
         """Run a batch and return the ``metric`` column as a float array (NaN = failed run)."""
