@@ -149,6 +149,35 @@ Append-only. Correct a mistake by adding a new entry below it.
   - `spyswat/swat_calib/calibration/calib_manager.py`
   - `tests/test_calib_manager.py`
   - `.agents/log/ARCH-1.md`
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · step 2d — documentation
+- Architect explicitly added the documentation assignment in task commit
+  `81b4f87`; that announced HEAD change was accepted before committing 2c.
+- Step 2c committed as `8e42746` after checking `git log -1` against `81b4f87`.
+- Updated the module trees, run primitive/sandbox composition, RunLog delegation
+  and measured **336 passed / 11 skipped** count in `AGENTS.md`.
+- Added the public API/exception, module extraction, unchanged CSV format and
+  sensitivity/GLUE post-restore logging notes to `[Unreleased]` in `CHANGELOG.md`.
+- Updated the calibration-manager/API sections, module tree, backup/restore and
+  logging rationale in `ARCHITECTURE.md`, preserving Vietnamese prose.
+- Documentation accurately distinguishes `run_once` (no backup, metrics or log)
+  from `sandbox`, and `run_iteration`'s explicit backup/restore for combined errors.
+- Checks:
+  - Documentation-only diff; all referenced new modules/API names exist.
+  - New sandbox/run_once example parses; Markdown code fences are balanced.
+  - `python -m pytest tests/test_run_once.py -q` → **9 passed**, 3.93 s.
+  - Requested `pickle.dumps(r.copy_over)` command → 0.
+  - `git diff --check` → 0.
+- No source changes after the successful full-suite run for 2c.
+- Files changed by 2d:
+  - `AGENTS.md`
+  - `ARCHITECTURE.md`
+  - `CHANGELOG.md`
+  - `.agents/log/ARCH-1.md` (this documentation entry)
+- The unrelated untracked `.agents/tasks/MERGE-2.md` belongs to coordination
+  outside this assignment. It is neither edited nor staged by this worker;
+  report it to the Architect instead of claiming a clean integration handoff.
+- No push or merge. Expected HEAD before the documentation commit: `8e42746`.
 - Architect announced and committed the separate step-2d task amendment as
   `81b4f87`; this is the expected HEAD for the 2c commit guard, not an unexplained
   writer change. Its untracked `MERGE-2.md` task is outside worker scope.

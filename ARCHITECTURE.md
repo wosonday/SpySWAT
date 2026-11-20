@@ -1,6 +1,6 @@
 # SpySWAT — Kiến trúc và Hướng dẫn Kỹ thuật
 
-> Phiên bản: 0.2.6 + nhánh `fix/phase1-correctness` | Cập nhật: 2026-11-18
+> Phiên bản: 0.2.6 + các thay đổi chưa phát hành | Cập nhật: 2026-11-20
 >
 > Các mục mới: luồng chạy an toàn (2.3, 3.1, 3.2), ScenarioBatch (3.7), quyết định 5.6 và 5.8 → 5.13.
 
@@ -96,6 +96,9 @@ SWATCalibration(project, analysis=None)
 │
 ├── .manager   → CalibrationManager(project)
 │   ├── .setup_parallel(overwrite)
+│   ├── .run_once(params, *, reach_id, output_variable,
+│   │             methods=None, subbasins=None)        → Series
+│   ├── .sandbox(names=None)                          → context manager
 │   ├── .run_iteration(param_dict, obs, metric, reach_id, output_var,
 │   │                  methods=None, subbasins=None) → float
 │   └── .run_batch(param_sets, observed, metrics, reach_id, output_var,
@@ -157,26 +160,49 @@ SWATCalibration(project, analysis=None)
     └── scipy_result
 ```
 
-### 2.3 CalibrationManager — hạ tầng song song
+### 2.3 CalibrationManager — hạ tầng chạy tuần tự và song song
+
+`calib_manager.py` điều phối chạy mô hình, backup/restore và căn chỉnh chuỗi.
+Ba phần triển khai được tách riêng:
+
+- `calibration/param_spec.py`: các hàm thuần `parse_spec`, `format_params`, `is_raw`,
+  `param_columns`; manager giữ alias tĩnh và wrapper `_format_params` cho caller cũ.
+- `calibration/run_log.py::RunLog(project)`: giữ trạng thái session, cột CSV, bộ đệm
+  file khóa và cảnh báo; manager chuyển tiếp API log cũ sang `self._log`.
+- `core/run_state.py`: `copy_over`, `rch_signature`, `stamp_output_rch`,
+  `check_fresh_output_rch`, `StaleOutputError`. `workingFolder_manager.py` giữ các tên
+  private cũ làm alias, kể cả cho worker được spawn trên Windows.
 
 ```
 CalibrationManager(project)
 │
-├── _parse_spec(param_ranges)  [staticmethod]
+├── _parse_spec(param_ranges)  [alias tĩnh tới param_spec.parse_spec]
 │     Parse unified format → (bounds_dict, methods_dict, subbasins_dict)
 │     Formats: (min, max) | ((min,max), method) | ((min,max), method, [subs])
 │     Raises ValueError nếu old-format có > 2 phần tử
 │
 ├── _format_params(raw_dict, methods=None, subbasins=None)
 │     {name: float} → {name: [(val, method, [subs])]}
-│     methods/subbasins là dict local — không có shared state
+│     Wrapper tới param_spec.format_params; methods/subbasins là dict local
+│
+├── _log → RunLog(project)
+│     Quản lý session, CSV, cảnh báo và bộ đệm; manager chỉ chuyển tiếp
+│
+├── run_once(params, *, reach_id=1, output_variable="FLOW_OUTcms",
+│            methods=None, subbasins=None)
+│     Format → update_params → stamp → SWAT → kiểm output mới → read_rch
+│     Trả Series thô; không backup, không tính metric, không ghi log
+│     Output không mới → StaleOutputError (lớp con RuntimeError)
+│
+├── sandbox(names=None)
+│     Backup khi vào, restore trong finally; không chép/xóa output
 │
 ├── _align_series(obs, sim)
 │     freq = IPRINT trong file.cio ('MS' | 'D')  (không suy từ obs)
 │     check_observation_step(obs.index, freq)  → ValueError nếu lệch ngày/tháng
 │     Gán ngày mô phỏng cho sim (sai độ dài → ValueError), lấy giao với obs
 │
-├── _backup_state() / _restore_state()
+├── _backup_state(names=None) / _restore_state()
 │     Chỉ chép các file ĐẦU VÀO có thể bị sửa (không chép output, không xóa TxtInOut)
 │     Backup chỉ bị xóa khi MỌI file đã chép lại thành công;
 │     restore lỗi → giữ backup, lần _backup_state() sau hoàn tất nó trước
@@ -185,14 +211,12 @@ CalibrationManager(project)
 │                methods=None, subbasins=None)
 │   │
 │   ├── 1. _format_params(param_dict, methods, subbasins)
-│   ├── 2. _backup_state()
-│   ├── 3. project.HRU.update_params(formatted)   (ghi nghiêm ngặt, nguyên tử)
-│   ├── 4. project.run()  + kiểm output.rch là output MỚI
-│   ├── 5. project.Output.read_rch(...)
-│   ├── 6. _align_series(obs, sim)
-│   ├── 7. tính metric
-│   ├── 8. _record_run(...)  → <session>_metrics.csv / _outputs.csv
-│   └── 9. _restore_state()  (luôn chạy, kể cả khi lỗi hoặc Ctrl+C)
+│   ├── 2. _backup_state(names=formatted.keys())
+│   ├── 3. run_once(formatted)   (ghi nghiêm ngặt, nguyên tử; kiểm output mới)
+│   ├── 4. _align_series(obs, sim)
+│   ├── 5. tính metric
+│   ├── 6. _record_run(...) → RunLog → <session>_metrics.csv / _outputs.csv
+│   └── 7. _restore_state()  (luôn chạy, kể cả khi lỗi hoặc Ctrl+C)
 │
 ├── run_batch(param_sets, observed, metrics, reach_id, output_var,
 │             methods=None, subbasins=None)
@@ -205,6 +229,15 @@ CalibrationManager(project)
 └── record_run(params, scores, ...)   hook công khai cho GLUE.uncertainty_band,
                                       sensitivity và thuật toán tự viết
 ```
+
+`run_iteration`, sensitivity, GLUE 95PPU và `ValidationRunner` đều gọi `run_once`,
+không chép lại chuỗi chạy an toàn. Sensitivity/GLUE và validation có `restore=True`
+dùng `sandbox()`. `run_iteration` giữ backup/restore tường minh để bảo toàn thông báo
+kết hợp khi cả chạy mô hình và khôi phục cùng lỗi. Validation mặc định giữ tham số,
+nên không vào sandbox khi `restore=False`.
+
+Sensitivity và GLUE ghi log sau khi ra khỏi sandbox; khôi phục lỗi được ghi là lần
+chạy thất bại. Các cột CSV, cách định dạng và API log công khai không đổi.
 
 ---
 
@@ -422,6 +455,7 @@ SpySWAT/
 │       │   ├── txinout.py             → TxInOut: quản lý đường dẫn
 │       │   ├── hru_manager.py         → HRUManager: đọc/ghi tham số, validate_inputs()
 │       │   ├── output_manager.py      → OutputFileManager: đọc output, cache theo dấu file
+│       │   ├── run_state.py           → copy nguyên tử, kiểm output mới, StaleOutputError
 │       │   └── workingFolder_manager.py → WorkingFolderManager, WorkerResult
 │       │
 │       ├── io/
@@ -435,6 +469,8 @@ SpySWAT/
 │       ├── calibration/
 │       │   ├── __init__.py
 │       │   ├── calib_manager.py       → CalibrationManager, check_observation_step
+│       │   ├── param_spec.py          → hàm thuần parse/format tham số và cột log
+│       │   ├── run_log.py             → RunLog: session CSV, bộ đệm, cảnh báo
 │       │   └── validation_runner.py   → ValidationRunner, PeriodConfig
 │       │
 │       ├── scenarios/
@@ -456,8 +492,9 @@ SpySWAT/
 │               ├── parallel_de.py     → ParallelDE (standalone)
 │               └── pso.py             → PSO (standalone) + PSOCalibration (wrapper)
 │
-├── tests/                     (319 test case; 308 passed, 11 skipped trên Windows, ~3 phút)
+├── tests/                     (347 test case; 336 passed, 11 skipped trên Windows, ~4–5 phút)
 │   ├── test_calib_manager.py  run_iteration, run_batch, backup/restore, nhật ký
+│   ├── test_run_once.py       run_once/sandbox, output cũ, caller dùng primitive chung
 │   ├── test_calibration.py    facade + GLUE API
 │   ├── test_dds.py / test_parallel_de.py
 │   ├── test_inputs.py         writer nghiêm ngặt, FileCIO, validate_inputs
@@ -517,7 +554,10 @@ Cùng tên `CN2` có thể xuất hiện trong nhiều loại file SWAT. Dùng `
 
 ### 5.3 CalibrationManager là ranh giới song song
 
-Tầng User (GLUE, DE, DDS) không biết gì về xử lý song song — chúng chỉ gọi `run_batch()`. Mọi logic ProcessPoolExecutor nằm trong `CalibrationManager`. Điều này cho phép thay thế backend (ví dụ: Dask, Ray) mà không ảnh hưởng các thuật toán.
+Tầng User (GLUE, DE, DDS) không biết gì về xử lý song song — chúng chỉ gọi `run_batch()`.
+`CalibrationManager` điều phối các lô; `WorkingFolderManager` giữ logic
+`ProcessPoolExecutor` và worker. Điều này cho phép thay thế backend (ví dụ: Dask, Ray)
+mà không ảnh hưởng các thuật toán.
 
 ### 5.4 Sensitivity không tốn thêm lần chạy SWAT
 
@@ -543,6 +583,11 @@ score = self.manager.run_iteration(..., methods=methods, subbasins=subbasins)
 `_backup_state()` kiểm tra nếu backup đang tồn tại thì gọi `_restore_state()` trước — tránh leak temp dir khi `run_iteration` bị gọi lại mà chưa restore. `_restore_state()` luôn chạy (kể cả khi lỗi hoặc Ctrl+C) để TxtInOut về trạng thái gốc.
 
 Phase 1: backup chỉ chép các file đầu vào có thể bị sửa (không chép cả thư mục, không bao giờ xóa TxtInOut). Backup chỉ bị xóa khi mọi file đã được chép lại; nếu một file không chép được (ví dụ đang bị khóa), backup được giữ và đường dẫn được nêu trong `RuntimeError`.
+
+ARCH-1: caller tuần tự dùng `run_once()` và bọc trong `sandbox(names=...)` khi cần
+khôi phục. Primitive chỉ chạy và đọc kết quả; caller quyết định backup và ghi log.
+`run_iteration()` giữ cặp backup/restore tường minh để không đổi lỗi kết hợp.
+Các helper copy/kiểm output nằm ở `core/run_state.py`; alias private cũ vẫn được giữ.
 
 ### 5.7 Strict validation trong _parse_spec (v0.2.5)
 
@@ -578,7 +623,15 @@ NaN luôn xếp cuối khi chọn tốt nhất; lô toàn lỗi báo `RuntimeErr
 
 ### 5.12 Nhật ký lần chạy không bao giờ làm dừng hiệu chỉnh
 
-Hiệu chỉnh có thể chạy nhiều giờ; mất kết quả vì lỗi ghi log là không chấp nhận được, nhưng làm hỏng hiệu chỉnh vì log còn tệ hơn. Vì vậy `_record_run` bắt mọi exception và chỉ cảnh báo một lần; file bị khóa thì giữ dòng trong bộ nhớ (tối đa 10 000 dòng mỗi file) và ghi ở lần sau; file chỉ được tạo (O_EXCL) khi có dòng đầu tiên, nên không để lại file rỗng. Quyết định này thay cho "Decision 4: No persistence layer" trong `docs/SYSTEM_DESIGN_*.md`.
+Hiệu chỉnh có thể chạy nhiều giờ; mất kết quả vì lỗi ghi log là không chấp nhận được,
+nhưng làm hỏng hiệu chỉnh vì log còn tệ hơn. `RunLog._record_run` bắt mọi exception và
+chỉ cảnh báo một lần; file bị khóa thì giữ dòng trong bộ nhớ (tối đa 10 000 dòng mỗi
+file) và ghi ở lần sau; file chỉ được tạo (O_EXCL) khi có dòng đầu tiên, nên không để
+lại file rỗng. `CalibrationManager` chuyển tiếp `record_run`, `flush_log`,
+`session_path`, `session_files`, `results_dir`, `log_outputs` và các helper tương thích
+sang `RunLog`; cấu trúc cột và nội dung CSV được giữ nguyên. Sensitivity và GLUE ghi
+sau khôi phục để phản ánh đúng cả lỗi restore. Quyết định này thay cho
+"Decision 4: No persistence layer" trong `docs/SYSTEM_DESIGN_*.md`.
 
 ### 5.13 Mọi mã chạy song song phải pickle được
 
