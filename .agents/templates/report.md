@@ -11,8 +11,15 @@
 - Handoff git check: clean / findings
 
 ## Verdicts
-- Reviewer: PASS (round n)
+- Auditor: PASS ALL
+- Sparring (`agy` Opus High): none | <notes>
+- Reviewer: PASS (round n, <OpenCode | Claude Opus escalation>)
+- Docs update (`docs-hyd`): none | <updated docs + commit SHA>
+- Git integration (`copilot-git`): <merged SHA onto main | pending>
 - Architect: READY | not requested
+
+## Harness retro (for Gemini Argon)
+- Recurring issues or tier/gate adjustments for the next session: none | ...
 
 ## Not verified
 - ...

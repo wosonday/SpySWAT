@@ -1,11 +1,11 @@
 # SpySWAT — Agent Guide
 
-> Version: 0.2.6 + unreleased `fix/phase1-correctness` | Updated: 2026-11-18
+> Version: 0.2.6 + unreleased `fix/phase1-correctness` | Updated: 2026-11-20 (team workflow v3.6)
 
-Orientation for AI agents (Claude Code, Codex, OpenCode) and developers working in the
-SpySWAT codebase. **Project rules in this file win over the general team workflow**
-(`docs/agents/AGENTS-TUTORIAL.md`). This repository is **public**: see
-[Public repository rules](#public-repository-rules).
+Orientation for AI agents (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini via `agy`)
+and developers working in the SpySWAT codebase. **Project rules in this file win over the
+general team workflow** (`docs/agents/AGENTS-TUTORIAL.md`). This repository is **public**:
+see [Public repository rules](#public-repository-rules).
 
 ---
 
@@ -64,8 +64,14 @@ spyswat/
 docs/
 ├── sample_run_single.py / sample_run_parallel.py / sample_run_scenarios.py
 ├── SYSTEM_DESIGN_EN.md / _VI.md   ← historical design audit (see banner inside)
-└── agents/                         ← team workflow (Vietnamese): AGENTS-TUTORIAL.md, HERDR-CORE-BOT.md
-.agents/                            ← per-task notebook committed with the code (see below)
+└── agents/                         ← team workflow (Vietnamese): AGENTS-TUTORIAL.md (v3.6),
+    │                                  BOT-CEO.md, HERDR-CORE-BOT.md, SETUP-WINDOWS.md
+    ├── models/                     ← per-model guides (English): Claude, Codex, agy, OpenCode
+    │                                  workers/reviewer, NVIDIA background, Copilot, guardrails
+    └── superpowers/                ← routing design + plan history (2026-11-20)
+.opencode/agents/                   ← OpenCode role permissions (worker-*, auditor, reviewer,
+                                       explore, gitnexus-sync)
+.agents/                            ← per-task notebook & bot.env committed with the code (see below)
 ```
 
 ---
@@ -189,7 +195,7 @@ See `docs/sample_run_scenarios.py`.
 
 ```bash
 pip install -e .             # or: uv sync
-pytest tests/ -q             # expected: 308 passed, 11 skipped (~3 min on Windows)
+pytest tests/ -q             # expected: 327 passed, 11 skipped (~4-5 min on Windows)
 python -m spyswat --help
 ```
 
@@ -200,42 +206,67 @@ and SALib tests when SALib is not installed.
 
 ## Agent team workflow
 
-Full guide (Vietnamese): [`docs/agents/AGENTS-TUTORIAL.md`](docs/agents/AGENTS-TUTORIAL.md);
-background bot: [`docs/agents/HERDR-CORE-BOT.md`](docs/agents/HERDR-CORE-BOT.md).
-The rules below are the binding summary for this repo.
+Full guide (Vietnamese, v3.6): [`docs/agents/AGENTS-TUTORIAL.md`](docs/agents/AGENTS-TUTORIAL.md);
+background orchestration (`agm` + `hc` + GitNexus sync):
+[`docs/agents/HERDR-CORE-BOT.md`](docs/agents/HERDR-CORE-BOT.md);
+optional multi-lane scaling (`BOT-CEO` + `BRANCHES.md` if ever split into parallel lanes):
+[`docs/agents/BOT-CEO.md`](docs/agents/BOT-CEO.md);
+per-model startup, permissions and quota guides:
+[`docs/agents/models/README.md`](docs/agents/models/README.md);
+Windows setup and session tracking:
+[`docs/agents/SETUP-WINDOWS.md`](docs/agents/SETUP-WINDOWS.md).
+SpySWAT currently uses the **single-lane** workflow below. The rules below are the binding
+summary for this repo.
 
-### Roles
+### Roles and permissions
 
 | Role | Model / tool | Rights | Job |
 |---|---|---|---|
-| Architect | Opus 5.5 (extra effort) or Fable 5.2, Claude Code | read-only | Plan, risks, acceptance criteria; hard diagnoses; READY before release |
-| Reviewer | Opus 5.5 (high effort), Claude Code | read-only | PASS / FAIL with Critical / Major / Minor findings, location and fix |
-| Manager | Codex CLI | coordination files only | Split work into tasks, dispatch and supervise workers, switch models, merge after audit |
-| Worker | OpenCode in its own worktree (tier fast / mid / strong) | edit within task scope | Implement exactly the task; report what changed and what was checked |
-| Researcher | fast model, read-only | read-only | Locations and evidence |
-| Auditor | fast model | run commands, no source edits | `pytest`, git checks; PASS ALL / FAIL |
+| Architect / BOT-CEO | Opus 5.5 (extra effort) or Fable 5.2, Claude Code (`agm manage`) | read-only on source; writes `decisions/` | Plan, risks, acceptance criteria; hard diagnoses; `READY` before release. **Owns the AI budget**: per-task allocation + review/rework reserve, checks quotas before dispatch, never enables Extra Usage. **Only regular Claude Code role** |
+| Sparring / Pre-review | Opus High via `agy` (`agm ask` or `--mode plan --sandbox`) | read-only | Optional plan sparring and diff pre-check before formal review to conserve Claude tokens |
+| Reviewer (default) | `opencode-go/deepseek-v4-pro` (OpenCode, fresh session; a different model family when Pro wrote the code) | read-only on product code; writes `reviews/` | `PASS` / `FAIL` with Critical / Major / Minor findings, location and fix; runs GitNexus `detect_changes`/`impact` if active. **Escalate to Claude Opus 5.5 High** only for security, real data, format/schema migrations, major architecture, or 2 consecutive `FAIL`s |
+| Manager | Codex CLI (`codex-mgr`) | coordination files only (`tasks/`, `reports/`, `decisions/`) | Split plan into tasks, dispatch and supervise OpenCode workers, switch models/tiers, hand off verified branch + final SHA to Copilot after Review + Docs. Never edits worker code |
+| Technical Advisor & Harness Optimizer | Gemini Argon (`gemini-4-argon-medium`/`high` via `agy`, `argon-adv`) | read-only via `agm ask`; writes harness/coordination files (`AGENTS.md`, `CLAUDE.md`, `.agents/`, templates, skills) in its own worktree when tasked | Independent technical advice; analyses major/recurring session issues to update and optimize harnessing between sessions |
+| Git Version Manager | GitHub Copilot CLI (`copilot-git`, 1 instance) | merge verified final SHA onto `main`, revert/rollback, clean merged/clean worktrees & branches | Serial integration of verified branches and post-merge audit re-run. Never edits business logic or fixes failing tests; push/tag/release/history-rewrite require user approval |
+| Docs Updater | Gemini 4 Hydrogen Medium (`gemini-4-hydrogen-medium` via `agy`, `docs-hyd`) | docs files only (`README*`, `docs/**`) + append `log/<ID>.md` | Updates affected docs **after Reviewer passes/edits finish and before Copilot handoff**; commits `<ID>: docs: ...` on the task branch |
+| Worker | OpenCode in `.wt/<ID>` (`w-<id>-<n>`); `worker-fast`/`worker-mid` → `opencode-go/deepseek-v4.1-flash`, `worker-strong` → `opencode-go/deepseek-v4-pro` after qualification; approved `:free`/local only as fallback | edit within `tasks/<ID>.md` scope; append `log/<ID>.md` | Implement scoped task + tests; escalate to `mid` / `strong` / Codex on 2 fails or complex multi-file logic. Never spawns agents or merges |
+| Researcher & Log Summarizer | `agy` (`gemini-3.8-flash` / `gemini-4-argon` via `agm ask`) for web; OpenCode `explore` (`opencode-go/deepseek-v4.1-flash`) for repo & long logs | read-only | Locations and evidence (URLs or `file:line`); summarise long test/build logs. Verify web claims (versions, prices) against primary sources |
+| Auditor & Pre-check | Scripts/CI first (`pytest`, `git diff --check`); approved free/local model only to interpret output | run commands, write `log/<ID>.md`, no product source edits | Run `pytest`, lint/build, check `git diff` vs `tasks/<ID>.md` scope & `log/<ID>.md` before Reviewer; `PASS ALL` / `FAIL` |
+| GitNexus Sync | `gitnexus-sync` (script/CI, optional when GitNexus active) | run `gitnexus status` / `analyze --index-only` / `clean` | Refresh graph index after `copilot-git` merge; never run without `--index-only` and never modify `AGENTS.md`/`CLAUDE.md` |
+| Background (optional) | NVIDIA Kimi / Mistral / Nemotron (see `docs/agents/models/NVIDIA-BACKGROUND.md`) | **read-only, writes nothing**, at most 1 task, never a merge gate | Non-urgent synthesis of code/docs/logs and proposals for Argon; CEO re-checks SHA before using the output. Never code, Audit or Review |
 
 If a tool cannot spawn separate sessions, one agent plays the roles one after another, in order.
 Only the Architect and the Manager spawn agents (one level deep). Workers talk only to the
 Manager. Worker skill budget: at most 2 skills, listed in the task file's `skills:` field.
 
+### Communication and session rules (`agm` / `hc`)
+
+- Send to another agent: `agm send <terminal> --type GIAO|"BÁO CÁO"|LỖI|HỎI|CHẶN|ĐẠT|"CHƯA ĐẠT" --task <ID> "<1-3 lines>"`
+- Ask the user for a decision: `agm send user --type HỎI --task <ID> "<question>"`
+- Check inbox (Manager / user): `agm inbox --json`
+- `agm` 0.1.0 refuses a recipient whose state is `done` (`status_mismatch`, nothing typed):
+  fall back to `hc send <terminal> "<pointer>"` (never `--force`) and log the outcome.
+- Never run `agm kill` on Codex or Claude Code sessions — only the user may stop or interrupt them.
+- Terminal names (`agm` / `hc`) allow lowercase `a-z0-9_-` up to 32 chars (`arch`, `sparring`, `review`, `codex-mgr`, `argon-adv`, `docs-hyd`, `copilot-git`, `gitnexus-sync`, `w-<id>-<n>`). Use lowercase task IDs when running via `agm`/`hc`.
+
 ### The `.agents/` notebook (committed on the working branch)
 
 ```
 .agents/
-  tasks/<ID>.md         spec: goal, files in scope, constraints, acceptance   (Manager)
-  log/<ID>.md           append-only work log, one entry per step              (Worker)
-  reviews/<ID>-<n>.md   review round n: PASS/FAIL, findings                   (Reviewer)
-  decisions/<ID>.md     design decisions, risks, reasons                      (Architect/Manager)
-  reports/<ID>.md       final branch report                                   (Manager)
+  tasks/<ID>.md         spec: goal, scope, tier, skills, acceptance   (Manager)
+  log/<ID>.md           append-only work/audit/docs log, per commit   (Worker / Auditor / Docs Updater)
+  reviews/<ID>-<n>.md   review round n: PASS/FAIL, findings           (Reviewer / Sparring)
+  decisions/<ID>.md     design decisions, risks, harness tuning       (Architect / Manager / Gemini Argon)
+  reports/<ID>.md       final branch report + Argon retro items       (Manager)
   templates/            copy these to start a file
 ```
 
+*(Runtime-only dirs `.agents/handoff/` — auto-excluded via `git info/exclude` by `agm` — and `.agents/.runtime/` are never committed.)*
+
 - **One writer per file.** Workers never edit `tasks/`; they propose changes in `log/`.
 - **Logs are append-only.** Correct by adding an entry, never by rewriting.
-- **Commit early and small**, code and the matching log entry together; messages start with
-  `<ID>:`. Existing history uses `FIX:` / `FEAT:` prefixes; for task work use
-  `<ID>: FIX: ...`.
+- **Commit early and small**, code/docs and the matching log entry together; messages start
+  with `<ID>:` (docs updates use `<ID>: docs: ...`).
 - **Durable content goes in files; messages are pointers** (1–3 lines, path to the file).
 
 ### Handoff check (every handoff)
@@ -243,22 +274,21 @@ Manager. Worker skill budget: at most 2 skills, listed in the task file's `skill
 1. `git status` is clean (including `.md` files).
 2. `git diff --stat main...HEAD` and `git log --oneline main..HEAD` match the "Files changed"
    list in `log/<ID>.md`. A change outside the task scope, or not mentioned in the log, is a
-   **Major** finding (FAIL).
+   **Major** finding (`FAIL`).
 3. Auditor reruns the commands recorded in the log (`pytest tests/ -q`) and gets the same result.
-4. Reviewer reads only `git diff main...HEAD`, `tasks/<ID>.md` and `log/<ID>.md`.
+4. Reviewer reads only `git diff main...HEAD`, `tasks/<ID>.md`, `log/<ID>.md` (and optional Sparring notes).
+5. If docs changed, Docs Updater (`docs-hyd`) commits the doc edits + `log/<ID>.md` entry on the branch before Manager hands off the final SHA to `copilot-git`.
 
 ### Release gate (in order)
 
-Commit on the task branch → Auditor PASS ALL → Reviewer PASS → Manager merges into the shared
-branch and the Auditor reruns there → Architect READY → **user approves the release** →
-verify on a real SWAT project. A check that cannot run is reported with its reason, never as
-passed. Bots and workers never merge or release.
+Commit on the task branch → Auditor `PASS ALL` (free/local model) → *(optional: Sparring `agy` Opus High)* → Reviewer `PASS` (`OpenCode` default; escalate to Claude Opus High for security/data/2× `FAIL`) → Docs Update if affected (`Gemini 4 Hydrogen Medium`, commit on branch + quick re-check if in test scope) → `copilot-git` merges exact final SHA into shared branch & reruns Auditor → `gitnexus-sync` (`analyze --index-only`, if enabled) → Architect `READY` → **user approves the release** → verify on a real SWAT project. *(Post-session: Gemini Argon reviews major recurring issues to optimize the harness.)* A check that cannot run is reported with its reason, never as passed. Bots and workers never merge or release.
 
 ### Escalation
 
-Call the Architect for structural changes, anything touching data or security, a fix that
-failed twice (after a model upgrade), and before release. If it still fails after the
-Architect's diagnosis, stop and ask the user.
+Use Sparring (`agy` Opus High) before escalating routine reviews to Claude Code. Call the
+Architect (Claude Code) for structural changes, anything touching real data or security, a
+fix that failed twice (even after model-tier escalation), and before release. If it still
+fails after the Architect's diagnosis, stop and ask the user (`agm send user --type HỎI`).
 
 ---
 

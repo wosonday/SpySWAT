@@ -1,6 +1,6 @@
 # Decision <ID>: <title>
 
-- Date: YYYY-MM-DD · Author: <role>
+- Date: YYYY-MM-DD · Author: <Architect | Manager | Gemini Argon>
 - Status: proposed | accepted | superseded by <ID>
 
 ## Context
