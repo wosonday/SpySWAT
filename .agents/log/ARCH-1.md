@@ -86,3 +86,25 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Architect separately committed its clarification in `32b3af8`; it was not
   staged or modified by this worker.
 - Structural RED check for the next step also confirms `param_spec` is absent.
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · writer guard and step 2b
+- Unexpected commit `69596b5` appeared while preparing the 2a commit. Stopped
+  source edits and notified the Architect rather than overwriting/resetting it.
+- Architect independently reviewed that commit, accepted it as step 2a, confirmed
+  this session is the only writer, and explicitly authorized removal of the
+  uncommitted duplicate 2a log entry. The committed entry remains unchanged.
+- Check `git log -1` immediately before each remaining commit; stop again if HEAD
+  changes unexpectedly. Expected HEAD before the 2b commit: `69596b5`.
+- Step 2b RED probe asserted `param_spec` exists and failed before implementation.
+- Extracted `parse_spec`, `format_params`, `is_raw`, `param_columns` into
+  `calibration/param_spec.py`. The manager retains the three static aliases and
+  the instance `_format_params` wrapper. Other callers and tests are unchanged.
+- AST check: executable bodies identical to the originals; normalized docstrings
+  also identical (a first unnormalized check detected only method-to-function
+  docstring indentation). Aliases, wrapper results and pickle round trips pass.
+- `python -m pytest tests/test_calib_manager.py tests/test_metrics.py tests/test_calibration.py -q`
+  → **145 passed / 0 failed**, 5 existing warnings, 91.59 s.
+- Files changed by 2b:
+  - `spyswat/swat_calib/calibration/param_spec.py` (new)
+  - `spyswat/swat_calib/calibration/calib_manager.py`
+  - `.agents/log/ARCH-1.md`
