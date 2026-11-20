@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 
-from spyswat.swat_calib.core.workingFolder_manager import StaleOutputError
+from spyswat.swat_calib.core.run_state import StaleOutputError
 from spyswat.swat_calib.analysis.statistics import (
     best_index, is_maximize, to_objective,
 )

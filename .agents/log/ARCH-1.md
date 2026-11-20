@@ -38,3 +38,51 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Checks:
   - `pytest tests/ -q` → **336 passed / 11 skipped / 0 failed** (327 + 9 new), 303 s;
   - `git diff --check` → 0.
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · step 2 preparation
+- Assignment received from the Architect: implement only step 2a/2b/2c on
+  `feat/ARCH-1`, one scoped commit per move, no push or merge.
+- Starting HEAD `ecf4041`; `git status --short --branch` is clean.
+- Read the approved task/design and the two specified skills
+  (`test-driven-development`, `verification-before-completion`).
+- Structural RED check for 2a:
+  `python -c "from importlib.util import find_spec; assert find_spec('spyswat.swat_calib.core.run_state') is not None, 'Step 2a: shared run_state module is missing'"`
+  fails with the expected assertion before any implementation.
+- Started the step-2a targeted suite on the unchanged source as a baseline.
+- Compatibility detail discovered for 2c: existing tests outside the permitted
+  edit range directly set `_session_base`, `_session_id`, `_session_dir`,
+  `_session_claimed` and `_session_n`. These must continue forwarding to RunLog;
+  changing those tests is not authorized. Request Architect confirmation of
+  thin compatibility properties while continuing the independent 2a/2b moves.
+
+## 2026-11-20 · Architect clarification for step 2c
+- Architect approved exactly five read/write compatibility forwarders:
+  `_session_base`, `_session_id`, `_session_dir`, `_session_claimed`, `_session_n`.
+- Read the appended "Step 2 clarification" in `.agents/decisions/ARCH-1.md`.
+- No catch-all `__getattr__`/`__setattr__`, and no extra run-log state forwarders.
+- Existing session-race tests remain unchanged; only the explicitly authorized
+  moved logging monkeypatch targets will be edited.
+
+## 2026-11-20 · OpenCode / GPT-6.1 Sol · step 2a — shared run state
+- Baseline on unchanged source:
+  `python -m pytest tests/test_working_folder.py tests/test_run_once.py tests/test_calib_manager.py -q`
+  → **80 passed / 1 skipped / 0 failed**, 107.77 s.
+- Moved the copy/freshness helpers and `StaleOutputError` to `core/run_state.py`.
+  `workingFolder_manager.py` retains `_OLD_MTIME` and all original private names
+  as import/assignment aliases. `calib_manager.py` keeps its module-level targets
+  unchanged, including `cm._copy_over`. GLUE imports the public exception location.
+- AST comparison against starting HEAD: moved bodies are identical after only
+  the specified function renames and internal `rch_signature` reference rename.
+- Pickle round trips of all moved functions/the exception succeed; old aliases
+  resolve to the exact new objects. No test edits.
+- Same targeted suite after the move:
+  **80 passed / 1 skipped / 0 failed**, 104.94 s.
+- `git diff --check` → 0 (only automatic CRLF conversion notices).
+- Files changed by 2a:
+  - `spyswat/swat_calib/core/run_state.py` (new)
+  - `spyswat/swat_calib/core/workingFolder_manager.py`
+  - `spyswat/swat_calib/analysis/algorithms/glue.py`
+  - `.agents/log/ARCH-1.md`
+- Architect separately committed its clarification in `32b3af8`; it was not
+  staged or modified by this worker.
+- Structural RED check for the next step also confirms `param_spec` is absent.

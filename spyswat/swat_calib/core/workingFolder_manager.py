@@ -14,13 +14,22 @@ from spyswat.swat_calib.run import SWATRun
 from spyswat.swat_calib.core import TxInOut, HRUManager
 from spyswat.swat_calib.io import SWATParam
 from spyswat.logger import Logger
+from spyswat.swat_calib.core.run_state import (
+    _OLD_MTIME, copy_over, rch_signature, stamp_output_rch,
+    StaleOutputError, check_fresh_output_rch,
+)
 
 logger = Logger.get_logger(__name__)
 
 MANIFEST_NAME = ".spyswat_manifest.json"
 # Heavy SWAT outputs that are never copied into / restored in worker folders.
 _OUTPUT_IGNORE = shutil.ignore_patterns("output.*", "watout.dat", MANIFEST_NAME)
-_OLD_MTIME = 946684800  # 2000-01-01, used to "age" output.rch before a run
+
+# Compatibility aliases for existing callers and spawned workers.
+_copy_over = copy_over
+_rch_signature = rch_signature
+_stamp_output_rch = stamp_output_rch
+_check_fresh_output_rch = check_fresh_output_rch
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -54,71 +63,6 @@ def _force_remove(func, path, _):
         func(path)
     except Exception:
         pass  # best-effort; rmtree continues with remaining files
-
-
-def _copy_over(src, dst, retries: int = 4) -> None:
-    """
-    Copy ``src`` over ``dst`` even if ``dst`` is read-only (retry on PermissionError).
-
-    The data goes to a temporary file next to ``dst`` and is moved into place with
-    ``os.replace``, so an interrupted copy never leaves a truncated ``dst``.
-    """
-    dst = Path(dst)
-    tmp = dst.with_name(f".{dst.name}.spyswat.tmp")
-    last: Optional[Exception] = None
-    for attempt in range(retries):
-        try:
-            if os.path.exists(dst):
-                os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
-            shutil.copyfile(src, tmp)
-            os.replace(tmp, dst)
-            return
-        except PermissionError as exc:
-            last = exc
-            time.sleep(0.1 * (attempt + 1))
-        finally:
-            try:
-                if tmp.exists():
-                    tmp.unlink()
-            except OSError:
-                pass
-    assert last is not None
-    raise last
-
-
-def _rch_signature(directory) -> Optional[Tuple[int, int]]:
-    p = Path(directory) / "output.rch"
-    try:
-        st = p.stat()
-    except FileNotFoundError:
-        return None
-    return (st.st_mtime_ns, st.st_size)
-
-
-def _stamp_output_rch(directory) -> Optional[Tuple[int, int]]:
-    """
-    Age an existing output.rch (so a fresh write always changes its mtime, even on
-    file systems with coarse timestamps) and return its (mtime_ns, size) signature,
-    or None when it is absent.
-    """
-    p = Path(directory) / "output.rch"
-    if p.exists():
-        try:
-            os.utime(p, (_OLD_MTIME, _OLD_MTIME))
-        except OSError:
-            pass
-    return _rch_signature(directory)
-
-
-class StaleOutputError(RuntimeError):
-    """SWAT ended without writing a fresh output.rch (the run produced no result)."""
-
-
-def _check_fresh_output_rch(directory, before: Optional[Tuple[int, int]]) -> None:
-    """Raise StaleOutputError unless output.rch was (re)written since ``before``."""
-    after = _rch_signature(directory)
-    if after is None or after[1] == 0 or (before is not None and after[0] == before[0]):
-        raise StaleOutputError("SWAT ended without writing a fresh output.rch")
 
 
 def _ext_with_dot(ext: str) -> str:
