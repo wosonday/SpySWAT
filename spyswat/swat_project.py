@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Optional, Union
 import logging
@@ -56,6 +57,7 @@ class SWATProject:
         self._hru_manager     = (HRUManager(self.txinout, self.param_file)
                                  if self.param_file is not None else None)
         self._file_cio        = FileCIO(self.txinout)
+        self._file_cio_stamp  = self._cio_stamp()
         self._output_manager  = OutputFileManager(self.txinout)
 
 
@@ -120,7 +122,7 @@ class SWATProject:
             )
 
     def get_date_range(self, freq: str='D', year_start_non_skip: bool=False):
-        return self._file_cio.get_date_range_sim(freq, year_start_non_skip)
+        return self.FileCIO.get_date_range_sim(freq, year_start_non_skip)
 
     def read_params_values(self, param: list):
         self._require_param_file()
@@ -160,7 +162,20 @@ class SWATProject:
 
     @property
     def FileCIO(self):
+        """file.cio, re-read whenever the file changed on disk (same rule as the output
+        cache), so IPRINT and the simulation dates never disagree with read_rch."""
+        stamp = self._cio_stamp()
+        if stamp != self._file_cio_stamp:
+            self._file_cio = FileCIO(self.txinout)
+            self._file_cio_stamp = stamp
         return self._file_cio
+
+    def _cio_stamp(self):
+        try:
+            st = os.stat(self._file_cio.file_path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
 
     @property
     def WorkingFolder(self):

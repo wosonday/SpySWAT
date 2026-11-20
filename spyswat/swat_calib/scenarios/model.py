@@ -7,8 +7,10 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
+from spyswat.swat_calib.io.file_cio import FileCIO
+
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_CIO_KEYS = ("NBYR", "IYR", "IDAF", "IDAL", "IPRINT", "NYSKIP")
+_CIO_KEYS = tuple(FileCIO._CIO_LINES)   # one source: the keys FileCIO.set() accepts
 
 
 def validate_name(kind: str, name) -> str:

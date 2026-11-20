@@ -50,6 +50,11 @@ release number is the maintainer's decision.
 
 ### Fixed
 
+- A failed run now scores signed infinity (`worst_score`), not ±1e6: a real score beyond
+  1e6 (sediment RMSE, early NSE) could rank below a failed run, so `ParallelDE`/`PSO`
+  could return a NaN run as the best.
+- `SWATCalibration.optimize` passes `method` and `max_iter` to `scipy.optimize.minimize`
+  (it always ran L-BFGS-B with scipy's default iterations). `"minimize"` keeps scipy's default.
 - Workers restore input files from the baseline before every run, so `r`/`a` changes no
   longer compound across batches; failed or stale runs score NaN instead of reading old output.
 - SWAT child process: timeout, killed on interrupt (`taskkill /T` on Windows), no inherited stdin.

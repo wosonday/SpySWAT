@@ -22,6 +22,7 @@ RANGES = {"CN2.mgt": (35.0, 98.0), "ALPHA_BF.gw": (0.0, 1.0)}
 def make_calib():
     project = MagicMock()
     project.WorkingFolder.n_parallel = 4
+    project.FileCIO.get_iprint.return_value = "D"   # IPRINT is the only step source
     return SWATCalibration(project)
 
 
@@ -270,6 +271,43 @@ class TestOptimizeAnalyze:
         assert r["history"]["score"].isna().any()
         assert r["best_score"] == pytest.approx(r["history"]["score"].min())
 
+    def test_optimize_local_method_is_the_one_requested(self, calib, obs, monkeypatch):
+        import spyswat.swat_calib.analysis.calibration as cal_mod
+        seen = {}
+        real = cal_mod.minimize
+
+        def spy(*a, **kw):
+            seen.update(kw)
+            return real(*a, **kw)
+        monkeypatch.setattr(cal_mod, "minimize", spy)
+        calib.manager.run_iteration = MagicMock(
+            side_effect=lambda raw, *a, **kw: abs(raw["CN2.mgt"] - 60.0))
+        r = calib.optimize({"CN2.mgt": (35.0, 98.0)}, obs, method="Nelder-Mead",
+                           metric="rmse", max_iter=40)
+        assert seen["method"] == "Nelder-Mead" and seen["options"] == {"maxiter": 40}
+        assert r["best_params"]["CN2.mgt"] == pytest.approx(60.0, abs=1.0)
+        calib.optimize({"CN2.mgt": (35.0, 98.0)}, obs, method="minimize", metric="rmse",
+                       max_iter=5)                     # README alias = scipy default
+        assert seen["method"] is None and seen["options"] == {"maxiter": 5}
+
+    @pytest.mark.parametrize("method", ["differential_evolution", "Nelder-Mead", "Powell"])
+    def test_optimize_partial_failures_return_best_valid_row(self, calib, obs, method):
+        calls = []
+
+        def fn(raw, *a, **kw):
+            calls.append(1)
+            if len(calls) % 4 == 2:                     # every 4th run crashes SWAT
+                raise RuntimeError("SWAT crashed")
+            return 3e6 + abs(raw["CN2.mgt"] - 60.0)     # every real RMSE is above 1e6
+        calib.manager.run_iteration = MagicMock(side_effect=fn)
+        r = calib.optimize({"CN2.mgt": (35.0, 98.0)}, obs, method=method, metric="rmse",
+                           max_iter=10, on_failure="penalize")
+        h = r["history"]
+        assert h["score"].isna().any()                  # failures stay NaN in the history
+        best = h.loc[h["score"].idxmin()]               # idxmin skips NaN
+        assert r["best_score"] == best["score"]
+        assert r["best_params"]["CN2.mgt"] == best["CN2.mgt"]
+
     def test_optimize_invalid_on_failure(self, calib, obs):
         with pytest.raises(ValueError):
             calib.optimize({"CN2.mgt": (35.0, 98.0)}, obs, on_failure="skip")
@@ -277,6 +315,7 @@ class TestOptimizeAnalyze:
     def test_analyze_best_for_pbias(self, obs):
         project = MagicMock()
         project.WorkingFolder.n_parallel = 4
+        project.FileCIO.get_iprint.return_value = "D"
         project.get_date_range.return_value = obs.index
         project.Output.read_rch.return_value = {"FLOW_OUTcms": pd.Series(np.ones(60) * 5.0)}
         c = SWATCalibration(project)
@@ -422,3 +461,67 @@ class TestUncertaintyBandFreshness:
                  for c in calib.manager.record_run.call_args_list]
         assert modes == [("uncertainty_band", "ok"), ("uncertainty_band", "failed"),
                          ("uncertainty_band", "ok")]
+
+
+# ── review PHASE1-1 finding 10: one source for shared tables / helpers ──────
+
+def test_shared_tables_have_one_source():
+    from spyswat.swat_calib.io.file_cio import FileCIO
+    from spyswat.swat_calib.scenarios import batch, model
+    assert batch._IPRINT_TO_FREQ is FileCIO._IPRINT_TO_FREQ
+    assert set(model._CIO_KEYS) == set(FileCIO._CIO_LINES)
+
+
+def test_finite_stats_ignores_failed_runs():
+    from spyswat.swat_calib.analysis.statistics import finite_stats
+    assert finite_stats(np.array([1.0, np.nan, 3.0, np.inf])) == (2.0, 1.0)
+    m, s = finite_stats(np.array([np.nan]))
+    assert np.isnan(m) and np.isnan(s)
+
+
+# ── review PHASE1-1 finding 1: a failed run must rank below EVERY real score ─
+
+@pytest.mark.parametrize("metric, real", [
+    ("rmse", 3e6),        # sediment RMSE in tons on a large basin
+    ("mae", 5e7),
+    ("pbias", -2e6),
+    ("nse", -2e6),        # wide parameter ranges early in a search
+    ("kge", -5e6),
+])
+def test_failed_run_ranks_below_any_real_score(metric, real):
+    obj = to_objective(metric, sanitize_scores([real, np.nan], metric))
+    assert obj[0] < obj[1], "the failed run would be kept as the better candidate"
+
+
+def test_parallel_de_never_returns_a_failed_member(obs):
+    from spyswat.swat_calib.analysis.algorithms.parallel_de import ParallelDE
+    calib = make_calib()
+    rng = np.random.default_rng(1)
+
+    def batch(param_sets, observed, metrics, *a, **k):
+        vals = rng.uniform(2e6, 4e6, len(param_sets))   # every real RMSE is above 1e6
+        vals[::3] = np.nan                               # a third of the runs fail
+        return pd.DataFrame({metrics[0]: vals})
+    calib.manager.run_batch = batch
+    calib.manager.setup_parallel = MagicMock()
+    res = ParallelDE(calib.manager).run({"CN2.mgt": (35.0, 98.0)}, obs, metric="rmse",
+                                        pop_size=6, max_generations=3, seed=0)
+    assert np.isfinite(res["best_score"])
+
+
+def test_pso_never_returns_a_failed_member(obs):
+    from spyswat.swat_calib.analysis.algorithms.pso import PSOCalibration
+    calib = make_calib()
+    rng = np.random.default_rng(1)
+    seen = []
+
+    def batch(param_sets, observed, metrics, *a, **k):
+        vals = rng.uniform(2e6, 4e6, len(param_sets))   # every real RMSE is above 1e6
+        vals[::2] = np.nan                               # half of the runs fail
+        seen.extend(vals[np.isfinite(vals)])
+        return pd.DataFrame({metrics[0]: vals})
+    calib.manager.run_batch = batch
+    calib.manager.setup_parallel = MagicMock()
+    res = PSOCalibration(calib.manager).run({"CN2.mgt": (35.0, 98.0)}, obs, metric="rmse",
+                                            n_particles=4, max_iterations=3, seed=0)
+    assert res["best_score"] == min(seen)               # the best VALID run, never a NaN

@@ -99,7 +99,10 @@ def fake_runner(worker_dir: str) -> None:
     extra = Path(worker_dir, "extra1.tmp").exists()
     log = os.environ.get("E5_RUNLOG")
     if log:
-        with open(log, "a") as fh:
+        # One trace file per worker folder: worker processes appending to ONE shared
+        # file lose lines on Windows (append = seek + write, not atomic across processes).
+        # A folder runs one job at a time, so each file has a single writer.
+        with open(f"{log}.{Path(worker_dir).name}", "a") as fh:
             fh.write(f"{Path(worker_dir).name}|{cn2}|{pcp}|{int(extra)}|{nbyr}\n")
     if cn2 == 77.0 and pcp > 20 and not os.environ.get("E5_ALLOW_FAIL"):
         raise RuntimeError("injected failure")
@@ -122,6 +125,12 @@ def fake_runner(worker_dir: str) -> None:
             lines.append(_rch_line(RCH=r, MON=date.dayofyear, FLOW_OUTcms=flow,
                                    SED_OUTtons=flow * 2))
     Path(worker_dir, "output.rch").write_text("".join(lines))
+
+
+def trace_lines(log: Path) -> list:
+    """Every fake_runner call traced under ``log`` (all worker files, in folder order)."""
+    return [ln for f in sorted(log.parent.glob(log.name + ".*"))
+            for ln in f.read_text().splitlines()]
 
 
 @pytest.fixture
@@ -239,11 +248,11 @@ def test_pairs_and_unknown_names(env, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Unknown pair"):
         batch.run(scen, PARAMS, pairs=[("base", "p_none"), ("nope", "p_v60")],
                   outputs=OUTS, runner=fake_runner)
-    assert not log.exists()
+    assert not trace_lines(log)
     out = batch.run(scen, PARAMS, pairs=[("luc", "p_rel"), ("base", "p_v60")],
                     outputs=OUTS, runner=fake_runner)
     assert [r.job_id for r in out.results] == ["luc__p_rel", "base__p_v60"]
-    assert len(log.read_text().splitlines()) == 2
+    assert len(trace_lines(log)) == 2
     wide = out.series("FLOW_OUTcms")
     np.testing.assert_allclose(wide[("luc", "p_rel", 2)], expected(55.0, 10.0, 2, 731), atol=2e-3)
     np.testing.assert_allclose(wide[("base", "p_v60", 2)], expected(60.0, 10.0, 2, 731),
@@ -264,11 +273,11 @@ def test_failure_isolation_and_resume(env, tmp_path, monkeypatch):
     assert "injected failure" in out.failed[0].error
     assert not (res_dir / "series" / "wet__p_bad.csv").exists()
     assert len(list((res_dir / "series").glob("*.csv"))) == 7
-    assert len(log.read_text().splitlines()) == 8
+    assert len(trace_lines(log)) == 8
 
     monkeypatch.setenv("E5_ALLOW_FAIL", "1")
     out2 = batch.run(scen, params, outputs=OUTS, runner=fake_runner)
-    assert len(log.read_text().splitlines()) == 9          # only the failed job re-ran
+    assert len(trace_lines(log)) == 9          # only the failed job re-ran
     assert [r.status for r in out2.results].count("skipped") == 7
     assert out2.results[-1].status == "ok" and not out2.failed
     assert (res_dir / "series" / "wet__p_bad.csv").exists()
@@ -284,7 +293,7 @@ def test_weather_overlay_gone_for_next_job_and_cio_override(env, tmp_path, monke
     scen = [Scenario("wet", weather_dir=wet), short, Scenario("base")]
     out = ScenarioBatch(make_project(env, n=1), tmp_path / "res").run(
         scen, [ParamSet("p_none")], outputs=OUTS, runner=fake_runner)   # one folder, in order
-    rows = [ln.split("|") for ln in log.read_text().splitlines()]
+    rows = [ln.split("|") for ln in trace_lines(log)]
     assert [r[0] for r in rows] == ["TxInOut1"] * 3
     assert [(r[2], r[3], r[4]) for r in rows] == [("30.0", "1", "2"), ("10.0", "0", "1"),
                                                   ("10.0", "0", "2")]
@@ -378,7 +387,7 @@ def test_observation_step_mismatch_fails_before_any_run(env, tmp_path, monkeypat
         ScenarioBatch(make_project(env), tmp_path / "res").run(
             scen, PARAMS[:1], outputs=OUTS, observed={("FLOW_OUTcms", 1): obs},
             runner=fake_runner)
-    assert not log.exists()
+    assert not trace_lines(log)
 
 
 def test_resume_with_changed_outputs_or_params_raises(env, tmp_path):

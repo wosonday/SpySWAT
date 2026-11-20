@@ -1,6 +1,7 @@
 # Review <ID> — round <n>
 
-- Reviewer: <session / model>
+- Reviewer: <OpenCode model (default) | Claude Opus High (escalation)>
+- Sparring pre-review: none | <agy Opus High notes>
 - Diff: `git diff main...<branch>` at <short hash>
 - Inputs read: `tasks/<ID>.md`, `log/<ID>.md`, the diff (nothing else)
 

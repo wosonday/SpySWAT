@@ -30,7 +30,7 @@ SUMMARY_COLS = ["job_id", "scenario", "param_set", "status", "error",
 METRIC_COLS = ["job_id", "scenario", "param_set", "variable", "reach", "metric", "value"]
 WORK_SUBDIR = "_scenario_batch"
 SIGNATURE_FILE = ".signature.json"
-_IPRINT_TO_FREQ = {0: "MS", 1: "D", 2: "YS"}
+_IPRINT_TO_FREQ = FileCIO._IPRINT_TO_FREQ   # one source: file_cio.py
 _RETRY_SLEEP = 0.2   # seconds, times the attempt number (summary.csv open in Excel, ...)
 
 

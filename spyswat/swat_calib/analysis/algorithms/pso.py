@@ -41,7 +41,7 @@ import pandas as pd
 from typing import Callable, Dict, List, Optional, Tuple
 
 from spyswat.swat_calib.analysis.statistics import (
-    best_index, sanitize_scores, to_objective,
+    best_index, finite_stats, sanitize_scores, to_objective,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ class PSO:
                 f"all runs failed: PSO got no valid score for {self._NP} initial particles"
             )
 
-        mean0, std0 = self._finite_stats(scores)
+        mean0, std0 = finite_stats(scores)
         history: List[Dict] = [{
             "iteration":  0,
             "best_score": gbest_f,
@@ -228,7 +228,7 @@ class PSO:
                     t, self.max_iterations, gbest_f,
                 )
 
-            cur_mean, cur_std = self._finite_stats(scores)
+            cur_mean, cur_std = finite_stats(scores)
             history.append({
                 "iteration":  t,
                 "best_score": gbest_f,
@@ -272,11 +272,6 @@ class PSO:
         if np.isnan(f):
             return -np.inf if self.maximize else np.inf
         return f
-
-    @staticmethod
-    def _finite_stats(scores: np.ndarray) -> Tuple[float, float]:
-        ok = scores[np.isfinite(scores)]
-        return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
 
 
 # ---------------------------------------------------------------------------
@@ -412,10 +407,6 @@ class PSOCalibration:
         # ── Initialisation ──────────────────────────────────────────────
         positions  = lower + rng.random((NP, d)) * (upper - lower)
         velocities = rng.uniform(-v_max, v_max, (NP, d))
-
-        def finite_stats(raw: np.ndarray) -> Tuple[float, float]:
-            ok = raw[np.isfinite(raw)]
-            return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
 
         scores    = evaluate_swarm(positions)               # raw metric values (may hold NaN)
         gidx0     = best_index(scores, metric)              # RuntimeError if every run failed

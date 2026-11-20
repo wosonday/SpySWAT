@@ -25,10 +25,6 @@ METRIC_DIRECTIONS: Dict[str, str] = {
     'pbias':       'min_abs',
 }
 
-# Finite stand-in for a failed run (keeps means/variances finite).
-_WORST_MAGNITUDE = 1e6
-
-
 def known_metrics() -> List[str]:
     """Names of all registered metrics."""
     return list(METRIC_DIRECTIONS)
@@ -49,8 +45,15 @@ def is_maximize(metric: str) -> bool:
 
 
 def worst_score(metric: str) -> float:
-    """Finite score used for a failed (NaN) run: the worst value for this metric."""
-    return -_WORST_MAGNITUDE if is_maximize(metric) else _WORST_MAGNITUDE
+    """
+    Score used for a failed (NaN) run: it ranks below EVERY real score.
+
+    Signed infinity, not a large finite number: a real sediment RMSE of 3e6 or an
+    early NSE of -2e6 must still beat a failed run. ``to_objective`` maps it to +inf
+    for every direction (pbias: ``abs(inf)``). Optimisers only compare objectives, and
+    means/stds go through ``finite_stats``, so the infinity never enters arithmetic.
+    """
+    return -np.inf if is_maximize(metric) else np.inf
 
 
 def to_objective(metric: str, score):
@@ -70,6 +73,13 @@ def to_objective(metric: str, score):
     else:
         out = arr
     return float(out) if out.ndim == 0 else out
+
+
+def finite_stats(scores) -> Tuple[float, float]:
+    """(mean, std) of the finite scores only; (nan, nan) when none is finite."""
+    arr = np.asarray(scores, dtype=float)
+    ok = arr[np.isfinite(arr)]
+    return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
 
 
 def sanitize_scores(scores, metric: str) -> np.ndarray:

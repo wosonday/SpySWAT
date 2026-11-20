@@ -18,6 +18,7 @@ RANGES = {"A.mgt": (0.0, 1.0), "B.gw": (0.0, 1.0)}
 def make_sens():
     project = MagicMock()
     project.WorkingFolder.n_parallel = 4
+    project.txinout.directory = None   # no TxtInOut on disk: freshness checked in its own test
     s = SWATSensitivity(project)
     s._manager.setup_parallel = MagicMock()
     s._manager.record_run = MagicMock()
@@ -217,3 +218,19 @@ class TestMorrisLevels:
         assert r["x1"] == pytest.approx(2.0, abs=1e-9)
         assert r["x2"] == pytest.approx(1.0, abs=1e-9)
         assert r["x3"] == pytest.approx(0.0, abs=1e-9)
+
+
+# ── review PHASE1-1 (task REV-1) ─────────────────────────────────────────────
+
+def test_no_obs_stale_output_is_a_failed_run(tmp_path):
+    """Finding 2: SWAT that writes no new output.rch must not be recorded as ok."""
+    s = make_sens()
+    s.project.txinout.directory = tmp_path
+    (tmp_path / "output.rch").write_text("OLD RCH\n")
+    s._manager._backup_state = MagicMock()
+    s._manager._restore_state = MagicMock()
+    s.project.run.side_effect = lambda: None                      # writes nothing
+    s.project.Output.read_rch.return_value = {"FLOW_OUTcms": pd.Series([1.0, 3.0])}
+    df, _ = s.one_at_a_time(RANGES, n_steps=2)
+    assert df["metric"].isna().all()
+    assert [c.kwargs["status"] for c in s._manager.record_run.call_args_list] == ["failed"] * 4

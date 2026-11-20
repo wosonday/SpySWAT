@@ -428,7 +428,9 @@ class CalibrationManager:
                       reach_id=1, output_variable='FLOW_OUTcms',
                       methods=None, subbasins=None) -> float:
         formatted = self._format_params(param_dict, methods, subbasins) if self._is_raw(param_dict) else param_dict
-        self._backup_state()
+        # Resolved before the backup: nothing between backup and restore may raise.
+        obs_index = observed.index if isinstance(observed, pd.Series) else None
+        self._backup_state(names=formatted.keys())
         err: Exception | None = None
         score = None
         sim_dated = None
@@ -466,7 +468,7 @@ class CalibrationManager:
                          {metric: np.nan} if err is not None else {metric: score},
                          status="failed" if err is not None else "ok", error=err,
                          sim=sim_dated, mode="sequential", reach_id=reach_id,
-                         output_variable=output_variable, obs_index=observed.index)
+                         output_variable=output_variable, obs_index=obs_index)
 
         # Always restore baseline inputs so that relative-change methods ('r', 'a')
         # start from the original parameter values on the next iteration.
@@ -490,8 +492,11 @@ class CalibrationManager:
         except TypeError:
             return None
 
-    def _input_files(self) -> List[Path]:
-        """file.cio + every input file of all extensions in the parameter file."""
+    def _input_files(self, names=None) -> List[Path]:
+        """
+        file.cio + the input files of the extensions that ``names`` ('name.ext' keys) can
+        modify; every extension in the parameter file when ``names`` is None.
+        """
         tx = self.project.txinout
         directory = Path(tx.directory)
         files: List[Path] = []
@@ -500,7 +505,8 @@ class CalibrationManager:
             files.append(cio)
         param_file = getattr(self.project, "param_file", None)
         if param_file is not None:
-            exts = _param_exts(str(param_file.param_path))
+            exts = _param_exts(str(param_file.param_path),
+                               None if names is None else list(names))
             files.extend(_baseline_files(tx, exts))
         seen, out = set(), []
         for f in files:
@@ -509,8 +515,13 @@ class CalibrationManager:
                 out.append(f)
         return out
 
-    def _backup_state(self):
-        """Back up only the input files that calibration can modify (never outputs)."""
+    def _backup_state(self, names=None):
+        """
+        Back up only the input files that calibration can modify (never outputs).
+
+        ``names``: the 'name.ext' keys about to be changed; only their extensions (plus
+        file.cio) are copied. None backs up every extension in the parameter file.
+        """
         if self._backup_dir is not None:
             # A previous restore failed: finish it first, never overwrite that backup.
             try:
@@ -523,7 +534,7 @@ class CalibrationManager:
                 ) from exc
         backup = Path(tempfile.mkdtemp(prefix="spyswat_backup_"))
         try:
-            for f in self._input_files():
+            for f in self._input_files(names):
                 shutil.copyfile(f, backup / f.name)
         except Exception:
             shutil.rmtree(backup, ignore_errors=True)
@@ -689,12 +700,9 @@ class CalibrationManager:
 
     def _sim_freq(self, obs: pd.Series | None = None) -> str:
         """Simulation output frequency from IPRINT in file.cio (contract C4)."""
+        # Never inferred from the observations (design rule 6); mocks must stub get_iprint().
         freq = self.project.FileCIO.get_iprint()
-        if not isinstance(freq, str):
-            # Duck-typed / mocked project without a real FileCIO: infer from the observations.
-            inferred = pd.infer_freq(obs.index) if obs is not None and len(obs) >= 3 else None
-            return 'MS' if (inferred and inferred.upper().startswith(('M', 'Q', 'A', 'Y'))) else 'D'
-        if freq not in self._FREQ_LEVEL:
+        if not isinstance(freq, str) or freq not in self._FREQ_LEVEL:
             raise ValueError(f"Unsupported simulation frequency {freq!r} from file.cio")
         return freq
 

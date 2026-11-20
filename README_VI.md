@@ -295,7 +295,7 @@ result = pso.run()
 result = calib.optimize(
     param_ranges    = param_ranges,
     observed_series = obs,
-    method          = "differential_evolution",  # hoặc "minimize"
+    method          = "differential_evolution",  # hoặc "minimize" (L-BFGS-B), "Nelder-Mead", "Powell", ...
     metric          = "nse",
     max_iter        = 100,
     on_failure      = "raise",                  # hoặc "penalize": lần chạy lỗi nhận giá trị tệ nhất
@@ -304,7 +304,7 @@ print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
 
-Các thuật toán tuần tự (`calib.optimize`, `calib.dds.run`) mặc định dừng ở lần chạy SWAT lỗi đầu tiên (`on_failure="raise"`). Các thuật toán theo quần thể (GLUE, DE, PSO) cho lần chạy lỗi điểm NaN, luôn xếp cuối; nếu mọi lần chạy trong một lô đều lỗi thì báo `RuntimeError`.
+Các thuật toán tuần tự (`calib.optimize`, `calib.dds.run`) mặc định dừng ở lần chạy SWAT lỗi đầu tiên (`on_failure="raise"`). Các thuật toán theo quần thể (GLUE, DE, PSO) cho lần chạy lỗi điểm NaN, luôn xếp cuối; nếu mọi lần chạy trong một lô đều lỗi thì báo `RuntimeError`. Một `method` cục bộ (mọi giá trị khác DE) xuất phát từ giữa khoảng tham số và không thoát được vùng mà mọi lần chạy đều lỗi: hãy dùng DE khi một phần không gian tham số làm SWAT lỗi.
 
 ### Định dạng param_ranges thống nhất
 

@@ -122,8 +122,13 @@ class ValidationRunner:
         rows = []
         for name, (value, method, _spec) in manager._param_columns(formatted).items():
             subs = subbasins.get(name)
-            rows.append([name, manager._fmt(value), method,
-                         "" if subs is None else ";".join(str(x) for x in subs)])
+            if subs is None:
+                text = ""
+            elif isinstance(subs, (list, tuple, set)):
+                text = ";".join(str(x) for x in subs)
+            else:                                   # one subbasin number, or "All"
+                text = str(subs)
+            rows.append([name, manager._fmt(value), method, text])
         manager._append_csv(path, ["name", "value", "method", "subbasins"], rows)
 
     @staticmethod
