@@ -316,7 +316,7 @@ result = pso.run()
 result = calib.optimize(
     param_ranges    = param_ranges,
     observed_series = obs,
-    method          = "differential_evolution",  # or "minimize"
+    method          = "differential_evolution",  # or "minimize" (L-BFGS-B), "Nelder-Mead", "Powell", ...
     metric          = "nse",
     max_iter        = 100,
     on_failure      = "raise",                  # or "penalize": a failed run scores the worst value
@@ -325,7 +325,7 @@ print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
 ```
 
-Sequential optimisers (`calib.optimize`, `calib.dds.run`) stop on the first failed SWAT run by default (`on_failure="raise"`). Population algorithms (GLUE, DE, PSO) score a failed run as NaN, which always ranks worst; a batch where every run failed raises `RuntimeError`.
+Sequential optimisers (`calib.optimize`, `calib.dds.run`) stop on the first failed SWAT run by default (`on_failure="raise"`). Population algorithms (GLUE, DE, PSO) score a failed run as NaN, which always ranks worst; a batch where every run failed raises `RuntimeError`. A local `method` (anything but DE) starts from the middle of the bounds and cannot leave a region where every run fails: use DE when parts of the parameter space crash SWAT.
 
 ### Unified param_ranges format
 
