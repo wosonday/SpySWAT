@@ -184,3 +184,21 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Docs step 2d is now assigned explicitly to OpenCode: update only `AGENTS.md`,
   `ARCHITECTURE.md`, `CHANGELOG.md` and this append-only docs log, in a separate
   `ARCH-1: docs: ...` commit after 2c. No source changes in that commit.
+
+## 2026-11-20 · claude-opus-5.5 · Architect review of step 2 (2a-2d) — PASS
+- Commits reviewed:
+  - `69596b5` 2a: writer unidentified; the content was reviewed and kept.
+  - `b2f7b5c` 2b, `8e42746` 2c and `17e0dde` 2d (OpenCode).
+- Scope:
+  - 2a: 4 files; aliases resolve to the moved objects; `pickle` OK.
+  - 2c: `calib_manager.py` went from 780 to 554 lines and has no CSV/session code left.
+    It has exactly the 5 approved `_session_*` property forwarders and no
+    `__getattr__`/`__setattr__`.
+  - Test edits are limited to the 4 approved monkeypatch targets; no assertion changed.
+  - 2d is docs only (AGENTS.md, ARCHITECTURE.md, CHANGELOG.md).
+- Checks (Architect, on `17e0dde`):
+  - `python -m pytest tests/ -q` → **336 passed / 11 skipped / 0 failed**, 304 s;
+  - `git diff --check main..HEAD` → 0;
+  - no personal paths or keys in `git diff main..HEAD`.
+- Not run: the Auditor gate and a formal Reviewer pass. The merge is handed to
+  `copilot-git` (`.agents/tasks/MERGE-2.md`) at the user's request.
