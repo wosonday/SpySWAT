@@ -13,6 +13,7 @@ from spyswat.swat_calib.analysis.calibration import SWATCalibration
 def make_project():
     project = MagicMock()
     project.WorkingFolder.n_parallel = 4
+    project.FileCIO.get_iprint.return_value = "D"   # IPRINT is the only step source
     return project
 
 

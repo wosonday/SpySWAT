@@ -634,3 +634,41 @@ def test_month_end_observations_get_a_specific_message():
     idx = pd.date_range("2000-01-31", periods=4, freq="ME")
     with pytest.raises(ValueError, match=r"END of each month.*to_period"):
         check_observation_step(idx, "MS")
+
+
+# ── review PHASE1-1 (task REV-1) ─────────────────────────────────────
+
+def test_validation_best_params_scalar_subbasin_does_not_crash(proj, obs, monkeypatch):
+    """Finding 3: a single subbasin number used to raise TypeError after calibration."""
+    base, before, runner = _validation_setup(proj, monkeypatch, obs)
+    runner.param_ranges = {"CN2.mgt": ((-0.2, 0.2), "r", 1)}
+    runner.run(restore=True)
+    bp = pd.read_csv(runner.manager.session_path("best_params"), dtype=str)
+    assert bp.loc[0, "subbasins"] == "1"
+
+
+def test_run_iteration_restores_even_if_observed_has_no_index(proj, obs):
+    """Finding 4: a non-Series `observed` must never leave TxtInOut modified."""
+    base, before = _setup_iteration(proj, _run_writes_rch)
+    with pytest.raises(Exception):
+        CalibrationManager(proj).run_iteration({"CN2.mgt": 0.1}, obs.to_numpy(), metric="nse",
+                                               methods={"CN2.mgt": "r"})
+    assert snapshot(base) == before
+
+
+def test_backup_covers_only_extensions_of_changed_parameters(proj):
+    """Finding 6: changing CN2.mgt backs up file.cio and .mgt files, not .gw files."""
+    mgr = CalibrationManager(proj)
+    mgr._backup_state(names=["CN2.mgt"])
+    try:
+        names = sorted(p.suffix or p.name for p in mgr._backup_dir.iterdir())
+    finally:
+        mgr._restore_state()
+    assert ".gw" not in names and ".mgt" in names and ".cio" in names
+
+
+def test_sim_freq_never_inferred_from_observations(proj, obs):
+    """Finding 9: the simulation step comes from IPRINT only (design rule 6)."""
+    proj.FileCIO = types.SimpleNamespace(get_iprint=lambda: None)
+    with pytest.raises((ValueError, TypeError)):
+        CalibrationManager(proj)._sim_freq(obs)

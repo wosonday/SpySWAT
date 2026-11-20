@@ -81,12 +81,22 @@ class SWATCalibration:
             on_failure: str = "raise",
     ) -> Dict:
         """
-        Single-threaded scipy optimisation (DE or Nelder-Mead/SLSQP).
+        Single-threaded scipy optimisation.
 
+        method     : "differential_evolution" (default, global search), "minimize"
+                     (scipy's default bounded method, L-BFGS-B) or any
+                     ``scipy.optimize.minimize`` method name ("Nelder-Mead", "Powell",
+                     ...), started from the middle of the bounds.
+                     ``max_iter`` is passed as ``maxiter`` to both.
         on_failure : "raise" (default) -- an exception from run_iteration propagates;
-                     "penalize" -- the run is recorded as NaN, treated as the worst
-                     value and the search continues.
+                     "penalize" -- the run is recorded as NaN, scored as the worst
+                     value (signed infinity) and the search continues.
         A non-finite score returned under "raise" raises RuntimeError.
+
+        A local ``minimize`` method cannot leave a region where every run fails: if
+        the start point fails, the search may end without one valid run (then
+        RuntimeError "all runs failed"). Use differential_evolution when parts of the
+        parameter space crash SWAT.
         """
         if on_failure not in ("raise", "penalize"):
             raise ValueError(f"on_failure must be 'raise' or 'penalize', got {on_failure!r}")
@@ -134,7 +144,10 @@ class SWATCalibration:
         if method == "differential_evolution":
             res = differential_evolution(objective, bounds, maxiter=max_iter)
         else:
-            res = minimize(objective, [(b[0] + b[1]) / 2 for b in bounds], bounds=bounds)
+            # "minimize" (documented in the README) = scipy's default bounded method.
+            local = None if method == "minimize" else method
+            res = minimize(objective, [(b[0] + b[1]) / 2 for b in bounds], method=local,
+                           bounds=bounds, options={"maxiter": max_iter})
 
         # Report the real metric value (not the negated / abs objective) of the
         # best evaluation seen; raises RuntimeError if every run failed.

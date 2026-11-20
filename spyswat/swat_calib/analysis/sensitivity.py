@@ -4,6 +4,10 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import logging
 
+from spyswat.swat_calib.core.workingFolder_manager import (
+    _stamp_output_rch, _check_fresh_output_rch,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +46,11 @@ class SWATSensitivity:
         key = f"mean_{output_variable}"
         try:
             self.project.HRU.update_params(params)
+            out_dir = self._manager._txinout_dir()
+            before = _stamp_output_rch(out_dir) if out_dir is not None else None
             self.project.run()
+            if out_dir is not None:
+                _check_fresh_output_rch(out_dir, before)    # stale output = failed run
             sim = self.project.Output.read_rch(
                 columns=['RCH', 'MON', output_variable], reach_id=reach_id
             )[output_variable]

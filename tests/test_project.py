@@ -132,3 +132,12 @@ def test_cli_main_runs_project_once(monkeypatch):
     cli.main(["--txinout", "t", "--workingF", "w", "--exe", "e", "--n_parallel", "4"])
     assert created == [("t", "w", "e", None, 4)]
     assert ran == [True]
+
+
+def test_file_cio_follows_edits_made_outside_the_project(project, txinout):
+    """Review PHASE1-1 finding 5: project.FileCIO must not keep a stale file.cio."""
+    from spyswat.swat_calib.core import TxInOut
+    from spyswat.swat_calib.io import FileCIO
+    assert project.FileCIO.get_iprint() == "D"
+    FileCIO(TxInOut(str(txinout))).set(IPRINT=0)                 # another instance / by hand
+    assert project.FileCIO.get_iprint() == "MS"

@@ -19,7 +19,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 
 from spyswat.swat_calib.analysis.statistics import (
-    best_index, sanitize_scores, to_objective,
+    best_index, finite_stats, sanitize_scores, to_objective,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,10 +155,6 @@ class ParallelDE:
             """Smaller-is-better objective; failed runs get the worst value."""
             return to_objective(metric, sanitize_scores(raw, metric))
 
-        def stats(raw: np.ndarray) -> Tuple[float, float]:
-            ok = raw[np.isfinite(raw)]
-            return (float(ok.mean()), float(ok.std())) if ok.size else (float("nan"), float("nan"))
-
         # ── Initialisation ──────────────────────────────────────────────
         population = lower + rng.random((NP, d)) * (upper - lower)
         scores     = evaluate(population)            # raw metric values (may hold NaN)
@@ -173,7 +169,7 @@ class ParallelDE:
             row.update({"score": scores[k], "generation": 0})
             all_rows.append(row)
 
-        mean0, std0 = stats(scores)
+        mean0, std0 = finite_stats(scores)
         gen_history.append({
             "generation": 0,
             "best_score": float(scores[best_idx]),
@@ -225,7 +221,7 @@ class ParallelDE:
 
             cur_idx      = int(np.argmin(obj))
             current_best = float(scores[cur_idx])
-            cur_mean, cur_std = stats(scores)
+            cur_mean, cur_std = finite_stats(scores)
             gen_history.append({
                 "generation": gen,
                 "best_score": current_best,
