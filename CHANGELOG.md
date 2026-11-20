@@ -13,6 +13,12 @@ release number is the maintainer's decision.
 
 ### Added
 
+- `CalibrationManager.run_once()` — the shared sequential update/run/freshness/read
+  primitive; `sandbox(names=None)` restores input files on exit, including exceptions.
+  Compose them when inputs must be restored; `run_once()` itself does not back up,
+  compute metrics or append a run log.
+- `StaleOutputError(RuntimeError)` in `core/run_state.py` identifies runs that did not
+  produce a fresh `output.rch`.
 - **`ScenarioBatch`** (`spyswat.swat_calib.scenarios`) — runs *scenarios × parameter sets*
   over the parallel workers. `Scenario` is a separate TxtInOut folder or a weather-file
   overlay plus an optional `file.cio` override (`cio={"IYR": 2030, ...}`); `ParamSet` comes
@@ -39,6 +45,12 @@ release number is the maintainer's decision.
 
 ### Changed
 
+- Split shared copy/freshness helpers into `core/run_state.py`, pure parameter helpers
+  into `calibration/param_spec.py`, and CSV/session persistence into
+  `calibration/run_log.py::RunLog`. Existing private helper aliases and manager
+  delegates remain available; CSV columns and formatting are unchanged.
+- Sequential sensitivity and GLUE uncertainty runs now record after input restoration,
+  so a restore failure is recorded as a failed run instead of an earlier successful run.
 - `ValidationRunner.run()` keeps the best parameters in TxtInOut by default
   (`restore=True` puts the original files back).
 - The simulation frequency comes from `IPRINT` in `file.cio`, not from the observations.

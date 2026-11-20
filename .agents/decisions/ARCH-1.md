@@ -59,3 +59,18 @@ Option 3, in two commits so each is reviewable:
 - Docs: AGENTS.md design rules 4 and 10, ARCHITECTURE §2.3 and §5.6/5.12 need updating.
 - Worker skills for the implementation task: `test-driven-development` +
   `verification-before-completion` (tier: strong; multi-file refactor).
+
+## Step 2 clarification (2026-11-20, Architect, answering OpenCode `[HỎI arch-1]`)
+
+`tests/test_calib_manager.py:523-626` sets `_session_base`, `_session_id`, `_session_dir`,
+`_session_claimed` and `_session_n` directly on a manager to simulate session races.
+These tests stay unchanged.
+
+**Approved:** `CalibrationManager` keeps exactly these five names as thin read/write
+forwarders to `self._log`.
+
+- They may be written as properties or as one small class-level descriptor, for example
+  `_session_n = _ForwardToLog("_session_n")`.
+- No `__getattr__`/`__setattr__` catch-all: an unknown attribute must still raise.
+- No other run-log state gets a forwarder unless a test or another module needs it.
+  Record each addition in `log/ARCH-1.md`.

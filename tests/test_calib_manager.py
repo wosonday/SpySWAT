@@ -10,6 +10,7 @@ import pytest
 from spyswat.logger import Logger
 from spyswat.swat_calib.calibration import CalibrationManager, ValidationRunner
 from spyswat.swat_calib.calibration import calib_manager as cm
+from spyswat.swat_calib.calibration import run_log
 from spyswat.swat_calib.calibration.calib_manager import check_observation_step
 from spyswat.swat_calib.calibration.validation_runner import PeriodConfig
 from spyswat.swat_calib.core import TxInOut, HRUManager
@@ -450,8 +451,8 @@ def test_locked_log_file_warns_once_buffers_rows_and_flushes_later(proj, obs, mo
             raise PermissionError("open in Excel")
         return real_open(file, *a, **k)
 
-    monkeypatch.setattr(cm, "open", locked_open, raising=False)
-    monkeypatch.setattr(cm.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_log, "open", locked_open, raising=False)
+    monkeypatch.setattr(run_log.time, "sleep", lambda s: None)
     with caplog.at_level("WARNING"):
         assert _iter(mgr, obs) == pytest.approx(3.0)
         assert _iter(mgr, obs) == pytest.approx(3.0)
@@ -466,13 +467,13 @@ def test_locked_log_file_warns_once_buffers_rows_and_flushes_later(proj, obs, mo
 
 def test_pending_buffer_is_bounded(proj, obs, monkeypatch):
     mgr = CalibrationManager(proj)
-    monkeypatch.setattr(CalibrationManager, "_MAX_PENDING_ROWS", 3)
-    monkeypatch.setattr(cm.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cm, "open", lambda *a, **k: (_ for _ in ()).throw(PermissionError("x")),
+    monkeypatch.setattr(run_log.RunLog, "MAX_PENDING_ROWS", 3)
+    monkeypatch.setattr(run_log.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_log, "open", lambda *a, **k: (_ for _ in ()).throw(PermissionError("x")),
                         raising=False)
     for i in range(6):
         mgr.record_run({"CN2.mgt": float(i)}, {"nse": 1.0})
-    (rows,) = [v for k, v in mgr._pending.items() if k.name.endswith("_metrics.csv")]
+    (rows,) = [v for k, v in mgr._log._pending.items() if k.name.endswith("_metrics.csv")]
     assert len(rows) == 3
 
 

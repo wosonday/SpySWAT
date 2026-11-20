@@ -13,14 +13,11 @@ Reference:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 
-from spyswat.swat_calib.core.workingFolder_manager import (
-    _check_fresh_output_rch, _stamp_output_rch,
-)
+from spyswat.swat_calib.core.run_state import StaleOutputError
 from spyswat.swat_calib.analysis.statistics import (
     best_index, is_maximize, to_objective,
 )
@@ -204,33 +201,19 @@ class GLUE:
         for pos, (_, row) in enumerate(behavioral_df.iterrows()):
             raw = {name: float(row[name]) for name in param_names}
             formatted = self._manager._format_params(raw, param_methods, param_subbasins)
-            self._manager._backup_state()
             try:
-                self._manager.project.HRU.update_params(formatted)
-                out_dir = getattr(self._manager, "_txinout_dir", lambda: None)()
-                if not isinstance(out_dir, Path):
-                    out_dir = None
-                before = _stamp_output_rch(out_dir) if out_dir is not None else None
-                self._manager.project.run()
-                fresh = True
-                if out_dir is not None:
-                    try:
-                        _check_fresh_output_rch(out_dir, before)
-                    except RuntimeError as exc:
-                        fresh = False
-                        n_stale += 1
-                        self._manager.record_run(
-                            formatted, None, status="failed", error=str(exc), sim=None,
-                            mode="uncertainty_band", reach_id=reach_id,
-                            output_variable=output_variable,
-                        )
-                        logger.warning(
-                            "GLUE 95PPU: behavioural run %d excluded (%s)", pos, exc
-                        )
-                if fresh:
-                    sim_raw = self._manager.project.Output.read_rch(
-                        columns=["RCH", "MON", output_variable], reach_id=reach_id
-                    )[output_variable]
+                with self._manager.sandbox():
+                    sim_raw = self._manager.run_once(formatted, reach_id=reach_id,
+                                                     output_variable=output_variable)
+            except StaleOutputError as exc:          # no result: leave it out of the band
+                n_stale += 1
+                self._manager.record_run(
+                    formatted, None, status="failed", error=str(exc), sim=None,
+                    mode="uncertainty_band", reach_id=reach_id,
+                    output_variable=output_variable,
+                )
+                logger.warning("GLUE 95PPU: behavioural run %d excluded (%s)", pos, exc)
+                continue
             except Exception as exc:
                 self._manager.record_run(
                     formatted, None, status="failed", error=str(exc), sim=None,
@@ -238,10 +221,6 @@ class GLUE:
                     output_variable=output_variable,
                 )
                 raise
-            finally:
-                self._manager._restore_state()
-            if not fresh:
-                continue
             obs_a, sim_a = self._manager._align_series(observed_series, sim_raw)
             self._manager.record_run(
                 formatted, None, status="ok", sim=sim_a, mode="uncertainty_band",

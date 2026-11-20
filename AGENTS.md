@@ -32,6 +32,7 @@ spyswat/
     │   ├── txinout.py              ← TxInOut: path management for TxtInOut/
     │   ├── hru_manager.py          ← HRUManager: read/write parameters, validate_inputs()
     │   ├── output_manager.py       ← OutputFileManager: output.rch/hru/sub/sed, stamp-keyed cache
+    │   ├── run_state.py            ← Atomic copies, output freshness, StaleOutputError
     │   └── workingFolder_manager.py← WorkingFolderManager, WorkerResult: parallel worker dirs
     ├── io/
     │   ├── parameters.py           ← SWATParam, SWATParamInfo
@@ -41,8 +42,10 @@ spyswat/
     │   ├── mapping_output.py       ← Output file layouts
     │   └── file_cio.py             ← FileCIO: sim dates, IPRINT, set(**values)
     ├── calibration/
-    │   ├── calib_manager.py        ← CalibrationManager: run_iteration, run_batch, run log,
+    │   ├── calib_manager.py        ← CalibrationManager: run_once, sandbox, run_iteration, run_batch,
     │   │                             check_observation_step()
+    │   ├── param_spec.py           ← Pure parameter parsing, formatting and log columns
+    │   ├── run_log.py              ← RunLog: CSV sessions, buffered writes, per-run results
     │   └── validation_runner.py    ← ValidationRunner, PeriodConfig
     ├── scenarios/
     │   ├── model.py                ← Scenario, ParamSet, Job, RunResult
@@ -98,10 +101,15 @@ param_ranges = {
 `_parse_spec()` raises `ValueError` if an old-format tuple has more than 2 elements.
 
 **4. TxtInOut is never left modified by a sequential run.**
+All sequential callers use `CalibrationManager.run_once()` for update → stamp → run →
+freshness check → read. This primitive does not back up inputs: compose it with
+`sandbox(names=...)` for restoration on any exit. `run_iteration()` keeps the equivalent
+explicit backup/restore to preserve its combined run/restore error message.
 `_backup_state()` copies only the parameter **input** files (never outputs, never the
 whole folder) to a temp dir. `_restore_state()` runs in `finally`; the backup is deleted
 only after every file was copied back. A failed restore keeps the backup and the next
-`_backup_state()` finishes it first.
+`_backup_state()` finishes it first. Deliberately keeping parameters, as with
+`ValidationRunner.run(restore=False)`, does not use the sandbox.
 
 **5. Workers always start from the baseline.**
 `WorkingFolderManager.run_parallel()` restores input files from the base TxtInOut before
@@ -130,10 +138,14 @@ wider than the field raise `SWATFileFormatError` and leave the file untouched. E
 is written once per update via temp file + `os.replace`.
 
 **10. Every run is logged, and logging never breaks a calibration.**
-`CalibrationManager` appends `<session>_metrics.csv` and `<session>_outputs.csv` under
+`CalibrationManager` delegates to `RunLog` to append `<session>_metrics.csv` and
+`<session>_outputs.csv` under
 `<working_dir>/calibration_results` after each run (sequential, parallel, validation,
 GLUE uncertainty, sensitivity via `record_run`). Files are created only when the first row
 is written. Locked files are buffered (`flush_log()`); errors are warned once.
+The raw `run_once()` primitive does not log or compute metrics; custom callers use
+`record_run()`. Sensitivity and GLUE uncertainty runs record after restoration, so a
+restore failure is logged as a failed run.
 
 **11. Parallel code must be picklable and `__main__`-guarded.**
 `ProcessPoolExecutor` spawns workers on Windows. Worker functions, `prepare`, `extract`
@@ -159,6 +171,12 @@ project.HRU.validate_inputs()          # empty DataFrame = layout matches the pa
 from spyswat.swat_calib.calibration import CalibrationManager
 manager = CalibrationManager(project)
 score = manager.run_iteration({"CN2.mgt": 75.0, "ALPHA_BF.gw": 0.5}, obs, metric="nse")
+```
+
+For a raw simulated series with restoration (no metrics or automatic run log):
+```python
+with manager.sandbox(names=["CN2.mgt"]):
+    sim = manager.run_once({"CN2.mgt": 75.0}, reach_id=1, output_variable="FLOW_OUTcms")
 ```
 
 ### Run a calibration algorithm
@@ -195,7 +213,7 @@ See `docs/sample_run_scenarios.py`.
 
 ```bash
 pip install -e .             # or: uv sync
-pytest tests/ -q             # expected: 327 passed, 11 skipped (~4-5 min on Windows)
+pytest tests/ -q             # measured: 336 passed, 11 skipped (~4-5 min on Windows)
 python -m spyswat --help
 ```
 

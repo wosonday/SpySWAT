@@ -1,14 +1,12 @@
 # spyswat/swat_calib/calibration/validation_runner.py
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
 from spyswat.swat_calib.calibration import CalibrationManager
-from spyswat.swat_calib.core.workingFolder_manager import (
-    _stamp_output_rch, _check_fresh_output_rch,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -65,22 +63,12 @@ class ValidationRunner:
                      if manager._is_raw(best_params) else best_params)
         self._save_best_params(manager, formatted, subbasins)
 
-        # 2. Ap dung best params va chay SWAT
-        if restore:
-            manager._backup_state()
+        # 2. Ap dung best params va chay SWAT (restore=True: inputs come back afterwards)
         sim_dated = None
-        try:
+        with manager.sandbox() if restore else nullcontext():
             try:
-                self.project.HRU.update_params(formatted)
-                out_dir = manager._txinout_dir()
-                before = _stamp_output_rch(out_dir) if out_dir is not None else None
-                self.project.run()
-                if out_dir is not None:
-                    _check_fresh_output_rch(out_dir, before)
-
-                sim = self.project.Output.read_rch(
-                    columns=['RCH', 'MON', output_variable], reach_id=reach_id
-                )[output_variable]
+                sim = manager.run_once(formatted, reach_id=reach_id,
+                                       output_variable=output_variable)
 
                 # 3. Kiem dinh (validation period)
                 obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]
@@ -95,9 +83,6 @@ class ValidationRunner:
             self._save_validation(manager, metric, calib_score, valid_stats)
             self._log_validation_run(manager, "ok", None, reach_id, output_variable,
                                      formatted, valid_stats, sim_dated, obs_valid.index)
-        finally:
-            if restore:
-                manager._restore_state()
 
         if not restore:
             logger.warning(
