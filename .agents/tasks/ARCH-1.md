@@ -108,3 +108,18 @@ order 2a → 2b → 2c, and run the listed tests after each one.
 - [x] Step 1: tests for run_once/sandbox, plus a guard that the three callers do not
       re-implement the sequence; full suite green.
 - [ ] Step 2: same `<session>_metrics.csv` columns; full suite green; pickling unchanged.
+
+### 2d. Docs (added 2026-11-20 by the Architect; writer: OpenCode)
+- `AGENTS.md`:
+  - Quick orientation tree: add `core/run_state.py`, `calibration/param_spec.py` and
+    `calibration/run_log.py`.
+  - Design rule 4: sequential runs go through `run_once` inside `sandbox()`.
+  - Common task "Run one SWAT iteration": add a short `sandbox()` + `run_once()` example.
+  - Commands: set the expected count to the measured one.
+- `CHANGELOG.md` `[Unreleased]`:
+  - Added: `run_once`, `sandbox`, `StaleOutputError`.
+  - Changed: module split (old private names kept); sensitivity/GLUE record a run after
+    the restore.
+- `ARCHITECTURE.md`: the calibration-manager section(s) describe the new modules.
+  Keep the existing language of each section.
+- Commit as `ARCH-1: docs: run_once/sandbox and module split`. Docs only, no code.
