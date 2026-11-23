@@ -115,3 +115,13 @@ outside this task's scope):
   `"scenarios"` / `"param_sets"` lines only.
 
 Files changed: `.agents/log/PAR-2.md` (this entry) only.
+
+## 2026-11-23 — report delivery
+
+`agm send t81 --type "BÁO CÁO" --task par-2 "..."` was refused twice with
+`hc status_mismatch: t81 is working, not idle` (nothing delivered). The documented fallback
+`hc send t81 "<pointer>"` could not run in this non-interactive session (permission
+rejected), and `--force` is forbidden, so the branch is ready but the Manager has not been
+notified. Branch `feat/PAR-2`, HEAD after this commit, working tree clean.
+
+Files changed: `.agents/log/PAR-2.md` (this entry) only.
