@@ -271,5 +271,5 @@ Append-only. Correct a mistake by adding a new entry below it.
   `.agents/decisions/PAR-1.md` (Round 3 fix spec, committed unchanged),
   `.agents/log/PAR-1.md`.
 - Done. No `agm send` / `hc send` per rework instructions; pointer for the manager: branch
-  `feat/PAR-1` (head below).
+  `feat/PAR-1` at `d7e4587`.
 - Previous commit: `02a12d6`
