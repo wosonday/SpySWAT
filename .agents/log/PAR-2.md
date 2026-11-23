@@ -75,3 +75,43 @@ names keep their fingerprint).
 Files changed: `spyswat/swat_calib/scenarios/signature.py` (new),
 `spyswat/swat_calib/scenarios/batch.py`, `tests/test_scenario_signature.py` (new),
 `.agents/log/PAR-2.md`.
+
+## 2026-11-23 — full suite + handoff
+
+```
+$ python -m pytest tests/ -q
+430 passed, 11 skipped, 5 warnings, 24 subtests passed in 276.96s (0:04:36)
+```
+
+`git diff --check main...HEAD` → exit 0 (no output).
+`git diff --stat main...HEAD`:
+
+```
+.agents/log/PAR-2.md                      |  77 +++++++++++++++++++
+.agents/tasks/PAR-2.md                    |  67 ++++++++++++++++
+spyswat/swat_calib/scenarios/batch.py     |  14 ++++
+spyswat/swat_calib/scenarios/signature.py |  37 +++++++++
+tests/test_scenario_signature.py          | 124 ++++++++++++++++++++++++++++++
+5 files changed, 319 insertions(+)
+```
+
+Acceptance criteria (PAR-2 §Acceptance):
+- [x] RED first: failure lines above (`ModuleNotFoundError`, `DID NOT RAISE ValueError` ×2).
+- [x] Fingerprint changes on new / deleted / resized / re-written input file.
+- [x] Fingerprint unchanged for `output.rch` / `output.std` / `watout.dat` / manifest.
+- [x] `resume=True` after editing a scenario `txinout_dir` (and the project TxtInOut for
+      `txinout_dir=None`) → ValueError naming the scenario; `resume=False` runs it again.
+- [x] 0.2.6 `.signature.json` without `scenario_inputs` → resume works, one INFO line.
+- [x] Full suite 0 failed; `git diff --check main...HEAD` clean.
+
+Notes for the Reviewer / Docs Updater (`docs_impact: yes`, but `README*` / `docs/**` are
+outside this task's scope):
+- `README.md` line ~553 (`resume = True, # skip jobs ...`) and ~566 (table row
+  "`resume=True` | Skip finished jobs; raises if outputs, metrics, observations or a
+  definition changed") should mention edited scenario TxtInOut *inputs*.
+- `batch.py` job loop, `_prepare_dispatch`, `_extract_dispatch` and
+  `workingFolder_manager.py` are untouched, so PAR-1's dispatch-loop rewrite should not
+  conflict; the two added hunks in `new_sig` / `merged` are adjacent to
+  `"scenarios"` / `"param_sets"` lines only.
+
+Files changed: `.agents/log/PAR-2.md` (this entry) only.
