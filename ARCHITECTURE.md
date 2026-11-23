@@ -1,6 +1,6 @@
 # SpySWAT — Kiến trúc và Hướng dẫn Kỹ thuật
 
-> Phiên bản: 0.2.6 + các thay đổi chưa phát hành | Cập nhật: 2026-11-20
+> Phiên bản: 0.2.6 | Cập nhật: 2026-11-21
 >
 > Các mục mới: luồng chạy an toàn (2.3, 3.1, 3.2), ScenarioBatch (3.7), quyết định 5.6 và 5.8 → 5.13.
 

@@ -12,6 +12,7 @@ data
 main_test.py
 main.py
 logs/
+pytest-cache-files-*/
 
 # Agent workflow (docs/agents/): worktrees, locks, index cache and bot scratch are never committed
 .wt/

@@ -998,4 +998,4 @@ SpySWAT/
 
 ---
 
-*SpySWAT v0.2.6 + unreleased changes · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*
+*SpySWAT v0.2.6 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*

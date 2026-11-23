@@ -1,6 +1,8 @@
 [project]
 name = "SpySWAT"
-version = "0.2.5"
+version = "0.2.6"
+description = "Calibration, validation, sensitivity analysis and scenario runs for SWAT models"
+readme = "README.md"
 
 authors = [
     { name = "Wosonday" }
@@ -31,6 +33,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["spyswat"]
+
+# Ship only the package, tests, samples and user docs (no IDE files, agent notebook,
+# SWAT executable, local parameter files or pytest temp dirs).
+[tool.hatch.build.targets.sdist]
+include = [
+    "/spyswat",
+    "/tests",
+    "/docs/sample_*.py",
+    "/README.md",
+    "/README_VI.md",
+    "/CHANGELOG.md",
+    "/ARCHITECTURE.md",
+]
+exclude = ["__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
