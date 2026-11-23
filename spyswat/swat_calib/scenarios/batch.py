@@ -449,11 +449,16 @@ class ScenarioBatch:
 
         def save(final: bool = False) -> None:
             """metrics.csv first, then summary.csv (an 'ok' row never lacks its metrics)."""
-            # rows are filled in completion order; keep summary.csv in plan order so the
-            # file layout is stable regardless of how jobs finish.
+            nonlocal metrics_df
+            # rows are filled in completion order; keep summary.csv and metrics.csv in
+            # plan order so the file layout is stable regardless of how jobs finish.
             ordered_rows = sorted(rows.values(),
                                   key=lambda r: job_order.get(r["job_id"], len(jobs)))
             summary_df = pd.DataFrame(ordered_rows, columns=SUMMARY_COLS)
+            if not metrics_df.empty:
+                metrics_df = (metrics_df.assign(_ord=metrics_df["job_id"].map(job_order))
+                              .sort_values("_ord", kind="stable")
+                              .drop(columns="_ord").reset_index(drop=True))
             if final:
                 stamp = time.strftime("%Y%m%d_%H%M%S")
                 for df, path in ((metrics_df, metrics_path), (summary_df, summary_path)):
@@ -504,7 +509,6 @@ class ScenarioBatch:
             return str(j.scenario.txinout_dir or base_default)
 
         sched = Scheduler(todo, base_of, n_parallel)
-        bad_bases: set = set()
         setup_errors: Dict[str, str] = {}
 
         done = 0
@@ -560,110 +564,109 @@ class ScenarioBatch:
         def _mark_base_bad(j: Job, seed_error: str) -> str:
             base = base_of(j)
             msg = f"setup of {base} failed: {seed_error[len(_SEED_FAILED_PREFIX):]}"
-            if base not in bad_bases:
-                bad_bases.add(base)
+            if not sched.is_base_bad(base):
+                sched.mark_base_bad(base)
                 setup_errors[base] = msg
                 logger.error("[Scenarios] %s", msg)
             return msg
 
-        executor = concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel)
-        futures: dict = {}
+        if todo:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel)
+            futures: dict = {}
+            results_since_save = 0
+            last_save = time.perf_counter()
 
-        def _dispatch(slot_idx: int) -> None:
-            while True:
-                j, reseed = sched.take(slot_idx)
-                if j is None:
+            def _dispatch(slot_idx: int) -> None:
+                while True:
+                    j, reseed = sched.take(slot_idx)
+                    if j is None:
+                        return
+                    base = base_of(j)
+                    if sched.is_base_bad(base):
+                        _record_failure(j, setup_errors[base])
+                        sched.finish(slot_idx, ok=False)
+                        continue
+                    slot_dir = str(work_dir / f"TxInOut{slot_idx + 1}")
+                    wd = j.scenario.weather_dir
+                    overlay = ({f.name: str(f) for f in sorted(Path(wd).iterdir())
+                                if f.is_file()} if wd else None)
+                    extract = partial(
+                        _extract_dispatch,
+                        jobs={slot_dir: (j.job_id, j.scenario.evaluate)},
+                        outputs=outs, series_dir=str(series_dir),
+                        observed=(obs_payload if j.scenario.evaluate else None),
+                        metrics=tuple(metrics))
+                    prepare = partial(
+                        _prepare_dispatch,
+                        cio_by_dir={slot_dir: j.scenario.cio} if j.scenario.cio else {})
+                    fut = executor.submit(
+                        _seed_and_run, slot_dir, base, reseed, str(swat_exe),
+                        j.param_set.updates, param_file, overlay, prepare, extract,
+                        runner, timeout_s, None)
+                    futures[fut] = (slot_idx, j)
                     return
-                base = base_of(j)
-                if base in bad_bases:
-                    _record_failure(j, setup_errors[base])
-                    sched.finish(slot_idx, ok=False)
-                    continue
-                slot_dir = str(work_dir / f"TxInOut{slot_idx + 1}")
-                wd = j.scenario.weather_dir
-                overlay = ({f.name: str(f) for f in sorted(Path(wd).iterdir())
-                            if f.is_file()} if wd else None)
-                extract = partial(
-                    _extract_dispatch,
-                    jobs={slot_dir: (j.job_id, j.scenario.evaluate)},
-                    outputs=outs, series_dir=str(series_dir),
-                    observed=(obs_payload if j.scenario.evaluate else None),
-                    metrics=tuple(metrics))
-                prepare = partial(
-                    _prepare_dispatch,
-                    cio_by_dir={slot_dir: j.scenario.cio} if j.scenario.cio else {})
-                fut = executor.submit(
-                    _seed_and_run, slot_dir, base, reseed, str(swat_exe),
-                    j.param_set.updates, param_file, overlay, prepare, extract,
-                    runner, timeout_s, None)
-                futures[fut] = (slot_idx, j)
-                return
 
-        def _record_result(j: Job, slot_idx: int, w: WorkerResult) -> None:
-            if w is not None and w.ok and isinstance(w.payload, dict):
-                _record_success(j, w)
-                sched.finish(slot_idx, ok=True)
-            elif w is not None and not w.ok and w.error \
-                    and w.error.startswith(_SLOT_LOCKED_PREFIX):
-                sched.mark_slot_unusable(slot_idx)
-                sched.finish(slot_idx, ok=False)
-                _record_failure(j, w.error, w.duration_s)
-            elif w is not None and not w.ok and w.error \
-                    and w.error.startswith(_SEED_FAILED_PREFIX):
-                sched.finish(slot_idx, ok=False)
-                _record_failure(j, _mark_base_bad(j, w.error), w.duration_s)
-                for dj in sched.drain_bad_base_jobs():
-                    _record_failure(dj, setup_errors[base_of(dj)])
-            else:
+            def _record_result(j: Job, slot_idx: int, w: WorkerResult) -> int:
+                if w is not None and w.ok and isinstance(w.payload, dict):
+                    _record_success(j, w)
+                    sched.finish(slot_idx, ok=True)
+                    return 1
+                if w is not None and not w.ok and w.error \
+                        and w.error.startswith(_SLOT_LOCKED_PREFIX):
+                    sched.mark_slot_unusable(slot_idx)
+                    sched.finish(slot_idx, ok=False)
+                    _record_failure(j, w.error, w.duration_s)
+                    return 1
+                if w is not None and not w.ok and w.error \
+                        and w.error.startswith(_SEED_FAILED_PREFIX):
+                    sched.finish(slot_idx, ok=False)
+                    _record_failure(j, _mark_base_bad(j, w.error), w.duration_s)
+                    drained = sched.drain_bad_base_jobs()
+                    for dj in drained:
+                        _record_failure(dj, setup_errors[base_of(dj)])
+                    return 1 + len(drained)
                 sched.finish(slot_idx, ok=False)
                 if w is not None and w.ok:
                     msg = "worker returned no result payload"
                 else:
                     msg = w.error if w is not None else "worker returned no result payload"
                 _record_failure(j, msg, w.duration_s if w else 0.0)
+                return 1
 
-        results_since_save = 0
-        last_save = time.perf_counter()
-
-        try:
-            for slot_idx in range(n_parallel):
-                _dispatch(slot_idx)
-
-            while sched.has_pending() or futures:
-                if not futures:
-                    # every slot is unusable: fail the rest with one message
-                    for dj in sched.drain_all_pending():
-                        _record_failure(dj, _ALL_UNUSABLE_MSG)
-                    break
-                done_futures, _ = concurrent.futures.wait(
-                    futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                for fut in done_futures:
-                    slot_idx, j = futures.pop(fut)
-                    try:
-                        w = fut.result()
-                    except Exception as exc:  # noqa: BLE001 - broken pool / unpicklable
-                        w = WorkerResult(False, f"{type(exc).__name__}: {exc}", 0.0, "", None)
-                    _record_result(j, slot_idx, w)
-                    results_since_save += 1
-                    logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
-                                time.perf_counter() - t_all)
+            try:
+                for slot_idx in range(n_parallel):
                     _dispatch(slot_idx)
-                if results_since_save >= n_parallel or \
-                        time.perf_counter() - last_save >= _SAVE_INTERVAL_S:
-                    save()
-                    results_since_save = 0
-                    last_save = time.perf_counter()
-        except KeyboardInterrupt:
-            executor.shutdown(wait=False, cancel_futures=True)
-            save(final=True)
-            raise
-        else:
-            executor.shutdown(wait=True)
 
-        if not metrics_df.empty:
-            metrics_df = (metrics_df.assign(_ord=metrics_df["job_id"].map(job_order))
-                          .sort_values("_ord", kind="stable")
-                          .drop(columns="_ord").reset_index(drop=True))
+                while sched.has_pending() or futures:
+                    if not futures:
+                        # every slot is unusable: fail the rest with one message
+                        for dj in sched.drain_all_pending():
+                            _record_failure(dj, _ALL_UNUSABLE_MSG)
+                        break
+                    done_futures, _ = concurrent.futures.wait(
+                        futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for fut in done_futures:
+                        slot_idx, j = futures.pop(fut)
+                        try:
+                            w = fut.result()
+                        except Exception as exc:  # noqa: BLE001 - broken pool / unpicklable
+                            w = WorkerResult(False, f"{type(exc).__name__}: {exc}", 0.0, "", None)
+                        results_since_save += _record_result(j, slot_idx, w)
+                        logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
+                                    time.perf_counter() - t_all)
+                        _dispatch(slot_idx)
+                    if results_since_save >= n_parallel or \
+                            time.perf_counter() - last_save >= _SAVE_INTERVAL_S:
+                        save()
+                        results_since_save = 0
+                        last_save = time.perf_counter()
+            except BaseException:
+                executor.shutdown(wait=False, cancel_futures=True)
+                save(final=True)
+                raise
+            else:
+                executor.shutdown(wait=True)
+
         save(final=True)
         ordered = [results[j.job_id] for j in jobs]
         ids = [r.job_id for r in ordered]

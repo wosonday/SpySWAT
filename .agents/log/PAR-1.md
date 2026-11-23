@@ -141,3 +141,25 @@ Append-only. Correct a mistake by adding a new entry below it.
     (coverage only; they lock in the existing behaviour).
 - Files changed: `tests/test_scenarios.py`.
 - Previous commit: `2f6ef4a`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 7/N — rework round 1: fix (green)
+- `spyswat/swat_calib/scenarios/batch.py`:
+  - Major 1: `except KeyboardInterrupt:` → `except BaseException:` — the pool is shut down
+    (`wait=False, cancel_futures=True`) and `save(final=True)` runs on every exit path, then
+    the exception is re-raised (`else: executor.shutdown(wait=True)`).
+  - Major 2: `_mark_base_bad` now calls `sched.mark_base_bad(base)` and checks
+    `sched.is_base_bad(base)`; the duplicate local `bad_bases` set is removed; `_dispatch`
+    uses `sched.is_base_bad`. `_record_result` returns the number of results recorded
+    (including the drained bad-base jobs) so `results_since_save` counts them and a periodic
+    save is not skipped after a drain.
+  - Minor 1: metrics sorting moved into `save()` (before writing) so interrupted / periodic
+    saves also write `metrics.csv` in plan order; the post-loop sort was removed.
+  - Minor 3: the pool/dispatch loop is guarded by `if todo:` — nothing left to run means no
+    `ProcessPoolExecutor` is constructed.
+- Committed the review `.agents/reviews/PAR-1-1.md` unchanged (as received).
+- GREEN: `pytest tests/test_scenarios.py tests/test_scenario_scheduler.py -q` → 31 passed.
+  `pytest tests/test_scenarios.py -k "exception_mid_batch or no_pool_when or reseeds_slot or
+  locked_slot" -q` → 4 passed.
+- Files changed: `spyswat/swat_calib/scenarios/batch.py`, `.agents/reviews/PAR-1-1.md` (new,
+  unchanged), `.agents/log/PAR-1.md`.
+- Previous commit: `a3fdb78`
