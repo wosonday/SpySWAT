@@ -28,6 +28,7 @@ from spyswat.swat_calib.io import FileCIO
 
 from .model import Job, ParamSet, RunResult, Scenario
 from .scheduler import Scheduler
+from .signature import txinout_fingerprint
 
 logger = Logger.get_logger(__name__)
 
@@ -280,6 +281,13 @@ class ScenarioBatch:
         for kind in ("scenarios", "param_sets"):
             o, n = old.get(kind, {}), new.get(kind, {})
             out += [f"{kind[:-1]} {name!r} changed" for name in n if name in o and o[name] != n[name]]
+        old_in, new_in = old.get("scenario_inputs"), new.get("scenario_inputs", {})
+        if old_in is None:      # results written by 0.2.6: no fingerprints to compare
+            logger.info("[Scenarios] cannot verify that scenario TxtInOut inputs are "
+                        "unchanged (results written by an older version)")
+        else:
+            out += [f"scenario {name!r} inputs changed"
+                    for name in new_in if name in old_in and old_in[name] != new_in[name]]
         return out
 
     def _check_observation_steps(self, jobs: List[Job], observed) -> None:
@@ -418,6 +426,10 @@ class ScenarioBatch:
             "observed": {f"{k[0]}@{int(k[1])}": _series_hash(ser)
                          for k, ser in (observed or {}).items()},
             "scenarios": {j.scenario.name: _scenario_sig(j.scenario) for j in jobs},
+            "scenario_inputs": {name: txinout_fingerprint(directory)
+                                for name, directory in
+                                {j.scenario.name: j.scenario.txinout_dir or base_default
+                                 for j in jobs}.items()},
             "param_sets": {j.param_set.name: _param_sig(j.param_set) for j in jobs},
         }
         old_sig = None
@@ -438,6 +450,8 @@ class ScenarioBatch:
         merged = dict(new_sig)
         if old_sig is not None and not diff:   # keep definitions of names not in this call
             merged["scenarios"] = {**old_sig.get("scenarios", {}), **new_sig["scenarios"]}
+            merged["scenario_inputs"] = {**old_sig.get("scenario_inputs", {}),
+                                         **new_sig["scenario_inputs"]}
             merged["param_sets"] = {**old_sig.get("param_sets", {}), **new_sig["param_sets"]}
         tmp_sig = sig_path.with_name(sig_path.name + ".tmp")
         tmp_sig.write_text(json.dumps(merged, sort_keys=True), encoding="utf-8")
