@@ -83,3 +83,19 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Decision: kept `summary.csv`/`metrics.csv` in plan order even though rows arrive in
   completion order, to honour "files written stay exactly as today".
 - Previous commit: `e3e3d03`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 4/N — verification
+- Re-ran after the plan-order fix for `summary.csv`/`metrics.csv`.
+- `pytest tests/test_scenarios.py -q` → 20 passed, ×3 runs in a row (timing tests stable).
+- `pytest tests/ -q` → **347 passed / 11 skipped / 0 failed** (336 baseline + 11 new),
+  174 s; 5 pre-existing warnings.
+- `git diff --check main...HEAD` → 0; `git status` clean.
+- Files changed in this task (committed): `.agents/tasks/PAR-1.md`,
+  `.agents/decisions/PAR-1.md`, `.agents/log/PAR-1.md`,
+  `spyswat/swat_calib/scenarios/batch.py`,
+  `spyswat/swat_calib/scenarios/scheduler.py` (new),
+  `tests/test_scenario_scheduler.py` (new), `tests/test_scenarios.py`.
+- Product diff (tests excluded): batch.py 216+/99- + scheduler.py 94 new = 409 lines
+  (slightly over the "~400" soft target; flagged rather than trimming readability).
+- Acceptance criteria: all checked except the line-count target is 409 vs "under ~400".
+- Previous commit: `1e307f1`
