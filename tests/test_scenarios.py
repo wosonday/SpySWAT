@@ -129,7 +129,7 @@ def fake_runner(worker_dir: str) -> None:
 
 
 # CN2 value → sleep duration for the timing runner (long job vs short jobs).
-_TIMING_SLEEP = {35.0: 0.6, 40.0: 1.8, 50.0: 0.6, 60.0: 0.6, 70.0: 0.6}
+_TIMING_SLEEP = {35.0: 0.6, 40.0: 2.4, 50.0: 0.6, 60.0: 0.6, 70.0: 0.6}
 
 
 def timing_runner(worker_dir: str) -> None:
@@ -163,6 +163,39 @@ def marker_runner(worker_dir: str) -> None:
     if log:
         with open(f"{log}.{wd.name}", "a") as fh:
             fh.write(f"{wd.name}|A={a}|B={b}\n")
+
+
+# CN2 → sleep for completion_runner: a later-plan job finishes before an earlier one.
+_COMPLETION_SLEEPS = {35.0: 2.0, 40.0: 0.5}
+
+
+def completion_runner(worker_dir: str) -> None:
+    """fake_runner with per-CN2 sleeps so a later-plan job finishes before an earlier one."""
+    cn2 = read_cn2(worker_dir)
+    time.sleep(_COMPLETION_SLEEPS.get(cn2, 0.5))
+    fake_runner(worker_dir)
+
+
+def leftover_runner(worker_dir: str) -> None:
+    """The failing job (CN2=77) leaves ``leftover.tmp``; the next job must not see it."""
+    wd = Path(worker_dir)
+    leftover = wd / "leftover.tmp"
+    if read_cn2(worker_dir) == 77.0:
+        leftover.write_text("junk")
+        raise RuntimeError("injected failure")
+    if leftover.exists():
+        raise RuntimeError("leftover leaked into the next job")
+    fake_runner(worker_dir)
+
+
+# open handles (worker process only) keep output.rch locked so a reseed cannot remove the slot.
+_LOCKED_HANDLES = []
+
+
+def lock_runner(worker_dir: str) -> None:
+    """fake_runner that keeps output.rch open so a later reseed cannot remove the slot."""
+    fake_runner(worker_dir)
+    _LOCKED_HANDLES.append(open(Path(worker_dir) / "output.rch", "rb"))
 
 
 def trace_lines(log: Path) -> list:
@@ -582,3 +615,88 @@ def test_bad_base_fails_its_jobs_others_ok(env, tmp_path):
     assert ok == ["good__p_none", "good__p_v60"]
     assert [r.job_id for r in failed] == ["bad__p_none", "bad__p_v60"]
     assert all("setup of" in r.error and "BAD" in r.error for r in failed)
+
+
+# ── rework round 1: exit-path saving, reseed isolation, locked slots ──
+
+def test_exception_mid_batch_saves_finished_rows_and_resume_skips(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    obs_idx = pd.date_range("2000-01-01", "2001-12-31", freq="D")
+    obs = pd.Series(expected(35.0, 10.0, 1, 731), index=obs_idx)
+    params = [ParamSet("p0", {"CN2.mgt": [(35, "v")]}),   # slow (2.0 s)
+              ParamSet("p1", {"CN2.mgt": [(40, "v")]})]    # fast (0.5 s): finishes first
+    res_dir = tmp_path / "res"
+    batch = ScenarioBatch(make_project(env, n=2), res_dir)
+
+    real = bmod._atomic_csv
+    state = {"raised": False}
+
+    def boom(df, path):
+        if not state["raised"] and Path(path).name == "metrics.csv":
+            state["raised"] = True
+            raise RuntimeError("boom")
+        return real(df, path)
+
+    monkeypatch.setattr(bmod, "_atomic_csv", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        batch.run([Scenario("base")], params,
+                  outputs={"FLOW_OUTcms": [1]},
+                  observed={("FLOW_OUTcms", 1): obs}, metrics=("nse",),
+                  runner=completion_runner)
+    s = pd.read_csv(res_dir / "summary.csv")
+    assert list(s["job_id"]) == ["base__p0", "base__p1"]
+    assert list(s["status"]) == ["ok", "ok"]
+    m = pd.read_csv(res_dir / "metrics.csv")
+    assert list(m["job_id"]) == ["base__p0", "base__p1"]      # plan order, not completion order
+    out2 = batch.run([Scenario("base")], params,
+                     outputs={"FLOW_OUTcms": [1]},
+                     observed={("FLOW_OUTcms", 1): obs}, metrics=("nse",),
+                     runner=completion_runner)
+    assert [r.status for r in out2.results] == ["skipped", "skipped"]
+
+
+def test_no_pool_when_everything_resumed(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    res_dir = tmp_path / "res"
+    batch = ScenarioBatch(make_project(env), res_dir)
+    batch.run([Scenario("base")], PARAMS[:1], outputs=OUTS, runner=fake_runner)
+
+    calls = []
+
+    def boom(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("pool must not start when nothing to run")
+
+    monkeypatch.setattr(bmod.concurrent.futures, "ProcessPoolExecutor", boom)
+    out = batch.run([Scenario("base")], PARAMS[:1], outputs=OUTS, runner=fake_runner)
+    assert calls == []
+    assert [r.status for r in out.results] == ["skipped"]
+
+
+def test_failed_job_reseeds_slot_before_next_job(env, tmp_path):
+    wet = make_weather(tmp_path, "wet", "30.0")
+    scen = [Scenario("wet", weather_dir=wet)]
+    params = [ParamSet("p_bad", {"CN2.mgt": [(77, "v")]}),
+              ParamSet("p_ok")]
+    out = ScenarioBatch(make_project(env, n=1), tmp_path / "res").run(
+        scen, params, outputs=OUTS, runner=leftover_runner)
+    assert [r.status for r in out.results] == ["failed", "ok"]
+    assert "injected failure" in out.results[0].error
+
+
+@pytest.mark.skipif(os.name != "nt", reason="relies on Windows open-file locking")
+def test_locked_slot_unusable_then_remaining_fail_with_message(env, tmp_path):
+    base_a = build_txinout(tmp_path, "A")
+    base_b = build_txinout(tmp_path, "B")
+    base_c = build_txinout(tmp_path, "C")
+    scen = [Scenario("a", txinout_dir=base_a),
+            Scenario("b", txinout_dir=base_b),
+            Scenario("c", txinout_dir=base_c)]
+    out = ScenarioBatch(make_project(env, n=1), tmp_path / "res").run(
+        scen, [ParamSet("p")], outputs=OUTS, runner=lock_runner)
+    assert [r.job_id for r in out.results] == ["a__p", "b__p", "c__p"]
+    assert out.results[0].status == "ok"
+    assert out.results[1].status == "failed"
+    assert "slot locked" in out.results[1].error
+    assert out.results[2].status == "failed"
+    assert "no usable worker folder" in out.results[2].error

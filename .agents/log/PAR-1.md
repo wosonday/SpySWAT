@@ -111,3 +111,33 @@ Append-only. Correct a mistake by adding a new entry below it.
   test_scenario_scheduler.py (new), test_scenarios.py, + .agents task/decision/log.
   `pytest tests/ -q` → 347 passed / 11 skipped / 0 failed.
 - Previous commit: `ebcf6df`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 6/N — rework round 1: RED tests
+- Review `.agents/reviews/PAR-1-1.md` (verdict FAIL: 3 Major, 4 Minor). Rework fixes Major 1, 2,
+  3, Minor 1, 3, 4; Minor 2 (409-line diff) accepted unchanged.
+- TDD red→green: added the failing tests before touching product code.
+- `tests/test_scenarios.py`:
+  - new module-level runners `completion_runner` / `leftover_runner` / `lock_runner`.
+  - `test_exception_mid_batch_saves_finished_rows_and_resume_skips` (Major 1 + Minor 1):
+    a non-KeyboardInterrupt exception mid-batch must save the finished rows (summary.csv +
+    metrics.csv in plan order) and `resume=True` must skip them.
+  - `test_no_pool_when_everything_resumed` (Minor 3): a resume run with nothing left must
+    not construct a `ProcessPoolExecutor`.
+  - `test_failed_job_reseeds_slot_before_next_job` (Major 3b): a failed job's leftover file
+    must not reach the next job on the same slot (n_parallel=1).
+  - `test_locked_slot_unusable_then_remaining_fail_with_message` (Major 3c): a slot whose
+    folder cannot be removed becomes unusable and the remaining jobs fail with the
+    all-unusable message (Windows open-file locking).
+  - Minor 4: `_TIMING_SLEEP` long job 1.8 s → 2.4 s (wider CI margin).
+- RED failure lines on HEAD `2f6ef4a` (`pytest tests/test_scenarios.py -k
+  "exception_mid_batch or no_pool_when or reseeds_slot or locked_slot" -q` → 2 failed / 2 passed):
+  - `test_exception_mid_batch_saves_finished_rows_and_resume_skips` — `FileNotFoundError:
+    [Errno 2] ...\\res\\summary.csv` (Major 1: a non-KeyboardInterrupt exception left the
+    finished rows unsaved).
+  - `test_no_pool_when_everything_resumed` — `RuntimeError: pool must not start when nothing
+    to run` (Minor 3: the pool is still constructed when `todo` is empty).
+  - `test_failed_job_reseeds_slot_before_next_job` and
+    `test_locked_slot_unusable_then_remaining_fail_with_message` PASS on the current code
+    (coverage only; they lock in the existing behaviour).
+- Files changed: `tests/test_scenarios.py`.
+- Previous commit: `2f6ef4a`
