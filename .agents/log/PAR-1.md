@@ -178,3 +178,24 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Done. No `agm send` / `hc send` per rework instructions; pointer for the manager: branch
   `feat/PAR-1` at `8c76920`.
 - Previous commit: `8c76920`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 9/N — rework round 2: brief
+- Review `.agents/reviews/PAR-1-2.md` (FAIL: 2 Major, 2 Minor) and the "Round 3 fix spec"
+  at the end of `.agents/decisions/PAR-1.md`. Implement exactly items 1-5 + tests a-c.
+- Skill: `tdd` (only). Shell: one plain command per call from the worktree root.
+- Committed (unchanged, as received/written): `.agents/reviews/PAR-1-2.md` (new),
+  `.agents/decisions/PAR-1.md` (Round 3 fix spec appended by the Architect).
+- Fix plan (items 1-5, `spyswat/swat_calib/scenarios/batch.py`):
+  1. Harvest every `done_futures` future first (collect freed slot indexes), dispatch only
+     after the harvest loop.
+  2. `BrokenProcessPool` → results, not an exception: record the broken job, stop
+     dispatching, drain remaining futures + pending jobs with a "worker pool broke (...)"
+     message, return the `BatchResult`; shutdown on the normal path.
+  3. `weather_dir` overlay listing `OSError` → record that job failed
+     (`"weather_dir unreadable: <error>"`), `sched.finish(slot_idx, ok=False)`, continue.
+  4. `except BaseException:` → keep `shutdown(wait=False, cancel_futures=True)`, then
+     `save(final=True)` inside `try/except Exception` (log WARNING), then re-raise.
+  5. Remove the unreachable `sched.is_base_bad` branch in `_dispatch`; keep
+     `Scheduler.is_base_bad` for the unit test.
+- Tests a-c (RED first), fake runners only, in `tests/test_scenarios.py`.
+- Previous commit: `b7ce905`

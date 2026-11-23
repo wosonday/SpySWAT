@@ -81,3 +81,37 @@ correct and tested; failures stay per job (design rule 5).
 - **tasks:** PAR-1 (`worker-strong`, `opencode-go/deepseek-v4-pro`, skills
   `test-driven-development, verification-before-completion`); review by a different family
   (`agy` Argon High fallback, 23% week left). Docs via Hydrogen; merge via `copilot-git`.
+
+## Round 3 fix spec (Architect, 2026-11-24; extra round approved by the user)
+
+Review `.agents/reviews/PAR-1-2.md` (FAIL, Major 1-2 confirmed by the Architect). Fix exactly:
+
+1. **Harvest, then dispatch.** In the main loop, first record **every** future in `done_futures`
+   (collect the freed slot indexes), and only after that loop call `_dispatch` for the freed
+   slots. Nothing that can raise runs between two harvests.
+2. **Broken pool = results, not an exception** (same rule as a failed job: never raises).
+   If any `fut.result()` raises `concurrent.futures.process.BrokenProcessPool`: record that job
+   failed with the error text, stop dispatching, harvest all remaining futures (each recorded
+   as failed with the same text), fail every pending job with
+   `"worker pool broke (<error>); re-run with resume=True"`, then leave the loop normally and
+   return the `BatchResult`. Shut the pool down as on the normal path.
+3. **A job's overlay cannot abort the batch.** In `_dispatch`, listing `weather_dir` that raises
+   `OSError` records that job as failed (`"weather_dir unreadable: <error>"`), calls
+   `sched.finish(slot_idx, ok=False)` (slot state stays consistent: it is reseeded before its
+   next job) and continues with the next pending job.
+4. **Emergency save never masks.** In `except BaseException:` keep `shutdown(wait=False,
+   cancel_futures=True)`, then `save(final=True)` inside `try/except Exception` that only logs a
+   WARNING, then re-raise the original exception. The normal-exit `save(final=True)` is unchanged
+   (`test_fallback_write_failing_too_raises` must stay green).
+5. Remove the unreachable `sched.is_base_bad` branch in `_dispatch` (drain happens in
+   `_record_result`); keep `Scheduler.is_base_bad` for the unit test.
+
+Tests (RED first), fake runners only:
+- (a) 4 jobs, `n_parallel=2`, the runner of job 2 calls `os._exit(1)`: `run()` returns; finished
+  jobs `ok`; the killed job and the rest `failed` with `BrokenProcessPool`/`pool broke`; a second
+  `run(resume=True)` with a normal runner runs only the not-ok jobs.
+- (b) `KeyboardInterrupt` injected in the parent while jobs are still pending/running
+  (e.g. monkeypatch `concurrent.futures.wait` to raise on its 2nd call) **and** `_atomic_csv`
+  always raising `OSError`: `pytest.raises(KeyboardInterrupt)` — the original exception wins.
+- (c) one scenario whose `weather_dir` is deleted after planning: its jobs `failed` with
+  `weather_dir unreadable`, other jobs `ok`, no exception.
