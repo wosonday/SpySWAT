@@ -320,3 +320,19 @@ Append-only. Correct a mistake by adding a new entry below it.
   (27 + 1 new).
 - Files changed: `spyswat/swat_calib/scenarios/batch.py`.
 - Previous commit: `199e023`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 16/N — rework round 3: verification
+- `python -m pytest tests/ -q` → **355 passed / 11 skipped / 0 failed** (354 baseline + 1 new)
+  in 176.84 s; 5 pre-existing warnings.
+- `python -m pytest tests/test_scenarios.py -q` → **28 passed** three times in a row
+  (92.69 s, 92.85 s, 94.41 s) — timing, broken-pool and drain tests stable.
+- `git diff --check main...HEAD` → clean; `git status` clean after commit.
+- Product diff (tests excluded): `batch.py` +13/-4 (items 1-2 only).
+- Files changed this rework: `spyswat/swat_calib/scenarios/batch.py`,
+  `tests/test_scenarios.py`, `.agents/reviews/PAR-1-3.md` (committed unchanged),
+  `.agents/decisions/PAR-1.md` (Round 4 correction, committed unchanged),
+  `.agents/log/PAR-1.md`.
+- Done. No `agm send` / `hc send` per the rework instructions; pointer for the manager:
+  branch `feat/PAR-1` at `9dfbbbf`. Items 1-3 of the Round 4 correction implemented and
+  verified; nothing else changed.
+- Previous commit: `9dfbbbf`
