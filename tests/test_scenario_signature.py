@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,32 @@ def test_fingerprint_ignores_swat_outputs_and_manifest(tmp_path):
                        ("watout.dat", "dat\n"), (".spyswat_manifest.json", "{}")):
         (d / name).write_text(text)
     assert txinout_fingerprint(d) == before
+
+
+def test_fingerprint_of_a_missing_directory_is_a_stable_sentinel(tmp_path):
+    from spyswat.swat_calib.scenarios.signature import txinout_fingerprint
+
+    missing = tmp_path / "gone"                     # never created
+    first = txinout_fingerprint(missing)
+    assert first == "unreadable:FileNotFoundError"
+    assert txinout_fingerprint(missing) == first
+    assert txinout_fingerprint(str(missing)) == first
+
+
+def test_missing_scenario_base_fails_only_its_own_jobs(env, tmp_path):
+    good = build_txinout(tmp_path, "LUC", cn2="50.00")
+    gone = build_txinout(tmp_path, "GONE", cn2="60.00")
+    scen = [Scenario("luc", txinout_dir=good), Scenario("gone", txinout_dir=gone)]
+    shutil.rmtree(gone)                             # base deleted after the Scenario was built
+    batch = ScenarioBatch(make_project(env), tmp_path / "res")
+
+    out = batch.run(scen, PARAMS[:1], outputs=OUTS, runner=fake_runner)
+
+    by = {r.scenario: r for r in out.results}
+    assert by["luc"].status == "ok"                 # a broken base does not stop the batch
+    assert by["gone"].status == "failed"
+    assert "setup of" in by["gone"].error
+    assert [r.job_id for r in out.failed] == ["gone__p_none"]
 
 
 def test_resume_raises_when_a_scenario_input_changed(env, tmp_path):

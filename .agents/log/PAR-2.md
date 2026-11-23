@@ -125,3 +125,54 @@ rejected), and `--force` is forbidden, so the branch is ready but the Manager ha
 notified. Branch `feat/PAR-2`, HEAD after this commit, working tree clean.
 
 Files changed: `.agents/log/PAR-2.md` (this entry) only.
+
+## 2026-11-23 — rework round 1 (`.agents/reviews/PAR-2-1.md`, FAIL, 1 Major)
+
+Finding addressed: **Major 1 — a missing scenario base aborted the whole batch**.
+`txinout_fingerprint()` raised `FileNotFoundError` while `batch.py` built `new_sig`, before
+any job ran; `main` only failed that scenario's own jobs (`setup of <base> failed: ...`).
+
+RED first (two new tests in `tests/test_scenario_signature.py`, implementation unchanged):
+
+```
+$ python -m pytest ".../test_fingerprint_of_a_missing_directory_is_a_stable_sentinel" ".../test_missing_scenario_base_fails_only_its_own_jobs" -q
+FF                                                                       [100%]
+...
+    def _input_stats(directory) -> list:
+        folder = Path(directory)
+>       with os.scandir(folder) as entries:
+E       FileNotFoundError: [WinError 3] The system cannot find the path specified: '...\\gone'
+spyswat\swat_calib\scenarios\signature.py:19: FileNotFoundError
+...
+spyswat\swat_calib\scenarios\batch.py:378: in run
+    "scenario_inputs": {name: txinout_fingerprint(directory)
+E       FileNotFoundError: [WinError 3] The system cannot find the path specified: '...\\GONE'
+tests\test_scenario_signature.py::test_fingerprint_of_a_missing_directory_is_a_stable_sentinel FAILED
+tests\test_scenario_signature.py::test_missing_scenario_base_fails_only_its_own_jobs FAILED
+2 failed in 4.20s
+```
+
+GREEN: `spyswat/swat_calib/scenarios/signature.py` only — `txinout_fingerprint` wraps
+`_input_stats` in `try/except OSError` and returns the stable sentinel
+`unreadable:<ExceptionName>` (`UNREADABLE_PREFIX`); never raises, so the batch keeps going
+and the broken base fails only its own jobs. `batch.py` untouched in this round.
+
+New tests:
+- `test_fingerprint_of_a_missing_directory_is_a_stable_sentinel` — `unreadable:FileNotFoundError`,
+  identical across calls and for `str` / `Path`.
+- `test_missing_scenario_base_fails_only_its_own_jobs` — one good + one deleted base: good
+  job `ok`, bad job `failed` with `setup of` in `error`, `out.failed == ['gone__p_none']`.
+
+```
+$ python -m pytest tests/test_scenario_signature.py -q
+9 passed in 62.62s (0:01:02)
+
+$ python -m pytest tests/ -q
+432 passed, 11 skipped, 5 warnings, 24 subtests passed in 194.41s (0:03:14)
+```
+
+(430 before this round + the 2 new tests.) `git diff --check main...HEAD` → exit 0.
+`.agents/reviews/PAR-2-1.md` committed unchanged with this fix.
+
+Files changed: `spyswat/swat_calib/scenarios/signature.py`, `tests/test_scenario_signature.py`,
+`.agents/log/PAR-2.md`, `.agents/reviews/PAR-2-1.md` (reviewer file, unchanged).

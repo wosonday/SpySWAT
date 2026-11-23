@@ -12,6 +12,8 @@ from pathlib import Path
 
 from spyswat.swat_calib.core.workingFolder_manager import MANIFEST_NAME, _OUTPUT_IGNORE
 
+UNREADABLE_PREFIX = "unreadable:"
+
 
 def _input_stats(directory) -> list:
     """``(name, size, mtime_ns)`` of every regular input file directly in ``directory``."""
@@ -31,7 +33,14 @@ def txinout_fingerprint(directory) -> str:
 
     Changes when an input file is added, removed, resized or re-written (new mtime), and
     stays the same when only SWAT outputs (``output.*``, ``watout.dat``) or the worker
-    manifest change.
+    manifest change. A missing or unreadable directory never raises: it gives the stable
+    sentinel ``unreadable:<ExceptionName>``, so a batch with a broken scenario base still
+    runs its other jobs (each job's failure stays in its own result) and ``resume``
+    compares the sentinel like any other value.
     """
-    payload = json.dumps(_input_stats(directory), sort_keys=True)
+    try:
+        stats = _input_stats(directory)
+    except OSError as exc:
+        return f"{UNREADABLE_PREFIX}{type(exc).__name__}"
+    payload = json.dumps(stats, sort_keys=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
