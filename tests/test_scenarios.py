@@ -6,6 +6,7 @@ Value model (per reach r, day d):  CN2 * PCP / 100 * r + d * 0.01
 where CN2 is read from the first .mgt file and PCP from pcp1.pcp of the worker folder.
 """
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -125,6 +126,43 @@ def fake_runner(worker_dir: str) -> None:
             lines.append(_rch_line(RCH=r, MON=date.dayofyear, FLOW_OUTcms=flow,
                                    SED_OUTtons=flow * 2))
     Path(worker_dir, "output.rch").write_text("".join(lines))
+
+
+# CN2 value → sleep duration for the timing runner (long job vs short jobs).
+_TIMING_SLEEP = {35.0: 0.6, 40.0: 1.8, 50.0: 0.6, 60.0: 0.6, 70.0: 0.6}
+
+
+def timing_runner(worker_dir: str) -> None:
+    """fake_runner that sleeps by CN2 and records per-job start/end timestamps.
+
+    Timestamps are wall-clock (``time.time()``) and therefore comparable across
+    worker processes; the trace line is ``<folder>|<start>|<end>|<cn2>``.
+    """
+    cn2 = read_cn2(worker_dir)
+    start = time.time()
+    time.sleep(_TIMING_SLEEP.get(cn2, 0.6))
+    fake_runner(worker_dir)
+    end = time.time()
+    log = os.environ.get("E5_TIMING")
+    if log:
+        with open(f"{log}.{Path(worker_dir).name}", "a") as fh:
+            fh.write(f"{Path(worker_dir).name}|{start:.6f}|{end:.6f}|{cn2:.1f}\n")
+
+
+def marker_runner(worker_dir: str) -> None:
+    """fake_runner that records which base marker files the worker folder holds.
+
+    Each base TxtInOut carries a unique ``base_<name>.marker`` file; after a slot
+    is reseeded for a new base, the previous base's marker must be gone.
+    """
+    wd = Path(worker_dir)
+    a = int((wd / "base_A.marker").exists())
+    b = int((wd / "base_B.marker").exists())
+    fake_runner(worker_dir)
+    log = os.environ.get("E5_MARKER")
+    if log:
+        with open(f"{log}.{wd.name}", "a") as fh:
+            fh.write(f"{wd.name}|A={a}|B={b}\n")
 
 
 def trace_lines(log: Path) -> list:
@@ -467,3 +505,80 @@ def test_fallback_write_failing_too_raises(env, tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         ScenarioBatch(make_project(env), tmp_path / "res").run(
             [Scenario("base")], PARAMS, outputs=OUTS, runner=fake_runner)
+
+
+# ── scheduling: one pool, a job queue, no barrier between base groups ──
+
+def test_all_jobs_overlap_across_two_bases(env, tmp_path, monkeypatch):
+    log = tmp_path / "timing.log"
+    monkeypatch.setenv("E5_TIMING", str(log))
+    base_a = build_txinout(tmp_path, "A")
+    base_b = build_txinout(tmp_path, "B")
+    scen = [Scenario("a", txinout_dir=base_a), Scenario("b", txinout_dir=base_b)]
+    params = [ParamSet("p1", {"CN2.mgt": [(50, "v")]}),
+              ParamSet("p2", {"CN2.mgt": [(60, "v")]})]
+    out = ScenarioBatch(make_project(env, n=4), tmp_path / "res").run(
+        scen, params, outputs=OUTS, runner=timing_runner)
+    assert [r.status for r in out.results] == ["ok"] * 4
+    rows = [ln.split("|") for ln in trace_lines(log)]
+    assert len(rows) == 4
+    starts = [float(r[1]) for r in rows]
+    ends = [float(r[2]) for r in rows]
+    assert max(starts) < min(ends)          # all 4 jobs overlap in time
+
+
+def test_no_barrier_short_jobs_flow_while_long_runs(env, tmp_path, monkeypatch):
+    log = tmp_path / "timing.log"
+    monkeypatch.setenv("E5_TIMING", str(log))
+    params = [ParamSet("long", {"CN2.mgt": [(40, "v")]}),
+              ParamSet("s1", {"CN2.mgt": [(50, "v")]}),
+              ParamSet("s2", {"CN2.mgt": [(60, "v")]}),
+              ParamSet("s3", {"CN2.mgt": [(70, "v")]})]
+    out = ScenarioBatch(make_project(env, n=2), tmp_path / "res").run(
+        [Scenario("base")], params, outputs=OUTS, runner=timing_runner)
+    assert [r.status for r in out.results] == ["ok"] * 4
+    rows = [ln.split("|") for ln in trace_lines(log)]
+    assert len(rows) == 4
+    long_row = next(r for r in rows if float(r[3]) == 40.0)
+    shorts = [r for r in rows if float(r[3]) != 40.0]
+    long_start, long_end = float(long_row[1]), float(long_row[2])
+    # short jobs run on the other slot while the long one is still running
+    for r in shorts:
+        assert float(r[1]) < long_end, "short job must start before the long job ends"
+        assert float(r[2]) > long_start
+
+
+def test_reseed_on_base_switch_sees_only_that_bases_files(env, tmp_path, monkeypatch):
+    log = tmp_path / "marker.log"
+    monkeypatch.setenv("E5_MARKER", str(log))
+    base_a = build_txinout(tmp_path, "A")
+    base_b = build_txinout(tmp_path, "B")
+    (base_a / "base_A.marker").write_text("A")
+    (base_b / "base_B.marker").write_text("B")
+    scen = [Scenario("a1", txinout_dir=base_a), Scenario("a2", txinout_dir=base_a),
+            Scenario("b1", txinout_dir=base_b), Scenario("b2", txinout_dir=base_b)]
+    out = ScenarioBatch(make_project(env, n=2), tmp_path / "res").run(
+        scen, [ParamSet("p")], outputs=OUTS, runner=marker_runner)
+    assert [r.status for r in out.results] == ["ok"] * 4
+    rows = [ln.split("|") for ln in trace_lines(log)]
+    assert len(rows) == 4
+    for r in rows:
+        a, b = r[1].split("=")[1], r[2].split("=")[1]
+        assert (a, b) in (("1", "0"), ("0", "1"))      # exactly one base, never both
+    seen = {(r[1], r[2]) for r in rows}
+    assert ("A=1", "B=0") in seen and ("A=0", "B=1") in seen
+
+
+def test_bad_base_fails_its_jobs_others_ok(env, tmp_path):
+    import shutil
+    good = build_txinout(tmp_path, "GOOD")
+    bad = build_txinout(tmp_path, "BAD")
+    scen = [Scenario("good", txinout_dir=good), Scenario("bad", txinout_dir=bad)]
+    shutil.rmtree(bad)
+    out = ScenarioBatch(make_project(env), tmp_path / "res").run(
+        scen, PARAMS[:2], outputs=OUTS, runner=fake_runner)
+    ok = [r.job_id for r in out.results if r.status == "ok"]
+    failed = [r for r in out.results if r.status == "failed"]
+    assert ok == ["good__p_none", "good__p_v60"]
+    assert [r.job_id for r in failed] == ["bad__p_none", "bad__p_v60"]
+    assert all("setup of" in r.error and "BAD" in r.error for r in failed)
