@@ -232,3 +232,44 @@ Append-only. Correct a mistake by adding a new entry below it.
   unreadable_weather_dir" -q` → 3 failed.
 - Files changed: `tests/test_scenarios.py`.
 - Previous commit: `2f1d024`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 11/N — rework round 2: fix (green)
+- `spyswat/swat_calib/scenarios/batch.py` (items 1-5 of the Round 3 fix spec):
+  1. **Harvest, then dispatch** — the main loop collects `freed_slots` for every future in
+     `done_futures` (recording each result) and only then calls `_dispatch` per freed slot;
+     nothing that can raise runs between the two harvest phases.
+  2. **Broken pool = results** — `fut.result()` raising
+     `concurrent.futures.process.BrokenProcessPool` records that job as failed with the
+     error text, sets `broken_err`, stops dispatching, consumes + records every remaining
+     future as failed with the same text, drains the pending jobs with
+     `"worker pool broke (<error>); re-run with resume=True"`, breaks out of the loop and
+     returns the `BatchResult` (pool shut down on the normal path, `wait=True`).
+  3. **Overlay OSError cannot abort the batch** — the `weather_dir` listing in `_dispatch`
+     is wrapped; `OSError` records that job failed (`"weather_dir unreadable: <error>"`),
+     calls `sched.finish(slot_idx, ok=False)` and continues with the next pending job.
+  4. **Emergency save never masks** — `except BaseException as orig_exc:` keeps
+     `shutdown(wait=False, cancel_futures=True)`, then `save(final=True)` inside
+     `try/except Exception` that logs a WARNING, then re-raises the original exception.
+     The normal-exit `save(final=True)` is unchanged.
+  5. Removed the unreachable `sched.is_base_bad(base)` branch from `_dispatch` (drain still
+     happens in `_record_result`); `Scheduler.is_base_bad` is kept (unit test +
+     `_mark_base_bad`).
+- GREEN: the three new tests pass; full suite below.
+- Files changed: `spyswat/swat_calib/scenarios/batch.py`.
+- Previous commit: `02a12d6`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 12/N — rework round 2: verification
+- `python -m pytest tests/ -q` → **354 passed / 11 skipped / 0 failed** (351 baseline + 3 new)
+  in 168 s; 5 pre-existing warnings.
+- `python -m pytest tests/test_scenarios.py -q` → **27 passed** three times in a row
+  (87.5 s, 89.2 s, 91.2 s) — timing and broken-pool tests stable.
+- `git diff --check main...HEAD` → clean; `git status` clean after commit.
+- Product diff (tests excluded): `batch.py` +44/-10 ≈ 54 lines (items 1-5 only; the
+  ~400-line target from round 1 is unchanged elsewhere).
+- Files changed this rework: `spyswat/swat_calib/scenarios/batch.py`,
+  `tests/test_scenarios.py`, `.agents/reviews/PAR-1-2.md` (committed unchanged),
+  `.agents/decisions/PAR-1.md` (Round 3 fix spec, committed unchanged),
+  `.agents/log/PAR-1.md`.
+- Done. No `agm send` / `hc send` per rework instructions; pointer for the manager: branch
+  `feat/PAR-1` (head below).
+- Previous commit: `02a12d6`

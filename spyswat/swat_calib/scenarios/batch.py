@@ -4,6 +4,7 @@ The calling script must be guarded by ``if __name__ == "__main__":`` (Windows sp
 worker processes that re-import it).
 """
 import concurrent.futures
+from concurrent.futures.process import BrokenProcessPool
 import hashlib
 import json
 import multiprocessing
@@ -582,14 +583,15 @@ class ScenarioBatch:
                     if j is None:
                         return
                     base = base_of(j)
-                    if sched.is_base_bad(base):
-                        _record_failure(j, setup_errors[base])
-                        sched.finish(slot_idx, ok=False)
-                        continue
                     slot_dir = str(work_dir / f"TxInOut{slot_idx + 1}")
                     wd = j.scenario.weather_dir
-                    overlay = ({f.name: str(f) for f in sorted(Path(wd).iterdir())
-                                if f.is_file()} if wd else None)
+                    try:
+                        overlay = ({f.name: str(f) for f in sorted(Path(wd).iterdir())
+                                    if f.is_file()} if wd else None)
+                    except OSError as exc:
+                        _record_failure(j, f"weather_dir unreadable: {exc}")
+                        sched.finish(slot_idx, ok=False)
+                        continue
                     extract = partial(
                         _extract_dispatch,
                         jobs={slot_dir: (j.job_id, j.scenario.evaluate)},
@@ -637,6 +639,7 @@ class ScenarioBatch:
                 for slot_idx in range(n_parallel):
                     _dispatch(slot_idx)
 
+                broken_err = None
                 while sched.has_pending() or futures:
                     if not futures:
                         # every slot is unusable: fail the rest with one message
@@ -645,24 +648,51 @@ class ScenarioBatch:
                         break
                     done_futures, _ = concurrent.futures.wait(
                         futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                    freed_slots = []
                     for fut in done_futures:
                         slot_idx, j = futures.pop(fut)
                         try:
                             w = fut.result()
-                        except Exception as exc:  # noqa: BLE001 - broken pool / unpicklable
-                            w = WorkerResult(False, f"{type(exc).__name__}: {exc}", 0.0, "", None)
+                        except BrokenProcessPool as exc:
+                            broken_err = f"{type(exc).__name__}: {exc}"
+                            _record_failure(j, broken_err)
+                            results_since_save += 1
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - unpicklable result
+                            w = WorkerResult(False, f"{type(exc).__name__}: {exc}",
+                                            0.0, "", None)
                         results_since_save += _record_result(j, slot_idx, w)
                         logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
                                     time.perf_counter() - t_all)
+                        freed_slots.append(slot_idx)
+                    if broken_err is not None:
+                        # The pool broke: stop dispatching, fail the rest with one message.
+                        broken_msg = (f"worker pool broke ({broken_err}); "
+                                      f"re-run with resume=True")
+                        for fut in list(futures):
+                            slot_idx, j = futures.pop(fut)
+                            try:
+                                fut.result()
+                            except Exception:  # noqa: BLE001 - pool is already broken
+                                pass
+                            _record_failure(j, broken_err)
+                        for dj in sched.drain_all_pending():
+                            _record_failure(dj, broken_msg)
+                        break
+                    for slot_idx in freed_slots:
                         _dispatch(slot_idx)
                     if results_since_save >= n_parallel or \
                             time.perf_counter() - last_save >= _SAVE_INTERVAL_S:
                         save()
                         results_since_save = 0
                         last_save = time.perf_counter()
-            except BaseException:
+            except BaseException as orig_exc:
                 executor.shutdown(wait=False, cancel_futures=True)
-                save(final=True)
+                try:
+                    save(final=True)
+                except Exception as save_exc:  # noqa: BLE001 - preserve original exception
+                    logger.warning("[Scenarios] could not save partial results during %s: %s",
+                                   type(orig_exc).__name__, save_exc)
                 raise
             else:
                 executor.shutdown(wait=True)
