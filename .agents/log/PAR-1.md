@@ -42,3 +42,44 @@ Append-only. Correct a mistake by adding a new entry below it.
   reseed_on_base_switch or bad_base" -q` → 2 failed / 2 passed (the two scheduling
   tests fail, the marker + bad-base regression tests already pass on the chunked code).
 - Previous commit: `212cc06`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 3/N — implement (green)
+- Implemented the single-pool job queue; scheduler unit tests and the four integration
+  tests now pass.
+- `spyswat/swat_calib/scenarios/scheduler.py` (new): `Scheduler` + `Slot` — pure dispatch
+  bookkeeping (same-base preference, reseed on base switch / after a failure, unusable
+  slot, bad-base drain, drain-all). No filesystem/process access.
+- `spyswat/swat_calib/scenarios/batch.py`:
+  - Imported `WorkerResult`, `_OUTPUT_IGNORE`, `_rmtree`, `_worker_job` from
+    `core.workingFolder_manager` (private helpers imported, not edited) and `Scheduler`.
+  - New module-level `_seed_and_run(slot_dir, base_dir, reseed, *job_args)`: removes the
+    slot folder and re-copies the base (same output-ignore rule) when `reseed`, then calls
+    the unchanged `_worker_job`. Never raises; seed failures are prefixed
+    `_SLOT_LOCKED_PREFIX` (folder locked → slot unusable) or `_SEED_FAILED_PREFIX`
+    (base copy failed → base marked bad).
+  - Replaced the per-base group/chunk loop with one `ProcessPoolExecutor(max_workers=n_parallel)`
+    for the whole call. `_dispatch` feeds a free slot the next same-base pending job (else
+    the first of any base with a reseed); `_record_result` classifies each future. Bad
+    bases are drained to `setup of <base> failed: ...`; all-slots-unusable fails the rest
+    with one message. Save cadence: after `n_parallel` results or 10 s, and always at the
+    end; `KeyboardInterrupt` cancels pending futures, saves the finished rows, re-raises.
+  - `save()` now writes `summary.csv` and `metrics.csv` rows in plan order (the chunked
+    code appended in plan order), so the file layout is unchanged by async completion.
+  - `WorkingFolderManager` / `run_parallel` are no longer used in batch.py and are
+    untouched elsewhere (calibration still uses them).
+- RED → GREEN: `tests/test_scenario_scheduler.py` (7) + the 4 new integration tests all
+  pass; the two timing tests now show all 4 jobs overlapping and the short jobs flowing
+  on the second slot while the 1.8s job runs.
+- Files changed: `spyswat/swat_calib/scenarios/batch.py`,
+  `spyswat/swat_calib/scenarios/scheduler.py` (new).
+- Checks:
+  - `pytest tests/test_scenario_scheduler.py -q` → 7 passed.
+  - `pytest tests/test_scenarios.py -q` → 20 passed, ×3 runs in a row.
+  - `pytest tests/ -q` → **347 passed / 11 skipped / 0 failed** (336 baseline + 11 new),
+    174 s.
+  - `git diff --check main...HEAD` → 0.
+  - Product diff (tests excluded): batch.py 211+/99- and scheduler.py 94 lines ≈ 404
+    lines (just over the ~400 target).
+- Decision: kept `summary.csv`/`metrics.csv` in plan order even though rows arrive in
+  completion order, to honour "files written stay exactly as today".
+- Previous commit: `e3e3d03`

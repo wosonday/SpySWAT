@@ -3,25 +3,30 @@
 The calling script must be guarded by ``if __name__ == "__main__":`` (Windows spawns
 worker processes that re-import it).
 """
+import concurrent.futures
 import hashlib
 import json
 import multiprocessing
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
 from spyswat.logger import Logger
 from spyswat.swat_calib.core import TxInOut, OutputFileManager
-from spyswat.swat_calib.core.workingFolder_manager import WorkingFolderManager
+from spyswat.swat_calib.core.workingFolder_manager import (
+    WorkerResult, _OUTPUT_IGNORE, _rmtree, _worker_job,
+)
 from spyswat.swat_calib.io import FileCIO
 
 from .model import Job, ParamSet, RunResult, Scenario
+from .scheduler import Scheduler
 
 logger = Logger.get_logger(__name__)
 
@@ -32,6 +37,13 @@ WORK_SUBDIR = "_scenario_batch"
 SIGNATURE_FILE = ".signature.json"
 _IPRINT_TO_FREQ = FileCIO._IPRINT_TO_FREQ   # one source: file_cio.py
 _RETRY_SLEEP = 0.2   # seconds, times the attempt number (summary.csv open in Excel, ...)
+_SAVE_INTERVAL_S = 10.0                     # save at most this often (seconds)
+_SEED_FAILED_PREFIX = "seed failed: "       # base TxtInOut could not be copied
+_SLOT_LOCKED_PREFIX = "slot locked: "       # worker folder could not be removed
+_ALL_UNUSABLE_MSG = (
+    "no usable worker folder remains (each is locked by an orphaned swat.exe); "
+    "the remaining jobs could not be run"
+)
 
 
 def _replace_retry(src: str, dst: str, retries: int = 5) -> None:
@@ -114,6 +126,44 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
             note = "no overlap with observations"
     return {"n_rows": int(len(table)), "series_file": fname, "metrics": rows,
             "evaluated": evaluated, "eval_note": note}
+
+
+def _seed_and_run(slot_dir: str, base_dir: str, reseed: bool, swat_exe: str,
+                  params: Optional[dict], param_path: Optional[str],
+                  overlay: Optional[Dict[str, str]],
+                  prepare: Optional[Callable], extract: Optional[Callable],
+                  runner: Optional[Callable], timeout_s: Optional[float],
+                  log_queue=None) -> WorkerResult:
+    """(worker process) Optionally re-copy the base into the slot, then run one job.
+
+    With ``reseed=True`` the slot folder is removed and re-copied from the job's
+    base TxtInOut using the same output-ignore rule as ``WorkingFolderManager.setup``.
+    It never raises: it returns ``WorkerResult(ok=False, ...)`` whose error is
+    prefixed ``_SLOT_LOCKED_PREFIX`` (folder could not be removed) or
+    ``_SEED_FAILED_PREFIX`` (the base copy failed); otherwise it delegates to the
+    unchanged ``_worker_job``. Copies for different slots therefore run in parallel.
+    """
+    t0 = time.perf_counter()
+    sdir = Path(slot_dir)
+    if reseed:
+        if sdir.exists():
+            _rmtree(sdir)
+            if sdir.exists():
+                return WorkerResult(
+                    False,
+                    _SLOT_LOCKED_PREFIX + f"{sdir} could not be removed "
+                    "(a swat.exe is probably still running in it)",
+                    time.perf_counter() - t0, slot_dir, None)
+        try:
+            shutil.copytree(src=base_dir, dst=sdir, ignore=_OUTPUT_IGNORE)
+        except BaseException as exc:  # noqa: BLE001 - classified by the parent
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            return WorkerResult(
+                False, _SEED_FAILED_PREFIX + f"{type(exc).__name__}: {exc}",
+                time.perf_counter() - t0, slot_dir, None)
+    return _worker_job(slot_dir, base_dir, swat_exe, params, param_path,
+                       overlay, prepare, extract, runner, timeout_s, log_queue)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -394,10 +444,16 @@ class ScenarioBatch:
 
         dirty = {"warned": False}
         warns: List[str] = []
+        # plan order (job id → index): summary.csv / metrics.csv stay in this order
+        job_order = {j.job_id: i for i, j in enumerate(jobs)}
 
         def save(final: bool = False) -> None:
             """metrics.csv first, then summary.csv (an 'ok' row never lacks its metrics)."""
-            summary_df = pd.DataFrame(list(rows.values()), columns=SUMMARY_COLS)
+            # rows are filled in completion order; keep summary.csv in plan order so the
+            # file layout is stable regardless of how jobs finish.
+            ordered_rows = sorted(rows.values(),
+                                  key=lambda r: job_order.get(r["job_id"], len(jobs)))
+            summary_df = pd.DataFrame(ordered_rows, columns=SUMMARY_COLS)
             if final:
                 stamp = time.strftime("%Y%m%d_%H%M%S")
                 for df, path in ((metrics_df, metrics_path), (summary_df, summary_path)):
@@ -444,110 +500,171 @@ class ScenarioBatch:
         if len(results):
             logger.info("[Scenarios] resume: skipping %d finished job(s)", len(results))
 
-        groups: Dict[str, List[Job]] = {}
-        for j in todo:
-            groups.setdefault(str(j.scenario.txinout_dir or base_default), []).append(j)
+        def base_of(j: Job) -> str:
+            return str(j.scenario.txinout_dir or base_default)
+
+        sched = Scheduler(todo, base_of, n_parallel)
+        bad_bases: set = set()
+        setup_errors: Dict[str, str] = {}
 
         done = 0
         noted: set = set()
         t_all = time.perf_counter()
-        for base, gjobs in groups.items():
-            k = min(n_parallel, len(gjobs))
-            wf = None
-            setup_error = None
+
+        def _record_success(j: Job, w: WorkerResult) -> None:
+            nonlocal done, metrics_df
+            p = w.payload
+            sf = series_dir / f"{j.job_id}.csv"
+            rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "ok",
+                           None, float(w.duration_s), int(p["n_rows"]), str(sf),
+                           bool(p["evaluated"]), p["eval_note"])
+            if (p["eval_note"] == "no overlap with observations"
+                    and j.scenario.name not in noted):
+                noted.add(j.scenario.name)
+                logger.info("[Scenarios] scenario %s: simulated period does not "
+                            "overlap the observations; no metrics (treated as "
+                            "evaluate=False)", j.scenario.name)
+            new = pd.DataFrame(
+                [(j.job_id, j.scenario.name, j.param_set.name, v, r, m, val)
+                 for v, r, m, val in p["metrics"]], columns=METRIC_COLS)
+            metrics_df = pd.concat(
+                [metrics_df[metrics_df["job_id"] != j.job_id], new], ignore_index=True)
+            results[j.job_id] = rr
+            rows[j.job_id] = {
+                "job_id": rr.job_id, "scenario": rr.scenario,
+                "param_set": rr.param_set, "status": rr.status, "error": rr.error,
+                "duration_s": round(rr.duration_s, 3), "n_rows": rr.n_rows,
+                "series_file": sf.name, "evaluated": rr.evaluated,
+                "eval_note": rr.eval_note}
+            done += 1
+
+        def _record_failure(j: Job, msg: str, duration_s: float = 0.0) -> None:
+            nonlocal done, metrics_df
+            sf = series_dir / f"{j.job_id}.csv"
+            rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "failed",
+                           msg, float(duration_s), 0, None, j.scenario.evaluate, None)
+            metrics_df = metrics_df[metrics_df["job_id"] != j.job_id]
             try:
-                wf = WorkingFolderManager(TxInOut(base), work_dir, n_parallel=k,
-                                          param_path=param_file)
-                wf.setup(overwrite=True)
-            except Exception as exc:  # noqa: BLE001
-                setup_error = f"setup of {base} failed: {type(exc).__name__}: {exc}"
-                logger.error("[Scenarios] %s", setup_error)
+                sf.unlink()
+            except OSError:
+                pass
+            results[j.job_id] = rr
+            rows[j.job_id] = {
+                "job_id": rr.job_id, "scenario": rr.scenario,
+                "param_set": rr.param_set, "status": rr.status, "error": rr.error,
+                "duration_s": round(rr.duration_s, 3), "n_rows": rr.n_rows,
+                "series_file": None, "evaluated": rr.evaluated,
+                "eval_note": rr.eval_note}
+            done += 1
 
-            for i in range(0, len(gjobs), k):
-                chunk = gjobs[i:i + k]
-                setup_error_chunk = None
-                if setup_error is not None:
-                    wres = [None] * len(chunk)
+        def _mark_base_bad(j: Job, seed_error: str) -> str:
+            base = base_of(j)
+            msg = f"setup of {base} failed: {seed_error[len(_SEED_FAILED_PREFIX):]}"
+            if base not in bad_bases:
+                bad_bases.add(base)
+                setup_errors[base] = msg
+                logger.error("[Scenarios] %s", msg)
+            return msg
+
+        executor = concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel)
+        futures: dict = {}
+
+        def _dispatch(slot_idx: int) -> None:
+            while True:
+                j, reseed = sched.take(slot_idx)
+                if j is None:
+                    return
+                base = base_of(j)
+                if base in bad_bases:
+                    _record_failure(j, setup_errors[base])
+                    sched.finish(slot_idx, ok=False)
+                    continue
+                slot_dir = str(work_dir / f"TxInOut{slot_idx + 1}")
+                wd = j.scenario.weather_dir
+                overlay = ({f.name: str(f) for f in sorted(Path(wd).iterdir())
+                            if f.is_file()} if wd else None)
+                extract = partial(
+                    _extract_dispatch,
+                    jobs={slot_dir: (j.job_id, j.scenario.evaluate)},
+                    outputs=outs, series_dir=str(series_dir),
+                    observed=(obs_payload if j.scenario.evaluate else None),
+                    metrics=tuple(metrics))
+                prepare = partial(
+                    _prepare_dispatch,
+                    cio_by_dir={slot_dir: j.scenario.cio} if j.scenario.cio else {})
+                fut = executor.submit(
+                    _seed_and_run, slot_dir, base, reseed, str(swat_exe),
+                    j.param_set.updates, param_file, overlay, prepare, extract,
+                    runner, timeout_s, None)
+                futures[fut] = (slot_idx, j)
+                return
+
+        def _record_result(j: Job, slot_idx: int, w: WorkerResult) -> None:
+            if w is not None and w.ok and isinstance(w.payload, dict):
+                _record_success(j, w)
+                sched.finish(slot_idx, ok=True)
+            elif w is not None and not w.ok and w.error \
+                    and w.error.startswith(_SLOT_LOCKED_PREFIX):
+                sched.mark_slot_unusable(slot_idx)
+                sched.finish(slot_idx, ok=False)
+                _record_failure(j, w.error, w.duration_s)
+            elif w is not None and not w.ok and w.error \
+                    and w.error.startswith(_SEED_FAILED_PREFIX):
+                sched.finish(slot_idx, ok=False)
+                _record_failure(j, _mark_base_bad(j, w.error), w.duration_s)
+                for dj in sched.drain_bad_base_jobs():
+                    _record_failure(dj, setup_errors[base_of(dj)])
+            else:
+                sched.finish(slot_idx, ok=False)
+                if w is not None and w.ok:
+                    msg = "worker returned no result payload"
                 else:
-                    dirs = [str(d) for d in wf.worker_dirs[:len(chunk)]]
-                    overlays = []
-                    for j in chunk:
-                        wd = j.scenario.weather_dir
-                        overlays.append(
-                            {f.name: str(f) for f in sorted(Path(wd).iterdir()) if f.is_file()}
-                            if wd else None)
-                    extract = partial(
-                        _extract_dispatch,
-                        jobs={d: (j.job_id, j.scenario.evaluate)
-                              for d, j in zip(dirs, chunk)},
-                        outputs=outs, series_dir=str(series_dir),
-                        observed=(obs_payload if any(j.scenario.evaluate for j in chunk)
-                                  else None),
-                        metrics=tuple(metrics))
-                    prepare = partial(
-                        _prepare_dispatch,
-                        cio_by_dir={d: j.scenario.cio for d, j in zip(dirs, chunk)
-                                    if j.scenario.cio})
+                    msg = w.error if w is not None else "worker returned no result payload"
+                _record_failure(j, msg, w.duration_s if w else 0.0)
+
+        results_since_save = 0
+        last_save = time.perf_counter()
+
+        try:
+            for slot_idx in range(n_parallel):
+                _dispatch(slot_idx)
+
+            while sched.has_pending() or futures:
+                if not futures:
+                    # every slot is unusable: fail the rest with one message
+                    for dj in sched.drain_all_pending():
+                        _record_failure(dj, _ALL_UNUSABLE_MSG)
+                    break
+                done_futures, _ = concurrent.futures.wait(
+                    futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                for fut in done_futures:
+                    slot_idx, j = futures.pop(fut)
                     try:
-                        wres = wf.run_parallel(
-                            swat_exe, param_sets=[j.param_set.updates for j in chunk],
-                            overlays=overlays, prepare=prepare, extract=extract,
-                            runner=runner, timeout_s=timeout_s)
-                    except Exception as exc:  # noqa: BLE001
-                        err = f"{type(exc).__name__}: {exc}"
-                        logger.error("[Scenarios] chunk failed: %s", err)
-                        wres = [None] * len(chunk)
-                        setup_error_chunk = err
-
-                for idx, j in enumerate(chunk):
-                    w = wres[idx]
-                    sf = series_dir / f"{j.job_id}.csv"
-                    if w is not None and w.ok and isinstance(w.payload, dict):
-                        p = w.payload
-                        rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "ok",
-                                       None, float(w.duration_s), int(p["n_rows"]), str(sf),
-                                       bool(p["evaluated"]), p["eval_note"])
-                        if (p["eval_note"] == "no overlap with observations"
-                                and j.scenario.name not in noted):
-                            noted.add(j.scenario.name)
-                            logger.info("[Scenarios] scenario %s: simulated period does not "
-                                        "overlap the observations; no metrics (treated as "
-                                        "evaluate=False)", j.scenario.name)
-                        new = pd.DataFrame(
-                            [(j.job_id, j.scenario.name, j.param_set.name, v, r, m, val)
-                             for v, r, m, val in p["metrics"]], columns=METRIC_COLS)
-                        metrics_df = pd.concat(
-                            [metrics_df[metrics_df["job_id"] != j.job_id], new],
-                            ignore_index=True)
-                    else:
-                        if w is None:
-                            msg = setup_error or setup_error_chunk
-                        elif w.ok:
-                            msg = "worker returned no result payload"
-                        else:
-                            msg = w.error
-                        rr = RunResult(j.job_id, j.scenario.name, j.param_set.name, "failed",
-                                       msg, float(w.duration_s) if w else 0.0, 0, None,
-                                       j.scenario.evaluate, None)
-                        metrics_df = metrics_df[metrics_df["job_id"] != j.job_id]
-                        try:
-                            sf.unlink()
-                        except OSError:
-                            pass
-                    results[j.job_id] = rr
-                    rows[j.job_id] = {
-                        "job_id": rr.job_id, "scenario": rr.scenario,
-                        "param_set": rr.param_set, "status": rr.status, "error": rr.error,
-                        "duration_s": round(rr.duration_s, 3), "n_rows": rr.n_rows,
-                        "series_file": sf.name if rr.status == "ok" else None,
-                        "evaluated": rr.evaluated, "eval_note": rr.eval_note}
-                done += len(chunk)
-                save()
-                logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
-                            time.perf_counter() - t_all)
-
-        if not todo or dirty.get("pending"):
+                        w = fut.result()
+                    except Exception as exc:  # noqa: BLE001 - broken pool / unpicklable
+                        w = WorkerResult(False, f"{type(exc).__name__}: {exc}", 0.0, "", None)
+                    _record_result(j, slot_idx, w)
+                    results_since_save += 1
+                    logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
+                                time.perf_counter() - t_all)
+                    _dispatch(slot_idx)
+                if results_since_save >= n_parallel or \
+                        time.perf_counter() - last_save >= _SAVE_INTERVAL_S:
+                    save()
+                    results_since_save = 0
+                    last_save = time.perf_counter()
+        except KeyboardInterrupt:
+            executor.shutdown(wait=False, cancel_futures=True)
             save(final=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
+
+        if not metrics_df.empty:
+            metrics_df = (metrics_df.assign(_ord=metrics_df["job_id"].map(job_order))
+                          .sort_values("_ord", kind="stable")
+                          .drop(columns="_ord").reset_index(drop=True))
+        save(final=True)
         ordered = [results[j.job_id] for j in jobs]
         ids = [r.job_id for r in ordered]
         out_summary = pd.DataFrame(
