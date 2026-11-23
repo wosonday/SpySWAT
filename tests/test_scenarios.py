@@ -700,3 +700,90 @@ def test_locked_slot_unusable_then_remaining_fail_with_message(env, tmp_path):
     assert "slot locked" in out.results[1].error
     assert out.results[2].status == "failed"
     assert "no usable worker folder" in out.results[2].error
+
+
+# ── rework round 2: broken pool, interrupt-save isolation, unreadable overlay ──
+
+def break_runner(worker_dir: str) -> None:
+    """CN2=35 job finishes fast and drops a marker; CN2=50 waits for that marker, then
+    kills its worker via ``os._exit``; CN2=60/70 jobs stay slow so they are still
+    running (or pending) when the pool breaks."""
+    cn2 = read_cn2(worker_dir)
+    marker = os.environ.get("E5_BREAK_MARKER")
+    if cn2 == 35.0:
+        fake_runner(worker_dir)
+        if marker:
+            Path(marker).write_text("done")
+        return
+    if cn2 == 50.0:
+        deadline = time.time() + 60
+        while marker and not Path(marker).exists() and time.time() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.5)          # let the parent harvest job 1 before we kill the worker
+        os._exit(1)
+    time.sleep(2.0)              # jobs 3, 4: still running when the pool breaks
+    fake_runner(worker_dir)
+
+
+def test_broken_process_pool_fails_remaining_jobs(env, tmp_path, monkeypatch):
+    marker = tmp_path / "break.marker"
+    monkeypatch.setenv("E5_BREAK_MARKER", str(marker))
+    params = [ParamSet("p1", {"CN2.mgt": [(35, "v")]}),
+              ParamSet("p2", {"CN2.mgt": [(50, "v")]}),
+              ParamSet("p3", {"CN2.mgt": [(60, "v")]}),
+              ParamSet("p4", {"CN2.mgt": [(70, "v")]})]
+    res_dir = tmp_path / "res"
+    out = ScenarioBatch(make_project(env, n=2), res_dir).run(
+        [Scenario("base")], params, outputs=OUTS, runner=break_runner)
+    assert [r.status for r in out.results] == ["ok", "failed", "failed", "failed"]
+    assert "BrokenProcessPool" in out.results[1].error
+    for r in out.results[2:]:
+        assert "BrokenProcessPool" in r.error or "pool broke" in r.error
+    # a second run with a normal runner runs only the not-ok jobs
+    out2 = ScenarioBatch(make_project(env), res_dir).run(
+        [Scenario("base")], params, outputs=OUTS, runner=fake_runner)
+    assert [r.status for r in out2.results] == ["skipped", "ok", "ok", "ok"]
+
+
+def test_keyboardinterrupt_not_masked_by_save_failure(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    monkeypatch.setattr(bmod, "_RETRY_SLEEP", 0.0)
+    params = [ParamSet("p0", {"CN2.mgt": [(35, "v")]}),
+              ParamSet("p1", {"CN2.mgt": [(40, "v")]}),
+              ParamSet("p2", {"CN2.mgt": [(60, "v")]}),
+              ParamSet("p3", {"CN2.mgt": [(70, "v")]})]
+    res_dir = tmp_path / "res"
+
+    real_wait = bmod.concurrent.futures.wait
+    calls = {"n": 0}
+
+    def interrupt_wait(futures, return_when):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real_wait(futures, return_when=return_when)
+
+    def atomic_boom(df, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(bmod.concurrent.futures, "wait", interrupt_wait)
+    monkeypatch.setattr(bmod, "_atomic_csv", atomic_boom)
+    with pytest.raises(KeyboardInterrupt):
+        ScenarioBatch(make_project(env, n=2), res_dir).run(
+            [Scenario("base")], params, outputs=OUTS, runner=fake_runner)
+
+
+def test_unreadable_weather_dir_fails_its_jobs_others_ok(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    wet = make_weather(tmp_path, "wet", "30.0")
+    scen = [Scenario("wet", weather_dir=wet), Scenario("base")]
+    import shutil
+    shutil.rmtree(wet)                        # deleted after the Scenario objects are built
+    monkeypatch.setattr(bmod, "_scenario_sig", lambda s: "fixed")
+    out = ScenarioBatch(make_project(env), tmp_path / "res").run(
+        scen, PARAMS[:2], outputs=OUTS, runner=fake_runner)
+    failed = [r for r in out.results if r.status == "failed"]
+    ok = [r for r in out.results if r.status == "ok"]
+    assert [r.job_id for r in failed] == ["wet__p_none", "wet__p_v60"]
+    assert [r.job_id for r in ok] == ["base__p_none", "base__p_v60"]
+    assert all("weather_dir unreadable" in r.error for r in failed)

@@ -199,3 +199,36 @@ Append-only. Correct a mistake by adding a new entry below it.
      `Scheduler.is_base_bad` for the unit test.
 - Tests a-c (RED first), fake runners only, in `tests/test_scenarios.py`.
 - Previous commit: `b7ce905`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 10/N — rework round 2: RED tests
+- Added the three regression tests before any product change (TDD red→green).
+- `tests/test_scenarios.py`: new module-level `break_runner` (CN2=35 fast + drops a
+  marker; CN2=50 waits for the marker then `os._exit(1)`; CN2=60/70 slow so they are still
+  running when the pool breaks) and:
+  - `test_broken_process_pool_fails_remaining_jobs` (a): 4 jobs, `n_parallel=2`; job 2's
+    worker dies → `run()` must return with job 1 `ok`, jobs 2-4 `failed`
+    (`BrokenProcessPool`/`pool broke`), and `resume=True` runs only the not-ok jobs.
+  - `test_keyboardinterrupt_not_masked_by_save_failure` (b): monkeypatches
+    `concurrent.futures.wait` to raise `KeyboardInterrupt` on its 2nd call **and**
+    `_atomic_csv` to always raise `OSError`; asserts the original `KeyboardInterrupt` wins.
+  - `test_unreadable_weather_dir_fails_its_jobs_others_ok` (c): weather_dir deleted after
+    the Scenario is built (with `_scenario_sig` stubbed so planning/signature succeed) →
+    its jobs `failed` with `weather_dir unreadable`, the other base's jobs `ok`.
+- RED failure lines on HEAD `2f1d024`:
+  - `test_broken_process_pool_fails_remaining_jobs` — `concurrent.futures.process.
+    BrokenProcessPool: A child process terminated abruptly, the process pool is not usable
+    anymore` raised at `batch.py:602` (`executor.submit` inside `_dispatch`): the loop
+    keeps dispatching onto the broken pool. (First cut of the runner showed
+    `['ok','failed','ok','ok']`; jobs 3/4 were finishing before the 2 s `os._exit`, so the
+    runner was reworked to gate the kill on job 1's marker and keep jobs 3/4 slow.)
+  - `test_keyboardinterrupt_not_masked_by_save_failure` — `OSError: disk full` masks the
+    injected `KeyboardInterrupt`; raised at `batch.py:469` (`_atomic_csv(df, alt)` inside
+    `save(final=True)`) called from `except BaseException` at `batch.py:665`.
+  - `test_unreadable_weather_dir_fails_its_jobs_others_ok` — `FileNotFoundError:
+    [WinError 3] ... 'wet'` at `batch.py:591` (`Path(wd).iterdir()` in `_dispatch`): the
+    overlay listing aborts the whole batch.
+- Checks: `python -m pytest tests/test_scenarios.py -k "broken_process_pool" -q` → 1 failed
+  (BrokenProcessPool); `-k "broken_process_pool or keyboardinterrupt_not_masked or
+  unreadable_weather_dir" -q` → 3 failed.
+- Files changed: `tests/test_scenarios.py`.
+- Previous commit: `2f1d024`
