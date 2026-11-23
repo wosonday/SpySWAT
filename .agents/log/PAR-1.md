@@ -163,3 +163,18 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Files changed: `spyswat/swat_calib/scenarios/batch.py`, `.agents/reviews/PAR-1-1.md` (new,
   unchanged), `.agents/log/PAR-1.md`.
 - Previous commit: `a3fdb78`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 8/N — rework round 1: verification
+- Full suite: `python -m pytest tests/ -q` → **351 passed / 11 skipped / 0 failed** (347
+  baseline + 4 new) in 215 s; 5 pre-existing warnings.
+- Stability: `pytest tests/test_scenarios.py -q` → 24 passed (second green run; timing tests
+  stable with the widened margin).
+- `git diff --check main...HEAD` → clean; `git status` clean.
+- Product diff (tests excluded): `batch.py` 215+/95- + `scheduler.py` 94 new ≈ 404 lines
+  (unchanged from the already-accepted Minor 2 soft-target overrun).
+- Files changed this rework: `spyswat/swat_calib/scenarios/batch.py`,
+  `tests/test_scenarios.py`, `.agents/reviews/PAR-1-1.md` (committed unchanged),
+  `.agents/log/PAR-1.md`.
+- Done. No `agm send` / `hc send` per rework instructions; pointer for the manager: branch
+  `feat/PAR-1` at `8c76920`.
+- Previous commit: `8c76920`
