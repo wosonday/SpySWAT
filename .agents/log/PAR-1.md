@@ -99,3 +99,15 @@ Append-only. Correct a mistake by adding a new entry below it.
   (slightly over the "~400" soft target; flagged rather than trimming readability).
 - Acceptance criteria: all checked except the line-count target is 409 vs "under ~400".
 - Previous commit: `1e307f1`
+
+## 2026-11-23 · opencode-go/deepseek-v4-pro (worker-strong) · step 5/N — report blocked
+- Work is complete and committed; attempted the handoff report twice:
+  `agm send t81 --type "BÁO CÁO" --task par-1 "see .agents/log/PAR-1.md"` → both failed with
+  `hc status_mismatch: t81 is working, not idle` (the CEO terminal is busy).
+- Fallback `hc send t81 "see .agents/log/PAR-1.md"` was rejected by this non-interactive
+  run (permission). Not forced, not retried further.
+- Pointer for the CEO/manager: branch `feat/PAR-1` at `ebcf6df`, log
+  `.agents/log/PAR-1.md`. Files changed (see log): batch.py, scheduler.py (new),
+  test_scenario_scheduler.py (new), test_scenarios.py, + .agents task/decision/log.
+  `pytest tests/ -q` → 347 passed / 11 skipped / 0 failed.
+- Previous commit: `ebcf6df`
