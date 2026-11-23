@@ -289,3 +289,20 @@ Append-only. Correct a mistake by adding a new entry below it.
      then `os._exit(1)`; monkeypatch `concurrent.futures.wait` to wait ALL_COMPLETED then
      return only the broken future as `done`, leaving the finished p1 future in `futures`.
 - Previous commit: `97be029`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 14/N — rework round 3: RED tests
+- Added the regression test before any product change (TDD red→green).
+- `tests/test_scenarios.py`: new module-level `drain_break_runner` (p1 CN2=35 fast+ok and
+  drops a marker; p2 CN2=50 waits for the marker, sleeps 0.5 s, then `os._exit(1)`) and:
+  - `test_broken_pool_drain_keeps_finished_sibling_job`: `n_parallel=2`, 2 jobs;
+    `concurrent.futures.wait` is monkeypatched to wait `ALL_COMPLETED` and return only the
+    broken future as `done`, leaving the finished p1 future in `futures`. Asserts p1 stays
+    `ok` with its series file present and p2 is `failed` with `BrokenProcessPool`.
+- RED failure line on HEAD `fa4e812`:
+  `tests/test_scenarios.py:841` — `assert ['failed', 'failed'] == ['ok', 'failed']`
+  (the drain loop recorded the already-finished p1 as `failed` with `broken_err` and
+  deleted its `series/base__p1.csv`, instead of reading its `WorkerResult`).
+- Checks: `python -m pytest tests/test_scenarios.py::test_broken_pool_drain_keeps_finished_sibling_job -q`
+  → 1 failed in 9.26 s.
+- Files changed: `tests/test_scenarios.py`.
+- Previous commit: `fa4e812`

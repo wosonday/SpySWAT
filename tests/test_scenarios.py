@@ -787,3 +787,58 @@ def test_unreadable_weather_dir_fails_its_jobs_others_ok(env, tmp_path, monkeypa
     assert [r.job_id for r in failed] == ["wet__p_none", "wet__p_v60"]
     assert [r.job_id for r in ok] == ["base__p_none", "base__p_v60"]
     assert all("weather_dir unreadable" in r.error for r in failed)
+
+
+# ── rework round 3: broken-pool drain keeps an already-finished sibling job ──
+
+def drain_break_runner(worker_dir: str) -> None:
+    """p1 (CN2=35) finishes fast and ok; p2 (CN2=50) waits for p1's marker, then
+    kills its worker via ``os._exit(1)`` so the pool breaks."""
+    cn2 = read_cn2(worker_dir)
+    marker = os.environ.get("E5_DRAIN_MARKER")
+    if cn2 == 35.0:
+        fake_runner(worker_dir)
+        if marker:
+            Path(marker).write_text("done")
+        return
+    if cn2 == 50.0:
+        deadline = time.time() + 60
+        while marker and not Path(marker).exists() and time.time() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.5)          # let p1 finish its series write before we kill the worker
+        os._exit(1)
+    fake_runner(worker_dir)
+
+
+def test_broken_pool_drain_keeps_finished_sibling_job(env, tmp_path, monkeypatch):
+    from spyswat.swat_calib.scenarios import batch as bmod
+    marker = tmp_path / "drain.marker"
+    monkeypatch.setenv("E5_DRAIN_MARKER", str(marker))
+    params = [ParamSet("p1", {"CN2.mgt": [(35, "v")]}),
+              ParamSet("p2", {"CN2.mgt": [(50, "v")]})]
+    res_dir = tmp_path / "res"
+
+    real_wait = bmod.concurrent.futures.wait
+
+    def fake_wait(fs, return_when=None):
+        # Wait until every future has a result (or the pool broke), then report only
+        # the futures whose result raises as "done"; the finished p1 future stays in
+        # not_done (still in `futures`), so the drain loop must read its real result.
+        real_wait(fs, return_when=bmod.concurrent.futures.ALL_COMPLETED)
+        done, not_done = set(), set()
+        for fut in fs:
+            try:
+                fut.result()
+            except Exception:  # noqa: BLE001 - BrokenProcessPool for the crashed worker
+                done.add(fut)
+            else:
+                not_done.add(fut)
+        return done, not_done
+
+    monkeypatch.setattr(bmod.concurrent.futures, "wait", fake_wait)
+    out = ScenarioBatch(make_project(env, n=2), res_dir).run(
+        [Scenario("base")], params, outputs=OUTS, runner=drain_break_runner)
+    assert [r.status for r in out.results] == ["ok", "failed"]
+    assert "BrokenProcessPool" in out.results[1].error
+    assert (res_dir / "series" / "base__p1.csv").exists()
+    assert not (res_dir / "series" / "base__p2.csv").exists()
