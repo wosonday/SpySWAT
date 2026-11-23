@@ -306,3 +306,17 @@ Append-only. Correct a mistake by adding a new entry below it.
   → 1 failed in 9.26 s.
 - Files changed: `tests/test_scenarios.py`.
 - Previous commit: `fa4e812`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 15/N — rework round 3: fix (green)
+- `spyswat/swat_calib/scenarios/batch.py` (items 1-2 of the Round 4 correction):
+  1. **Broken-pool drain reads `fut.result()`** — the drain loop now inspects each remaining
+     future's result: a returned `WorkerResult` goes through `_record_result` (an `ok` job
+     stays `ok` and its `series/<job>.csv` is kept), `BrokenProcessPool` records `failed`
+     with `broken_err`, and any other exception becomes `WorkerResult(False, ...)` through
+     `_record_result` — the same classification as the main harvest loop.
+  2. **Minor 1** — `_dispatch` declares `nonlocal results_since_save`; an overlay `OSError`
+     now also does `results_since_save += 1` and logs the `%d/%d jobs done` progress line.
+- GREEN: the new regression test passes; `pytest tests/test_scenarios.py -q` → 28 passed
+  (27 + 1 new).
+- Files changed: `spyswat/swat_calib/scenarios/batch.py`.
+- Previous commit: `199e023`

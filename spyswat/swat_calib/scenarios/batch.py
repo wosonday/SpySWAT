@@ -578,6 +578,7 @@ class ScenarioBatch:
             last_save = time.perf_counter()
 
             def _dispatch(slot_idx: int) -> None:
+                nonlocal results_since_save
                 while True:
                     j, reseed = sched.take(slot_idx)
                     if j is None:
@@ -591,6 +592,9 @@ class ScenarioBatch:
                     except OSError as exc:
                         _record_failure(j, f"weather_dir unreadable: {exc}")
                         sched.finish(slot_idx, ok=False)
+                        results_since_save += 1
+                        logger.info("[Scenarios] %d/%d jobs done (%.1fs)", done, len(todo),
+                                    time.perf_counter() - t_all)
                         continue
                     extract = partial(
                         _extract_dispatch,
@@ -672,10 +676,15 @@ class ScenarioBatch:
                         for fut in list(futures):
                             slot_idx, j = futures.pop(fut)
                             try:
-                                fut.result()
-                            except Exception:  # noqa: BLE001 - pool is already broken
-                                pass
-                            _record_failure(j, broken_err)
+                                w = fut.result()
+                            except BrokenProcessPool:
+                                _record_failure(j, broken_err)
+                            except Exception as exc:  # noqa: BLE001 - unpicklable result
+                                w = WorkerResult(False, f"{type(exc).__name__}: {exc}",
+                                                0.0, "", None)
+                                _record_result(j, slot_idx, w)
+                            else:
+                                _record_result(j, slot_idx, w)
                         for dj in sched.drain_all_pending():
                             _record_failure(dj, broken_msg)
                         break
