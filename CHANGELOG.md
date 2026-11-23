@@ -5,11 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] – branch `fix/phase1-correctness`
+## [Unreleased]
+
+---
+
+## [0.2.6] – 2026-11-21
 
 Phase-1 correctness work: SWAT runs, file I/O and metrics now fail loudly instead of
-silently returning wrong numbers. Version in `pyproject.toml` is still `0.2.5`; the next
-release number is the maintainer's decision.
+silently returning wrong numbers. This release also ships PSO (developed 2026-06-18, see
+below); no package was published between 0.2.4 and 0.2.6.
 
 ### Added
 
@@ -90,9 +94,16 @@ release number is the maintainer's decision.
   notebook with templates.
 - README / README_VI / ARCHITECTURE updated for the changes above.
 
+### Packaging
+
+- `pyproject.toml`: version 0.2.6, `description` and `readme` metadata. The sdist now
+  ships only `spyswat/`, `tests/`, the sample scripts and the user docs (no IDE files,
+  agent notebook, SWAT executable or local parameter files).
+- `logs/run.log` (a local run log committed before `logs/` was ignored) is no longer tracked.
+
 ---
 
-## [0.2.6] – 2026-06-18
+## [0.2.6] (PSO, developed 2026-06-18) – released in 0.2.6 above
 
 ### Added
 
