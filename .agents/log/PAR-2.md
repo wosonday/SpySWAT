@@ -176,3 +176,11 @@ $ python -m pytest tests/ -q
 
 Files changed: `spyswat/swat_calib/scenarios/signature.py`, `tests/test_scenario_signature.py`,
 `.agents/log/PAR-2.md`, `.agents/reviews/PAR-2-1.md` (reviewer file, unchanged).
+
+## 2026-11-23 — rework round 1 closed
+
+Committed as `83eedae` on `feat/PAR-2` (`4 files changed, 117 insertions(+), 2 deletions(-)`;
+review file created from the Reviewer's copy, byte-for-byte unchanged). Working tree clean,
+`git diff --check main...HEAD` empty. No merge, no push; nothing sent via `agm`/`hc`.
+
+Files changed: `.agents/log/PAR-2.md` (this entry) only.
