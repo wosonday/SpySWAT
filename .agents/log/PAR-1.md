@@ -273,3 +273,19 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Done. No `agm send` / `hc send` per rework instructions; pointer for the manager: branch
   `feat/PAR-1` at `d7e4587`.
 - Previous commit: `02a12d6`
+
+## 2026-11-24 · opencode-go/deepseek-v4-pro (worker-strong) · step 13/N — rework round 3: brief
+- Review `.agents/reviews/PAR-1-3.md` (FAIL: 1 Major, 1 Minor) and the "Round 4 correction"
+  at the end of `.agents/decisions/PAR-1.md`. Implement exactly items 1-3, nothing else.
+- Skill: `tdd` (only). Shell: one plain command per call from the worktree root.
+- Fix plan:
+  1. Broken-pool drain loop reads `fut.result()`: a returned `WorkerResult` goes through
+     `_record_result` (an `ok` job stays `ok`, its `series/<job>.csv` is kept); only
+     `BrokenProcessPool` records `failed` with `broken_err`; any other exception becomes
+     `WorkerResult(False, ...)` through `_record_result`, as in the main harvest loop.
+  2. Minor 1: an overlay `OSError` in `_dispatch` also counts in `results_since_save` and
+     logs the progress line.
+  3. Test (RED first, deterministic, no timing race): `n_parallel=2`, p1 fast+ok, p2 sleeps
+     then `os._exit(1)`; monkeypatch `concurrent.futures.wait` to wait ALL_COMPLETED then
+     return only the broken future as `done`, leaving the finished p1 future in `futures`.
+- Previous commit: `97be029`

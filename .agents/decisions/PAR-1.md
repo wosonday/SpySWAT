@@ -115,3 +115,21 @@ Tests (RED first), fake runners only:
   always raising `OSError`: `pytest.raises(KeyboardInterrupt)` — the original exception wins.
 - (c) one scenario whose `weather_dir` is deleted after planning: its jobs `failed` with
   `weather_dir unreadable`, other jobs `ok`, no exception.
+
+## Round 4 correction (Architect, 2026-11-24; final round approved by the user)
+
+Round-3 spec item 2 was wrong ("harvest all remaining futures (each recorded as failed)"):
+a remaining future may already hold a valid `WorkerResult`. Review `.agents/reviews/PAR-1-3.md`
+Major 1. Fix exactly, nothing else:
+
+1. In the broken-pool drain loop, read `fut.result()`: a returned `WorkerResult` goes through
+   `_record_result` (an `ok` job stays `ok`, its `series/<job>.csv` is kept); only
+   `BrokenProcessPool` records `failed` with `broken_err`; any other exception becomes
+   `WorkerResult(False, ...)` through `_record_result`, as in the main harvest loop.
+2. Minor 1: an overlay `OSError` in `_dispatch` also counts in `results_since_save` and logs the
+   progress line.
+3. Test (RED first, deterministic, no timing race): `n_parallel=2`, job p1 finishes fast and ok,
+   job p2 sleeps then `os._exit(1)`. Monkeypatch `concurrent.futures.wait` (as seen by
+   `batch.py`) to call the real `wait(..., return_when=ALL_COMPLETED)` and then return only the
+   futures whose result raises as `done`, leaving the finished p1 future in `not_done`. Assert
+   p1 is `ok` with its series file present and p2 is `failed` with `BrokenProcessPool`.
