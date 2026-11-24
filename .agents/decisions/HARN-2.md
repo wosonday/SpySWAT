@@ -36,3 +36,10 @@ Global `hc` templates in `%APPDATA%\herdr-core\templates\` carry another project
 project names, Rust/PowerShell scripts, internal decision IDs) and lack `worker-strong.md`. They are shared by
 other projects, so replacing them is the user's call. Generic replacements drafted by Neon are kept outside
 the repo (CEO scratch) and summarised to the user.
+
+## Follow-up (2026-11-24, user approved)
+
+Global `hc` templates replaced with the generic Neon drafts: `auditor`, `reviewer`, `worker-fast`,
+`worker-mid` rewritten, `worker-strong` added (no project names, personal paths or private routing).
+Backup of the old set: `%APPDATA%\herdr-core	emplates.bak-2026-11-24`. `hc templates` lists all five.
+Templates carry no model pins: the routing lives in each project's `AGENTS.md` and `.opencode/agents/`.
