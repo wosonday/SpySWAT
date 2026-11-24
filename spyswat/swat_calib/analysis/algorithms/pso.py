@@ -342,6 +342,7 @@ class PSOCalibration:
         step=None,
         agg=None,
         store=None,
+        replay=None,
     ) -> Dict:
         """
         Run PSO calibration with full swarm evaluated in parallel each iteration.
@@ -431,6 +432,7 @@ class PSOCalibration:
                 calib_period=calib_period, valid_period=valid_period,
                 step=step, agg=agg, store=store,
                 methods=methods, subbasins=subbasins, is_initial=is_initial,
+                replay=replay,
             )
             return _batch_scores(batch_df, metric), batch_df
 

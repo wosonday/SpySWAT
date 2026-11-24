@@ -75,6 +75,7 @@ class GLUE:
         step=None,
         agg=None,
         store=None,
+        replay=None,
     ) -> Dict:
         """
         Run GLUE sampling and return results dict.
@@ -131,6 +132,7 @@ class GLUE:
             calib_period=calib_period, valid_period=valid_period,
             step=step, agg=agg, store=store,
             methods=methods, subbasins=subbasins, is_initial=True,
+            replay=replay,
         )
         scores = _batch_scores(batch_df, metric)
 

@@ -18,6 +18,7 @@ from spyswat.swat_calib.core.output_manager import OutputFileManager
 
 from spyswat.logger import Logger
 from .param_spec import parse_spec, format_params, is_raw, param_columns
+from .replay import ReplayCursor
 from .run_log import RunLog
 from .scoring import (
     normalise_observed, check_weights, preflight, score_sites, _resolve_metrics,
@@ -341,14 +342,16 @@ class CalibrationManager:
                       methods=None, subbasins=None,
                       *, outputs=None, weights=None, metrics=None,
                       calib_period=None, valid_period=None, step=None, agg=None,
-                      store=None, run_id=None, is_initial=False) -> float:
+                      store=None, run_id=None, is_initial=False,
+                      replay=None) -> float:
         if self._new_path(observed, outputs, weights, calib_period, store,
                           valid_period=valid_period, step=step, agg=agg,
-                          metrics=metrics, run_id=run_id, is_initial=is_initial):
+                          metrics=metrics, run_id=run_id, is_initial=is_initial,
+                          replay=replay):
             return self._run_iteration_multi(
                 param_dict, observed, metric, outputs, weights, metrics,
                 calib_period, valid_period, step, agg, store, run_id, is_initial,
-                methods, subbasins,
+                methods, subbasins, replay,
             )
         # ── deprecated single-site path (behaviour unchanged) ──────────────
         reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
@@ -410,14 +413,14 @@ class CalibrationManager:
     def _new_path(observed, outputs, weights, calib_period, store,
                   valid_period=None, step=None, agg=None,
                   metric=None, metrics=None, run_ids=None, run_id=None,
-                  is_initial=False) -> bool:
+                  is_initial=False, replay=None) -> bool:
         """True when the multi-site vocabulary is used.
 
         Covers the design vocabulary (``outputs``, a dict ``observed``,
         ``weights``, ``calib_period`` or ``store``) plus every keyword-only
         argument the old single-site path would silently drop: ``valid_period``,
-        ``step``, ``agg``, ``metric`` / ``metrics`` / ``run_ids`` (run_batch) and
-        ``run_id`` / ``is_initial`` (run_iteration).
+        ``step``, ``agg``, ``metric`` / ``metrics`` / ``run_ids`` (run_batch),
+        ``run_id`` / ``is_initial`` (run_iteration) and ``replay`` (API-5).
         """
         return (outputs is not None
                 or isinstance(observed, Mapping)
@@ -431,7 +434,8 @@ class CalibrationManager:
                 or metrics is not None
                 or run_ids is not None
                 or run_id is not None
-                or is_initial)
+                or is_initial
+                or replay is not None)
 
     def _store_next_id(self) -> int:
         """Next run id for the session store (continues the manager's counter)."""
@@ -452,7 +456,8 @@ class CalibrationManager:
 
     def _run_iteration_multi(self, param_dict, observed, metric, outputs, weights,
                              metrics, calib_period, valid_period, step, agg, store,
-                             run_id, is_initial, methods, subbasins) -> float:
+                             run_id, is_initial, methods, subbasins,
+                             replay=None) -> float:
         observed_dict, outputs_dict = normalise_observed(observed, outputs)
         metric = "nse" if metric is None else metric
         check_weights(weights, list(observed_dict.keys()))
@@ -461,6 +466,20 @@ class CalibrationManager:
         _resolve_metrics(metric, metrics)   # unknown metric fails before any SWAT run
         formatted = (self._format_params(param_dict, methods, subbasins)
                      if self._is_raw(param_dict) else param_dict)
+
+        # ── resume by replay: answer from the store without running SWAT ────
+        if replay is not None:
+            self._store_counter = max(self._store_counter, replay.next_run_id - 1)
+            taken = replay.take([_raw_param_values(formatted)])
+            if taken[0] is not None:
+                stored = taken[0]
+                if stored.status == "ok":
+                    return float(stored.score)
+                # A stored failed run re-raises exactly like an uninterrupted
+                # failed run, so DDSCalibration aborts (on_failure="raise") or
+                # penalises to NaN (on_failure="penalize") without re-running.
+                raise RuntimeError(f"Iteration failed: {stored.error}")
+
         freq = self._sim_freq()
         warmup = self.warmup_end()
         self._backup_state(names=formatted.keys())
@@ -610,7 +629,8 @@ class CalibrationManager:
                   methods=None, subbasins=None,
                   *, metric=None, outputs=None, weights=None,
                   calib_period=None, valid_period=None, step=None, agg=None,
-                  store=None, run_ids=None, is_initial=False) -> pd.DataFrame:
+                  store=None, run_ids=None, is_initial=False,
+                  replay=None) -> pd.DataFrame:
         """
         Return DataFrame. param_sets can be list of {name: float} (raw) or
         {name: [(val, method, ...)]} (pre-formatted) -- both are accepted.
@@ -632,11 +652,12 @@ class CalibrationManager:
         """
         if self._new_path(observed, outputs, weights, calib_period, store,
                           valid_period=valid_period, step=step, agg=agg,
-                          metric=metric, run_ids=run_ids, is_initial=is_initial):
+                          metric=metric, run_ids=run_ids, is_initial=is_initial,
+                          replay=replay):
             return self._run_batch_multi(
                 param_sets, observed, metric, outputs, weights, metrics,
                 calib_period, valid_period, step, agg, store, run_ids, is_initial,
-                methods, subbasins,
+                methods, subbasins, replay,
             )
         # ── deprecated single-site path (behaviour unchanged) ──────────────
         reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
@@ -744,7 +765,8 @@ class CalibrationManager:
 
     def _run_batch_multi(self, param_sets, observed, metric, outputs, weights,
                          metrics, calib_period, valid_period, step, agg, store,
-                         run_ids, is_initial, methods, subbasins) -> pd.DataFrame:
+                         run_ids, is_initial, methods, subbasins,
+                         replay=None) -> pd.DataFrame:
         observed_dict, outputs_dict = normalise_observed(observed, outputs)
         metric = "nse" if metric is None else metric
         check_weights(weights, list(observed_dict.keys()))
@@ -757,42 +779,69 @@ class CalibrationManager:
             for p in param_sets
         ]
         total = len(formatted_sets)
+
+        # ── resume by replay: answer a committed prefix without running SWAT ──
+        replayed_rows = []
+        if replay is not None:
+            taken = replay.take([_raw_param_values(p) for p in formatted_sets])
+            for stored in taken:
+                if stored is None:
+                    break
+                replayed_rows.append(self._build_multisite_row(
+                    stored.score, stored.site_metrics, reported, observed_dict))
+            # Continue live run ids after the last stored id (idempotent across
+            # the multiple run_batch/run_iteration calls of PSO/DE/DDS).
+            self._store_counter = max(self._store_counter, replay.next_run_id - 1)
+        n_replayed = len(replayed_rows)
+        live_sets = formatted_sets[n_replayed:]
+        n_live = len(live_sets)
+
+        if store is not None:
+            if run_ids is None:
+                run_ids = list(range(self._store_counter + 1,
+                                     self._store_counter + n_live + 1))
+                self._store_counter += n_live
+            else:
+                run_ids = list(run_ids)
+                if len(run_ids) != n_live:
+                    raise ValueError(
+                        f"run_ids has {len(run_ids)} entries, expected {n_live}."
+                    )
+
+        columns = ["score"] + [
+            f"{m}@{var}@{reach}"
+            for (var, reach) in sorted(observed_dict) for m in reported
+        ]
+
+        # ── the whole batch was replayed: no workers, no queue, no parallel ──
+        if n_live == 0:
+            return pd.DataFrame(replayed_rows, columns=columns)
+
         wf = self.project.WorkingFolder
         n_workers = wf.n_parallel
-        total_batches = (total + n_workers - 1) // n_workers
+        total_batches = (n_live + n_workers - 1) // n_workers
 
         freq = self._sim_freq()
         warmup = self.warmup_end()
         extract = partial(_extract_outputs, outputs=outputs_dict)
 
-        if store is not None:
-            if run_ids is None:
-                run_ids = list(range(self._store_counter + 1, self._store_counter + total + 1))
-                self._store_counter += total
-            else:
-                run_ids = list(run_ids)
-                if len(run_ids) != total:
-                    raise ValueError(
-                        f"run_ids has {len(run_ids)} entries, expected {total}."
-                    )
-
         try:
             from tqdm import tqdm
-            pbar = tqdm(total=total, desc="SWAT runs", unit="run")
+            pbar = tqdm(total=n_live, desc="SWAT runs", unit="run")
         except ImportError:
             pbar = None
 
         log_queue = Logger.init_queue_listener()
         logger.info(
-            f"[run_batch] Starting — {total} runs, "
+            f"[run_batch] Starting — {n_live} runs, "
             f"{n_workers} workers, {total_batches} batches"
         )
 
-        all_rows = []
+        live_rows = []
         try:
-            for chunk_start in range(0, total, n_workers):
+            for chunk_start in range(0, n_live, n_workers):
                 batch_num = chunk_start // n_workers + 1
-                chunk = formatted_sets[chunk_start: chunk_start + n_workers]
+                chunk = live_sets[chunk_start: chunk_start + n_workers]
 
                 results = wf.run_parallel(
                     self.project.swat_exe.swat_exe_path,
@@ -809,7 +858,7 @@ class CalibrationManager:
                     sim_dated = None
                     if not res.ok:
                         run_error = res.error
-                        logger.error(f"[run_batch] Run {idx + 1} failed "
+                        logger.error(f"[run_batch] Run {n_replayed + idx + 1} failed "
                                      f"(worker {j + 1}): {res.error}")
                     else:
                         try:
@@ -833,12 +882,12 @@ class CalibrationManager:
                             site_metrics = None
                             sim_dated = None
                             logger.warning(
-                                f"[run_batch] Run {idx + 1} (worker {j + 1}) "
+                                f"[run_batch] Run {n_replayed + idx + 1} (worker {j + 1}) "
                                 f"output unreadable: {e}"
                             )
                     row = self._build_multisite_row(score, site_metrics, reported,
                                                     observed_dict)
-                    all_rows.append(row)
+                    live_rows.append(row)
                     if store is not None:
                         rid = run_ids[idx] if run_ids is not None else self._store_next_id()
                         self._add_run_to_store(
@@ -851,7 +900,7 @@ class CalibrationManager:
                 done = chunk_start + len(chunk)
                 logger.info(
                     f"[Batch {batch_num}/{total_batches}] "
-                    f"{done}/{total} runs ({done / total:.0%})"
+                    f"{done}/{n_live} runs ({done / n_live:.0%})"
                 )
                 if pbar is not None:
                     pbar.update(len(chunk))
@@ -863,11 +912,7 @@ class CalibrationManager:
             self.flush_log()
 
         logger.info(f"[run_batch] Done — {total} runs complete")
-        columns = ["score"] + [
-            f"{m}@{var}@{reach}"
-            for (var, reach) in sorted(observed_dict) for m in reported
-        ]
-        return pd.DataFrame(all_rows, columns=columns)
+        return pd.DataFrame(replayed_rows + live_rows, columns=columns)
 
     @staticmethod
     def _build_multisite_row(score, site_metrics, reported, observed_dict) -> dict:

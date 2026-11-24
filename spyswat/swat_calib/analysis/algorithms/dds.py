@@ -380,6 +380,7 @@ class DDSCalibration:
         step=None,
         agg=None,
         store=None,
+        replay=None,
     ) -> dict:
         """
         Run DDS calibration.
@@ -446,7 +447,7 @@ class DDSCalibration:
                 metric=metric, outputs=outputs, weights=weights, metrics=metrics,
                 calib_period=calib_period, valid_period=valid_period, step=step,
                 agg=agg, store=store, methods=methods, subbasins=subbasins,
-                is_initial=is_initial,
+                is_initial=is_initial, replay=replay,
             )
             if on_failure == "penalize":
                 try:
