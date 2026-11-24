@@ -327,13 +327,18 @@ def test_calibration_existing_session_resume_false_raises(proj):
                          sensitivity=False)
 
 
-def test_calibration_existing_session_resume_true_not_implemented(proj):
+def test_calibration_existing_session_resume_true_replays(proj):
     res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
                            n_samples=3, seed=1, sensitivity=False)
-    with pytest.raises(NotImplementedError, match="API-5"):
-        proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
-                         n_samples=3, seed=1, session=res.session_dir.name,
-                         resume=True, sensitivity=False)
+    name = res.session_dir.name
+    resumed = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
+                               n_samples=3, seed=1, session=name, resume=True,
+                               sensitivity=False)
+    assert resumed.best_score == pytest.approx(res.best_score)
+    assert resumed.best_run_id == res.best_run_id
+    assert resumed.best_params == res.best_params
+    pd.testing.assert_frame_equal(
+        resumed.runs.drop(columns=["time"]), res.runs.drop(columns=["time"]))
 
 
 # ── evaluate facade ──────────────────────────────────────────────────────────
