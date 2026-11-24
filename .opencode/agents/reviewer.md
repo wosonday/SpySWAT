@@ -4,6 +4,10 @@ mode: primary
 # Optional: pin a verified strong model from `opencode models`, e.g.:
 # model: openai/gpt-6.1-sol
 permission:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
   edit:
     "*": deny
     ".agents/reviews/*": allow

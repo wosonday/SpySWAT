@@ -220,7 +220,9 @@ python -m spyswat --help
 ```
 
 On Windows the skipped tests are POSIX-only fake-executable tests (`tests/test_run.py`)
-and SALib tests when SALib is not installed. Of these, 87 are harness lint tests
+and SALib tests when SALib is not installed.
+
+Of the 451 passing tests, 87 are harness lint tests
 (`tests/test_harness_*.py`, `tests/test_guardrail_examples.py`) that check `docs/agents/`;
 they stay in the repository but are excluded from the sdist.
 

@@ -4,6 +4,10 @@ mode: subagent
 # Optional: pin a verified free/local model from `opencode models`, e.g.:
 # model: opencode/deepseek-v4.1-flash-free
 permission:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
   edit: deny
   bash:
     "*": deny

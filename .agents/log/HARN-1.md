@@ -31,3 +31,18 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Decision: sdist not built (task forbids `uv build`/`python -m build`); the exclusion is verified by the Architect.
 - Blocked / question: none.
 - Previous commit: 7946614
+
+## 2026-11-24 · worker-fast · rework 1/3 — decision correction
+- Done: committed the Architect's `Correction after Architect probes` section in `.agents/decisions/HARN-1.md` verbatim (item 3 was insufficient: `execute: deny` alone exposes plugin tools such as `browse_*` and the worktree tools).
+- Files changed: `.agents/decisions/HARN-1.md` (committed unchanged, no edits)
+- Checks: `git status --porcelain` before commit → only ` M .agents/decisions/HARN-1.md`
+- Decision: no coordination file edited (one writer per file).
+- Previous commit: a80f5ea
+
+## 2026-11-24 · worker-fast · rework 2/3 — corrected permissions, docs bullet, AGENTS.md paragraph
+- Done: corrected change 3 per the decision — `"*": deny`, `read: allow`, `glob: allow`, `grep: allow` inserted as the first keys under `permission:` (2-space indent) in `.opencode/agents/explore.md`, `reviewer.md`, `auditor.md`; every existing key kept (incl. `edit`, `bash`, `webfetch: deny`, `execute: deny`, `task: deny`). Rewrote the added bullet in `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md` §3: read-only agents need a default `"*": deny` with explicit allows because `execute` is a code-mode wrapper around plugin/MCP tools (`browse_*`, worktree tools) that appear when it alone is denied. In `AGENTS.md` the 87-harness-tests sentence is now its own paragraph starting `Of the 451 passing tests, 87 are harness lint tests`.
+- Files changed: `.opencode/agents/explore.md`, `.opencode/agents/reviewer.md`, `.opencode/agents/auditor.md`, `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md`, `AGENTS.md`, `.agents/log/HARN-1.md`
+- Checks: `python -m pytest tests/ -q` → 451 passed / 11 skipped / 0 failed (5 warnings, 24 subtests) in 222.45s — unchanged baseline. `git diff` reviewed: only the keys/paragraph/bullet above, nothing else.
+- Decision: task-file items 1 (`pyproject.toml` sdist exclude) untouched and still in place from step 2; no `uv build`/`python -m build` here (not permitted) — the Architect verifies the sdist.
+- Blocked / question: none. Nothing merged or pushed.
+- Previous commit: a80f5ea
