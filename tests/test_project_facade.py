@@ -243,6 +243,16 @@ def test_calibration_observed_hash_order_and_data_sensitivity(proj):
     assert h1 != h3
 
 
+def test_observed_hash_normalises_minus_zero(proj):
+    from spyswat.swat_project import _hash_observed
+    idx = pd.DatetimeIndex(["2000-01-01", "2000-01-02"])
+    a = {("FLOW_OUTcms", 1): pd.Series([0.0, -0.0], index=idx)}
+    b = {("FLOW_OUTcms", 1): pd.Series([-0.0, 0.0], index=idx)}
+    c = {("FLOW_OUTcms", 1): pd.Series([0.0, 0.0], index=idx)}
+    # -0.0 normalises to 0.0, so all three hash identically (API-4-3).
+    assert _hash_observed(a) == _hash_observed(b) == _hash_observed(c)
+
+
 def test_calibration_constant_and_collinear_parameter_sensitivity(proj, tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

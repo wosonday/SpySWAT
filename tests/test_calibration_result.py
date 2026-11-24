@@ -182,6 +182,28 @@ def test_select_invalid_operator_raises(tmp_path):
         res.select(nse__bogus=0.5)
 
 
+def test_select_drops_failed_even_with_finite_score(tmp_path):
+    # API-4-3: select() must filter status == "ok", not rely on a failed run's
+    # NaN score. Here the failed run carries a finite score that would otherwise
+    # satisfy the condition.
+    runs = pd.DataFrame({
+        "run_id": [1, 2],
+        "time": ["t", "t"],
+        "status": ["ok", "failed"],
+        "error": ["", "boom"],
+        "is_initial": [True, True],
+        "CN2.mgt": [50.0, 60.0],
+        "ALPHA_BF.gw": [0.5, 0.6],
+        "score": [0.8, 0.95],
+    })
+    res = CalibrationResult(
+        best_params={}, best_score=0.8, best_run_id=1, metric="nse", runs=runs,
+        session_dir=tmp_path / "s", sites=SITES,
+    )
+    picked = res.select(score__gt=0.7)
+    assert [p.name for p in picked] == ["run_1"]
+
+
 # ── best_param_set ───────────────────────────────────────────────────────────
 
 def test_best_param_set_named_after_run(tmp_path):
