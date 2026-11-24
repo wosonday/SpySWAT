@@ -418,11 +418,16 @@ _check_observation_steps()  → chỉ với kịch bản evaluate=True; lệch �
 signature (.signature.json)  → resume=True mà cấu hình đổi → ValueError
      │
      ▼
-<working_dir>/_scenario_batch/   (không đụng worker của project)
-  WorkingFolderManager.run_parallel(
-      overlays = weather files theo việc,
-      prepare  = _prepare_dispatch  (FileCIO.set(**cio) theo worker),
-      extract  = _extract_dispatch  (bảng date × "{biến}@{reach}" → CSV, tính metric))
+<working_dir>/_scenario_batch/TxInOut1..N   (tối đa n_parallel slot, không đụng worker của project)
+  Một ProcessPoolExecutor(max_workers=n_parallel) cho cả lô; Scheduler (scenarios/scheduler.py)
+  giữ hàng đợi việc theo thứ tự kế hoạch:
+  - Slot rảnh nhận việc tiếp theo: ưu tiên việc cùng base TxtInOut hiện tại (không chép lại),
+    nếu không có thì lấy việc đầu hàng đợi và reseed (xóa slot, copytree lại base trong worker)
+  - _seed_and_run → _worker_job: chép overlays từ weather_dir, prepare=_prepare_dispatch
+    (FileCIO.set(**cio)), chạy SWAT, extract=_extract_dispatch (bảng date × "{biến}@{reach}" → CSV,
+    tính metric)
+  - Lưu metrics.csv rồi summary.csv theo thứ tự kế hoạch sau mỗi n_parallel kết quả hoặc mỗi 10 s,
+    và luôn lưu khi thoát (kể cả KeyboardInterrupt / ngoại lệ, rồi ném lại lỗi)
      │
      ▼
 results_dir/
@@ -433,7 +438,7 @@ results_dir/
   (summary.csv bị khóa → ghi file có dấu thời gian + cảnh báo, không mất kết quả)
 ```
 
-Việc lỗi không dừng lô (`status="failed"`); `resume=True` bỏ qua việc đã `ok` và còn file series. Kịch bản lịch sử không có ngày chung với thực đo được xử lý như `evaluate=False` (`eval_note` trong `summary.csv`).
+Việc lỗi không dừng lô (`status="failed"`): sau việc lỗi, slot được reseed trước việc kế tiếp (nếu thư mục slot bị khóa không xóa được thì thành `unusable`; nếu chép base lỗi thì các việc còn lại của base đó bị fail). `weather_dir` không đọc được hoặc pool bị gãy (`BrokenProcessPool`) đánh dấu `failed` cho các việc bị ảnh hưởng (giữ nguyên các kết quả hợp lệ đã hoàn thành) và `run()` vẫn trả về `BatchResult`; `resume=True` bỏ qua việc đã `ok` và còn file series để chạy lại phần còn lại. Kịch bản lịch sử không có ngày chung với thực đo được xử lý như `evaluate=False` (`eval_note` trong `summary.csv`).
 
 ---
 

@@ -49,7 +49,8 @@ spyswat/
     │   └── validation_runner.py    ← ValidationRunner, PeriodConfig
     ├── scenarios/
     │   ├── model.py                ← Scenario, ParamSet, Job, RunResult
-    │   └── batch.py                ← ScenarioBatch, BatchResult
+    │   ├── batch.py                ← ScenarioBatch, BatchResult
+    │   └── scheduler.py            ← Scheduler, Slot: single-pool job queue & slot state
     ├── analysis/
     │   ├── statistics.py           ← SWATAnalysis + metric registry (METRIC_DIRECTIONS, ...)
     │   ├── calibration.py          ← SWATCalibration: facade (optimize, analyze)

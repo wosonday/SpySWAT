@@ -542,7 +542,7 @@ if __name__ == "__main__":
 | `Scenario(evaluate=False)` | Kịch bản tương lai / GCM: vẫn ghi chuỗi, không tính chỉ số, không kiểm bước thời gian |
 | `resume=True` | Bỏ qua việc đã xong; báo lỗi nếu outputs, metrics, thực đo hoặc định nghĩa kịch bản đã đổi |
 
-Một việc lỗi không làm dừng cả lô (`status="failed"`, lỗi ghi trong `summary.csv`). Tên chỉ gồm chữ, số, `.`, `_`, `-` và không được chứa `__`. Ví dụ đầy đủ: `docs/sample_run_scenarios.py`.
+Toàn bộ lô chạy trên một process pool duy nhất với tối đa `n_parallel` thư mục worker (`_scenario_batch/TxInOut1..N`): slot nào xong sẽ nhận ngay việc tiếp theo (ưu tiên việc cùng TxtInOut gốc trước khi chép lại gốc khác). Kết quả được lưu vào `metrics.csv` và `summary.csv` theo tiến độ và khi thoát (kể cả khi nhấn `KeyboardInterrupt`). Một việc lỗi, `weather_dir` không đọc được, thư mục gốc lỗi hoặc worker pool bị gãy chỉ đánh dấu `status="failed"` cho các việc bị ảnh hưởng và `run()` vẫn trả về kết quả, nên `resume=True` có thể chạy lại chúng. Tên chỉ gồm chữ, số, `.`, `_`, `-` và không được chứa `__`. Ví dụ đầy đủ: `docs/sample_run_scenarios.py`.
 
 ---
 

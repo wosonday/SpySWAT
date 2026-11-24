@@ -336,3 +336,8 @@ Append-only. Correct a mistake by adding a new entry below it.
   branch `feat/PAR-1` at `9dfbbbf`. Items 1-3 of the Round 4 correction implemented and
   verified; nothing else changed.
 - Previous commit: `9dfbbbf`
+
+## 2026-11-24 · Gemini 4 Hydrogen (Medium) (docs-hyd) · step 17/N — docs update
+- Updated documentation for PAR-1 (single-pool job queue / slot scheduler in `ScenarioBatch.run()` and `scenarios/scheduler.py`).
+- Files changed: `CHANGELOG.md`, `ARCHITECTURE.md` (section 3.7), `README.md` (Scenario Batch section), `README_VI.md` (Chạy theo kịch bản section), `AGENTS.md` (quick-orientation tree), `.agents/log/PAR-1.md`.
+- Checks: none (docs-only update; shell commands not run).

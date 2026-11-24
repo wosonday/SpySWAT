@@ -565,7 +565,7 @@ if __name__ == "__main__":
 | `Scenario(evaluate=False)` | Future / GCM run: series written, no metrics, no observation-step check |
 | `resume=True` | Skip finished jobs; raises if outputs, metrics, observations or a definition changed |
 
-A failed job never stops the batch (`status="failed"` with the error in `summary.csv`). Names may use letters, digits, `.`, `_`, `-` but not `__`. Full example: `docs/sample_run_scenarios.py`.
+All jobs run on a single process pool across at most `n_parallel` worker folders (`_scenario_batch/TxInOut1..N`): as soon as a slot finishes, it takes the next pending job (preferring the same base TxtInOut before re-copying another base). Results are saved to `metrics.csv` and `summary.csv` as jobs finish and on any exit (including `KeyboardInterrupt`). A failed job, unreadable `weather_dir`, bad base TxtInOut, or broken worker pool marks only the affected jobs `status="failed"` and `run()` still returns, so `resume=True` can re-run them. Names may use letters, digits, `.`, `_`, `-` but not `__`. Full example: `docs/sample_run_scenarios.py`.
 
 ---
 
