@@ -331,7 +331,10 @@ class CalibrationResult:
         runs = self.runs
         if "run_id" not in runs.columns or "score" not in runs.columns:
             raise ValueError("runs needs 'run_id' and 'score' columns")
-        keep = np.ones(len(runs), dtype=bool)
+        if "status" in runs.columns:
+            keep = runs["status"].eq("ok").fillna(False).to_numpy(dtype=bool)
+        else:
+            keep = np.ones(len(runs), dtype=bool)
         for key, threshold in conditions.items():
             name, op = _split_condition(key)
             keep = keep & self._condition_mask(name, op, threshold, site, period, how)

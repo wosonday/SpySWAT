@@ -277,6 +277,7 @@ class SWATProject:
             _resolve_metrics, _flatten_sites,
         )
         from spyswat.swat_calib.calibration.session_store import SessionStore
+        from spyswat.swat_calib.calibration.replay import ReplayCursor, check_param_order
         import numpy as np
 
         if algorithm not in ("glue", "pso", "de", "dds"):
@@ -284,7 +285,6 @@ class SWATProject:
                 f"algorithm must be one of glue/pso/de/dds, got {algorithm!r}")
 
         manager = CalibrationManager(self)
-        seed = _resolve_seed(seed)                     # decision 9: resolve first
 
         bounds, methods, subbasins = manager._parse_spec(param_ranges)
         methods = {**methods, **(param_methods or {})}
@@ -310,34 +310,66 @@ class SWATProject:
 
         results_dir = Path(results_dir) if results_dir is not None else (
             self.working_folder / "calibration_results")
-        session_dir = self._resolve_session_dir(
-            results_dir, session, algorithm, metric, resume)
-
         sites = _flatten_sites(outputs_dict)           # gauged + ungauged sites
-        signature = {
-            "algorithm": algorithm,
-            "metric": metric,
-            "metrics": list(reported),
-            "seed": seed,
-            "param_ranges": param_ranges,
-            "methods": methods,
-            "subbasins": subbasins,
-            "calib_period": self._serialize_period(calib_period),
-            "valid_period": self._serialize_period(valid_period),
-            "weights": {f"{v}@{r}": w for (v, r), w in weights_norm.items()},
-            "step": step,
-            "agg": agg,
-            "n_parallel": n_parallel,
-            "outputs": {v: list(rs) for v, rs in outputs_dict.items()},
-            "observed_sites": [[v, r] for (v, r) in observed_sites],
-            "observed_hash": _hash_observed(observed_dict),
-            "options": dict(algorithm_options),
-            "on_failure": algorithm_options.get("on_failure", "raise"),
-            "numpy_version": np.__version__,
-        }
-        store = SessionStore(session_dir, signature=signature,
-                             param_names=param_names, sites=sites)
-        wrapped = RawParamsStore(store)
+
+        # ── session resolution (fresh vs. resume by replay) ──────────────
+        session_dir = self._resolve_session_dir(
+            results_dir, session, algorithm, metric)
+        session_exists = (session_dir / "session.json").exists()
+
+        def _signature():
+            """The session signature, built exactly as on creation (decision 8)."""
+            return {
+                "algorithm": algorithm,
+                "metric": metric,
+                "metrics": list(reported),
+                "seed": seed,
+                "param_ranges": param_ranges,
+                "methods": methods,
+                "subbasins": subbasins,
+                "calib_period": self._serialize_period(calib_period),
+                "valid_period": self._serialize_period(valid_period),
+                "weights": {f"{v}@{r}": w for (v, r), w in weights_norm.items()},
+                "step": step,
+                "agg": agg,
+                "n_parallel": n_parallel,
+                "outputs": {v: list(rs) for v, rs in outputs_dict.items()},
+                "observed_sites": [[v, r] for (v, r) in observed_sites],
+                "observed_hash": _hash_observed(observed_dict),
+                "options": dict(algorithm_options),
+                "on_failure": algorithm_options.get("on_failure", "raise"),
+                "numpy_version": np.__version__,
+            }
+
+        replay = None
+        if session_exists:
+            if not resume:
+                raise FileExistsError(f"Session already exists at {session_dir}")
+            # Resume by replay: open the committed store and validate the
+            # configuration BEFORE anything is (re)written (decision 9).
+            store = SessionStore.open(session_dir)
+            stored_seed = (store.signature or {}).get("seed")
+            if seed is None:
+                if stored_seed is None:
+                    raise ValueError(
+                        "cannot resume: stored session.json has no seed"
+                    )
+                seed = stored_seed
+            else:
+                seed = _resolve_seed(seed)
+            check_param_order(store, param_ranges)
+            store.check_signature(_signature())   # ValueError listing differences
+            replay = ReplayCursor(store)
+            wrapped = RawParamsStore(store)
+        else:
+            if session is not None and resume:
+                raise FileNotFoundError(
+                    f"No session at {session_dir}: session.json not found"
+                )
+            seed = _resolve_seed(seed)            # decision 9: resolve first
+            store = SessionStore(session_dir, signature=_signature(),
+                                 param_names=param_names, sites=sites)
+            wrapped = RawParamsStore(store)
 
         algo_cls = {"glue": GLUE, "pso": PSOCalibration,
                     "de": ParallelDE, "dds": DDSCalibration}[algorithm]
@@ -348,7 +380,7 @@ class SWATProject:
                 param_ranges, observed,
                 metric=metric, metrics=metrics, weights=weights, outputs=outputs,
                 calib_period=calib_period, valid_period=valid_period,
-                step=step, agg=agg, store=wrapped, seed=seed,
+                step=step, agg=agg, store=wrapped, seed=seed, replay=replay,
                 param_methods=param_methods, param_subbasins=param_subbasins,
                 **algorithm_options,
             )
@@ -429,17 +461,12 @@ class SWATProject:
             return None, str(exc)
 
     @staticmethod
-    def _resolve_session_dir(results_dir, session, algorithm, metric, resume):
-        """The session folder for a calibration (fresh, or the named existing one)."""
+    def _resolve_session_dir(results_dir, session, algorithm, metric):
+        """The session folder path for a calibration (nothing is created here)."""
         from datetime import datetime
         results_dir = Path(results_dir)
         if session is not None:
-            session_dir = results_dir / str(session)
-            if (session_dir / "session.json").exists():
-                if resume:
-                    raise NotImplementedError("resume by replay arrives in API-5")
-                raise FileExistsError(f"Session already exists at {session_dir}")
-            return session_dir
+            return results_dir / str(session)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = f"{stamp}_{algorithm}_{metric}"
         session_dir = results_dir / base
@@ -582,7 +609,8 @@ def _hash_observed(observed_dict) -> str:
         for ts in idx:
             h.update(ts.isoformat().encode("utf-8"))
             h.update(b"\0")
-        vals = np.ascontiguousarray(series.to_numpy(dtype=np.float64))
+        vals = np.array(series.to_numpy(dtype="<f8"), dtype="<f8", copy=True)
+        vals[vals == 0.0] = 0.0                    # normalise -0.0 -> 0.0
         h.update(vals.tobytes())
     return h.hexdigest()
 

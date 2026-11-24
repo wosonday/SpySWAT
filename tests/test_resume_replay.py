@@ -250,7 +250,7 @@ def test_glue_mid_chunk_interrupt_discards_partial_chunk(proj2, tmp_path):
     with pytest.raises(KeyboardInterrupt):
         _run_algo("glue", CalibrationManager(proj2), obs, store=int_store)
     int_store.close()
-    assert int_counter["n"] == 4                # evals 1,2 committed; 3 raised, 4 never ran
+    assert int_counter["n"] == 4                # evals 1,2 committed; 3 ran, 4 raised -> chunk [3,4] discarded
 
     opened = SessionStore.open(tmp_path / "int")
     cursor = ReplayCursor(opened)
@@ -420,8 +420,130 @@ def test_replay_cursor_param_mismatch_names_run_and_values(tmp_path):
     _add_run(store, 1, cn2=50.0, alpha=0.5)
     store.close()
     cursor = ReplayCursor(SessionStore.open(tmp_path / "s"))
-    with pytest.raises(ResumeMismatchError, match="run 1"):
+    with pytest.raises(ResumeMismatchError) as excinfo:
         cursor.take([{"CN2.mgt": 99.0, "ALPHA_BF.gw": 0.5}])
+    message = str(excinfo.value)
+    assert "run 1" in message
+    assert "CN2.mgt" in message
+    assert "50.0" in message
+    assert "99.0" in message
+
+
+def test_replay_cursor_unwraps_formatted_param_dicts(tmp_path):
+    store = _store(tmp_path, "s", sites=[("FLOW_OUTcms", 1)])
+    _add_run(store, 1, cn2=50.0, alpha=0.5)
+    store.close()
+    cursor = ReplayCursor(SessionStore.open(tmp_path / "s"))
+    taken = cursor.take([
+        {"CN2.mgt": [(50.0, "v")], "ALPHA_BF.gw": [(0.5, "v")]},
+    ])
+    assert len(taken) == 1 and taken[0] is not None
+    assert taken[0].run_id == 1
+    assert taken[0].params == {"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.5}
+
+
+def test_replay_cursor_does_not_advance_on_batch_mismatch(tmp_path):
+    store = _store(tmp_path, "s", sites=[("FLOW_OUTcms", 1)])
+    _add_run(store, 1, cn2=50.0, alpha=0.5)
+    _add_run(store, 2, cn2=60.0, alpha=0.5)
+    store.close()
+    cursor = ReplayCursor(SessionStore.open(tmp_path / "s"))
+    assert cursor.remaining == 2
+    with pytest.raises(ResumeMismatchError):
+        cursor.take([{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.5},
+                     {"CN2.mgt": 99.0, "ALPHA_BF.gw": 0.5}])
+    # a mismatch mid-batch leaves the cursor untouched
+    assert cursor.remaining == 2
+    assert cursor.next_run_id == 3
+
+
+def test_run_batch_replay_without_store_routes_multisite(proj, tmp_path):
+    obs = _two_site_obs()
+    store = _store(tmp_path, "s")
+    _install_fake("glue", proj, counter={"n": 0})
+    CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=store)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "s")
+    cursor = ReplayCursor(opened)
+    counter = {"n": 0}
+    _install_fake("glue", proj, counter=counter)
+    df = CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2},
+         {"CN2.mgt": 70.0, "ALPHA_BF.gw": 0.3}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=None, replay=cursor)
+    opened.close()
+    assert counter["n"] == 1            # only the new run executed
+    assert list(df.columns) == ["score", "nse@FLOW_OUTcms@1", "nse@SED_OUTtons@51"]
+    assert len(df) == 3
+    assert not np.isnan(df["score"].iloc[0])
+
+
+def test_run_batch_run_ids_sliced_for_live_tail(proj, tmp_path):
+    """A partial-replay batch takes one id per submitted set and keeps the tail."""
+    obs = _two_site_obs()
+    store = _store(tmp_path, "s")
+    _install_fake("glue", proj, counter={"n": 0})
+    CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=store)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "s")
+    cursor = ReplayCursor(opened)
+    counter = {"n": 0}
+    _install_fake("glue", proj, counter=counter)
+    df = CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2},
+         {"CN2.mgt": 70.0, "ALPHA_BF.gw": 0.3}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=opened, replay=cursor,
+        run_ids=[1, 2, 3])
+    opened.close()
+
+    assert counter["n"] == 1                       # only the live tail ran
+    assert len(df) == 3
+    # the live run took run_ids[n_replayed] == 3, not run_ids[0] == 1
+    assert _run_ids(tmp_path / "s") == [1, 2, 3]
+
+
+def test_run_batch_run_ids_length_checked_against_total(proj, tmp_path):
+    """run_ids must cover replay + live runs; a mismatch commits nothing."""
+    obs = _two_site_obs()
+    store = _store(tmp_path, "s")
+    _install_fake("glue", proj, counter={"n": 0})
+    CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=store)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "s")
+    cursor = ReplayCursor(opened)
+    counter = {"n": 0}
+    _install_fake("glue", proj, counter=counter)
+    with pytest.raises(ValueError, match=r"run_ids has 2 entries, expected 3"):
+        CalibrationManager(proj).run_batch(
+            [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+             {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2},
+             {"CN2.mgt": 70.0, "ALPHA_BF.gw": 0.3}],
+            obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+            calib_period=CALIB_PERIOD, store=opened, replay=cursor,
+            run_ids=[1, 2])
+    opened.close()
+
+    assert counter["n"] == 0                       # rejected before any worker
+    assert _run_ids(tmp_path / "s") == [1, 2]
 
 
 def test_replay_cursor_minus_zero_matches_zero(tmp_path):

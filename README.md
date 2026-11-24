@@ -215,7 +215,16 @@ res = project.calibration(
 
 Every evaluation runs the whole `file.cio` simulation period once; `calib_period` drives the objective (`score`), while both `calib_period` and `valid_period` metrics are computed and stored for every run. Your `TxtInOut` is never modified during calibration.
 
-> **Resume by replay (`resume=True`):** planned in 0.3.0 (API-5).
+> **Resume by replay (`resume=True`):** to continue an interrupted or completed
+> calibration, call `project.calibration(...)` again with the same `session=` name
+> and `resume=True` (the default). Already-committed runs are replayed from the
+> session store — SWAT is never re-run for them — and only the remaining evaluations
+> execute. The configuration must match the stored session: the same `param_ranges`
+> (keys, order and bounds), `observed`, `metric`/`metrics`, algorithm options and
+> `seed` (pass `seed=None` to reuse the stored seed); otherwise a `ValueError` is
+> raised and the session is left untouched. A missing session raises
+> `FileNotFoundError`; `resume=False` on an existing session raises
+> `FileExistsError`.
 
 `project.calibration(...)` returns a `CalibrationResult`:
 

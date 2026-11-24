@@ -150,14 +150,18 @@ class ReplayCursor:
         ``ResumeMismatchError`` without advancing the cursor.
         """
         out = []
+        pos = self._pos
         for params in param_sets:
-            if self._pos >= len(self._runs):
+            if pos >= len(self._runs):
                 out.append(None)
                 continue
-            stored = self._runs[self._pos]
+            stored = self._runs[pos]
             self._check(stored, params)
-            self._pos += 1
+            pos += 1
             out.append(stored)
+        # Only advance the cursor once EVERY entry passed ``_check``, so a
+        # mismatch mid-batch leaves the cursor exactly where it was.
+        self._pos = pos
         return out
 
     def _check(self, stored, params) -> None:

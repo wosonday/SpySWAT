@@ -243,6 +243,16 @@ def test_calibration_observed_hash_order_and_data_sensitivity(proj):
     assert h1 != h3
 
 
+def test_observed_hash_normalises_minus_zero(proj):
+    from spyswat.swat_project import _hash_observed
+    idx = pd.DatetimeIndex(["2000-01-01", "2000-01-02"])
+    a = {("FLOW_OUTcms", 1): pd.Series([0.0, -0.0], index=idx)}
+    b = {("FLOW_OUTcms", 1): pd.Series([-0.0, 0.0], index=idx)}
+    c = {("FLOW_OUTcms", 1): pd.Series([0.0, 0.0], index=idx)}
+    # -0.0 normalises to 0.0, so all three hash identically (API-4-3).
+    assert _hash_observed(a) == _hash_observed(b) == _hash_observed(c)
+
+
 def test_calibration_constant_and_collinear_parameter_sensitivity(proj, tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -317,6 +327,48 @@ def test_select_unknown_metric_raises(proj):
         res.select(bogus__gt=0.5)
 
 
+def test_select_drops_failed_even_with_finite_score():
+    # API-4-3: select() must filter status == "ok", not rely on a failed run's
+    # NaN score. Here the failed run carries a finite score that would otherwise
+    # satisfy the condition.
+    runs = pd.DataFrame({
+        "run_id": [1, 2],
+        "time": ["t", "t"],
+        "status": ["ok", "failed"],
+        "error": ["", "boom"],
+        "is_initial": [True, True],
+        "CN2.mgt": [50.0, 60.0],
+        "ALPHA_BF.gw": [0.5, 0.6],
+        "score": [0.8, 0.95],
+    })
+    res = CalibrationResult(
+        best_params={}, best_score=0.8, best_run_id=1, metric="nse", runs=runs,
+        session_dir=Path("s"),
+    )
+    picked = res.select(score__gt=0.7)
+    assert [p.name for p in picked] == ["run_1"]
+
+
+def test_select_handles_nullable_status_with_missing_values():
+    # A pandas nullable string dtype with missing values must not turn the
+    # status mask into an object array holding pd.NA (TypeError on ``keep & ...``).
+    runs = pd.DataFrame({
+        "run_id": [1, 2, 3],
+        "time": ["t", "t", "t"],
+        "status": pd.array(["ok", None, "ok"], dtype="string"),
+        "error": ["", "", ""],
+        "is_initial": [True, True, True],
+        "CN2.mgt": [50.0, 60.0, 70.0],
+        "ALPHA_BF.gw": [0.5, 0.6, 0.7],
+        "score": [0.8, 0.95, 0.7],
+    })
+    res = CalibrationResult(
+        best_params={}, best_score=0.8, best_run_id=1, metric="nse", runs=runs,
+        session_dir=Path("s"),
+    )
+    assert [p.name for p in res.select(score__gt=0.5)] == ["run_1", "run_3"]
+
+
 def test_calibration_existing_session_resume_false_raises(proj):
     res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
                            n_samples=3, seed=1, sensitivity=False)
@@ -327,13 +379,18 @@ def test_calibration_existing_session_resume_false_raises(proj):
                          sensitivity=False)
 
 
-def test_calibration_existing_session_resume_true_not_implemented(proj):
+def test_calibration_existing_session_resume_true_replays(proj):
     res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
                            n_samples=3, seed=1, sensitivity=False)
-    with pytest.raises(NotImplementedError, match="API-5"):
-        proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
-                         n_samples=3, seed=1, session=res.session_dir.name,
-                         resume=True, sensitivity=False)
+    name = res.session_dir.name
+    resumed = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
+                               n_samples=3, seed=1, session=name, resume=True,
+                               sensitivity=False)
+    assert resumed.best_score == pytest.approx(res.best_score)
+    assert resumed.best_run_id == res.best_run_id
+    assert resumed.best_params == res.best_params
+    pd.testing.assert_frame_equal(
+        resumed.runs.drop(columns=["time"]), res.runs.drop(columns=["time"]))
 
 
 # ── evaluate facade ──────────────────────────────────────────────────────────
