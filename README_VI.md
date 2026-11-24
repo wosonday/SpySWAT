@@ -143,11 +143,11 @@ if __name__ == "__main__":
     obs = pd.read_csv("D:/SWAT/observed.csv", index_col="date", parse_dates=True)["flow"]
 
     param_ranges = {
-        "CN2.mgt":     ((35.0, 98.0), "r"),
+        "CN2.mgt":     ((-0.2, 0.2), "r"),
         "ALPHA_BF.gw": (0.0,  1.0),
         "GW_DELAY.gw": (30.0, 450.0),
         "ESCO.hru":    (0.01, 1.0),
-        "SOL_AWC.sol": ((0.01, 0.5), "r"),
+        "SOL_AWC.sol": ((-0.25, 0.25), "r"),
     }
 
     # 1. Hiệu chỉnh trên calib_period và chấm điểm cả valid_period trong cùng một lần chạy
@@ -719,7 +719,7 @@ morris = project.sensitivity(
 print(morris["morris_indices"])
 ```
 
-Quỹ đạo nào có lần chạy lỗi sẽ bị loại khỏi chỉ số Morris. `SWATSensitivity(project).sobol_method(...)` (hoặc `project.sensitivity(..., method="sobol")`) báo `RuntimeError` nếu có lần chạy lỗi, vì chỉ số Sobol cần đủ mẫu; lô chạy tốn kém không bị mất: `sens.last_samples` và `sens.last_scores` (NaN = lỗi) vẫn giữ lại. `morris_salib` và `sobol_method` cần `pip install SALib`.
+Quỹ đạo nào có lần chạy lỗi sẽ bị loại khỏi chỉ số Morris. `sens = SWATSensitivity(project); sens.sobol_method(...)` (hoặc `project.sensitivity(..., method="sobol")`) báo `RuntimeError` nếu có lần chạy lỗi, vì chỉ số Sobol cần đủ mẫu; lô chạy tốn kém không bị mất: `sens.last_samples` và `sens.last_scores` (NaN = lỗi) vẫn giữ lại. `morris_salib` và `sobol_method` cần `pip install SALib`.
 
 ---
 
@@ -971,16 +971,16 @@ calib.optimize(param_ranges, obs, method, metric, max_iter,
 
 # Hạ tầng
 calib.manager                          # CalibrationManager
-calib.manager.run_once(param_dict, *, outputs={"FLOW_OUTcms": [1]}) → {(variable, reach): Series}
-calib.manager.run_iteration(param_dict, observed, metric="nse", *, outputs=None,
-                            weights=None, metrics=None, calib_period=None,
-                            valid_period=None, step=None, agg=None, methods=None,
-                            subbasins=None, store=None, run_id=None, is_initial=False) → float
-calib.manager.run_batch(param_sets, observed, metrics=("nse",), *, metric=None,
-                        outputs=None, weights=None, calib_period=None,
-                        valid_period=None, step=None, agg=None, methods=None,
-                        subbasins=None, store=None, is_initial=False) → list[float]
-calib.manager.record_run(params, scores, status="ok", error=None, sim=None, ...)
+calib.manager.run_once(params, *, outputs=None, methods=None, subbasins=None) → {(variable, reach): Series}
+calib.manager.run_iteration(param_dict, observed, metric=None, methods=None, subbasins=None, *,
+                            outputs=None, weights=None, metrics=None, calib_period=None,
+                            valid_period=None, step=None, agg=None, store=None,
+                            run_id=None, is_initial=False) → float
+calib.manager.run_batch(param_sets, observed, metrics=None, methods=None, subbasins=None, *,
+                        metric=None, outputs=None, weights=None, calib_period=None,
+                        valid_period=None, step=None, agg=None, store=None,
+                        run_ids=None, is_initial=False) → DataFrame
+calib.manager.record_run(params, scores, *, status="ok", error=None, sim=None, ...)
 calib.manager.flush_log() → bool
 calib.manager.results_dir / log_outputs / session_files
 ```

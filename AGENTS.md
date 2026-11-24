@@ -213,7 +213,7 @@ ev = project.evaluate(sim, obs, periods={"valid": ("2011-01-01", "2015-12-31")})
 
 ### Run scenarios × parameter sets
 ```python
-from spyswat.swat_calib.scenarios import Scenario, ParamSet
+from spyswat.swat_calib.scenarios import Scenario
 res_scen = project.scenarios(
     [Scenario("LUC2000", txinout_dir="D:/SWAT/LUC2000/TxtInOut")],
     res.top(5),

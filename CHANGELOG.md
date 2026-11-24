@@ -24,7 +24,7 @@ per-session folder storage, and regression sensitivity from calibration runs.
 - **Per-session folder storage** (`spyswat/swat_calib/calibration/session_store.py`): `SessionStore` writes `session.json`, `runs.csv`, `best.csv`, `sensitivity.csv`, and `reach_<id>/<variable>.csv` (splitting at 16 000 run columns into `<variable>_part2.csv`) + `reach_<id>/<variable>_metrics.csv`.
 - **`CalibrationResult`** (`spyswat/swat_calib/calibration/result.py`): `best_params`, `best_score`, `best_run_id`, `runs`, `metrics`, `sensitivity`, `sensitivity_status`, `session_dir`, `top(n)`, `select(...)`, `best_param_set()`, `series(variable, reach)`, `site_metrics(variable, reach)`, `CalibrationResult.load(session_dir)`, and dict-style access (`"best_params"`, `"best_score"`, `"history"`).
 - **Regression sensitivity** (`spyswat/swat_calib/analysis/regression_sensitivity.py`): `regression_sensitivity(runs, param_ranges, score_col="score")` computing OLS regression on `[0, 1]`-scaled parameters (`coef`, `t_stat`, `p_value`, `rank`, plus `r2`, `n_used`, `n_dropped` in `attrs`).
-- **Planned in 0.3.0 (API-5):** resume by replay (`resume=True` in `project.calibration`).
+- **Resume by replay** (`resume=True` in `project.calibration`): see the [Calibration](README.md#calibration) section for status.
 
 ### Changed
 

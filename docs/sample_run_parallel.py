@@ -27,11 +27,11 @@ def main():
     observed = {("FLOW_OUTcms", 1): obs}
 
     param_ranges = {
-        "CN2.mgt":     ((35.0, 98.0), "r"),
+        "CN2.mgt":     ((-0.2, 0.2), "r"),
         "ALPHA_BF.gw": (0.0, 1.0),
         "GW_DELAY.gw": (30.0, 450.0),
         "ESCO.hru":    (0.01, 1.0),
-        "SOL_AWC.sol": ((0.01, 0.5), "r"),
+        "SOL_AWC.sol": ((-0.25, 0.25), "r"),
     }
 
     # 3. Run parallel GLUE calibration with calib/valid periods + regression sensitivity

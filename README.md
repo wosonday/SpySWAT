@@ -143,11 +143,11 @@ if __name__ == "__main__":
     obs = pd.read_csv("D:/SWAT/observed.csv", index_col="date", parse_dates=True)["flow"]
 
     param_ranges = {
-        "CN2.mgt":     ((35.0, 98.0), "r"),
+        "CN2.mgt":     ((-0.2, 0.2), "r"),
         "ALPHA_BF.gw": (0.0,  1.0),
         "GW_DELAY.gw": (30.0, 450.0),
         "ESCO.hru":    (0.01, 1.0),
-        "SOL_AWC.sol": ((0.01, 0.5), "r"),
+        "SOL_AWC.sol": ((-0.25, 0.25), "r"),
     }
 
     # 1. Calibrate on calib_period and score valid_period in the same run
@@ -733,7 +733,7 @@ morris = project.sensitivity(
 print(morris["morris_indices"])
 ```
 
-A trajectory that contains a failed run is dropped from the Morris indices. `SWATSensitivity(project).sobol_method(...)` (or `project.sensitivity(..., method="sobol")`) raises `RuntimeError` if any run failed, because Sobol indices need the complete sample; the expensive batch is not lost: `sens.last_samples` and `sens.last_scores` (NaN = failed) keep it. `morris_salib` and `sobol_method` need `pip install SALib`.
+A trajectory that contains a failed run is dropped from the Morris indices. `sens = SWATSensitivity(project); sens.sobol_method(...)` (or `project.sensitivity(..., method="sobol")`) raises `RuntimeError` if any run failed, because Sobol indices need the complete sample; the expensive batch is not lost: `sens.last_samples` and `sens.last_scores` (NaN = failed) keep it. `morris_salib` and `sobol_method` need `pip install SALib`.
 
 ---
 
@@ -1033,14 +1033,16 @@ PSOCalibration(manager)
 ```
 CalibrationManager(project)
   .setup_parallel(overwrite=False)
-  .run_once(param_dict, *, outputs={"FLOW_OUTcms": [1]}) → {(variable, reach): Series}
-  .run_iteration(param_dict, observed, metric="nse", *, outputs=None, weights=None,
-                 metrics=None, calib_period=None, valid_period=None, step=None, agg=None,
-                 methods=None, subbasins=None, store=None, run_id=None, is_initial=False) → float
-  .run_batch(param_sets, observed, metrics=("nse",), *, metric=None, outputs=None,
-             weights=None, calib_period=None, valid_period=None, step=None, agg=None,
-             methods=None, subbasins=None, store=None, is_initial=False) → list[float]
-  .record_run(params, scores, status="ok", error=None, sim=None, mode="sequential",
+  .run_once(params, *, outputs=None, methods=None, subbasins=None) → {(variable, reach): Series}
+  .run_iteration(param_dict, observed, metric=None, methods=None, subbasins=None, *,
+                 outputs=None, weights=None, metrics=None, calib_period=None,
+                 valid_period=None, step=None, agg=None, store=None, run_id=None,
+                 is_initial=False) → float
+  .run_batch(param_sets, observed, metrics=None, methods=None, subbasins=None, *,
+             metric=None, outputs=None, weights=None, calib_period=None,
+             valid_period=None, step=None, agg=None, store=None, run_ids=None,
+             is_initial=False) → DataFrame
+  .record_run(params, scores, *, status="ok", error=None, sim=None, mode="sequential",
               reach_id=None, output_variable=None)      append one run to the run log
   .flush_log() → bool                                    write rows buffered while a file was locked
   .results_dir        Path | None (default <working_dir>/calibration_results)
