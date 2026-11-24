@@ -24,6 +24,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with one INFO log line, and an unreadable base directory yields an `unreadable:<Error>`
   sentinel rather than aborting the batch. New module: `spyswat/swat_calib/scenarios/signature.py`
   (`txinout_fingerprint()`).
+- `ScenarioBatch.run()` takes a new keyword `log_queue=None`; when omitted it uses the
+  queue of an already running `Logger.init_queue_listener()` (if any), so worker log
+  records reach the main process on Windows. `run()` never starts a listener itself.
+- The batch work dir is now `<working_folder>/_scenario_batch/<key>`, where `<key>` is
+  the first 10 hex chars of the SHA-1 of the resolved, lower-cased `results_dir`; two
+  batches with different `results_dir` on one project no longer overwrite each other, and
+  the same `results_dir` reuses its folder (resume). Slot folders left directly under
+  `_scenario_batch/` by older versions are no longer used and can be deleted.
 
 ---
 

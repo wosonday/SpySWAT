@@ -5,7 +5,11 @@ synthetic daily output.rch whose values depend on the worker's CURRENT input fil
 Value model (per reach r, day d):  CN2 * PCP / 100 * r + d * 0.01
 where CN2 is read from the first .mgt file and PCP from pcp1.pcp of the worker folder.
 """
+import logging
+import multiprocessing
 import os
+import queue
+import re
 import time
 from pathlib import Path
 
@@ -14,9 +18,11 @@ import pandas as pd
 import pytest
 
 from spyswat import SWATProject
+from spyswat.logger import Logger
 from spyswat.swat_calib.core import TxInOut, HRUManager
 from spyswat.swat_calib.io import SWATParam
 from spyswat.swat_calib.scenarios import ParamSet, Scenario, ScenarioBatch
+from spyswat.swat_calib.scenarios.batch import WORK_SUBDIR
 
 HRU_HEADER = ("Watershed HRU:{h} Subbasin:{s} HRU:{h} Luse:AGRL Soil: Ao90-2-3c-4284 "
               "Slope: 10-20 9/30/2025 12:00:00 AM ArcSWAT 2012.10_4.21")
@@ -842,3 +848,80 @@ def test_broken_pool_drain_keeps_finished_sibling_job(env, tmp_path, monkeypatch
     assert "BrokenProcessPool" in out.results[1].error
     assert (res_dir / "series" / "base__p1.csv").exists()
     assert not (res_dir / "series" / "base__p2.csv").exists()
+
+
+# ── FIX-1: worker log queue (F5) and a per-batch work dir (F6) ────────
+
+WORKER_LOG_MARKER = "worker log "
+
+
+def logging_runner(worker_dir: str) -> None:
+    """fake_runner that also emits one log record from inside the worker process."""
+    logging.getLogger("spyswat.tests.worker").info(WORKER_LOG_MARKER + Path(worker_dir).name)
+    fake_runner(worker_dir)
+
+
+def queued_messages(q) -> list:
+    """Every record currently in a (listener-less) queue, as rendered messages."""
+    out = []
+    while True:
+        try:
+            out.append(q.get(timeout=1.0).getMessage())
+        except queue.Empty:
+            return out
+
+
+def _work_root(env) -> Path:
+    return Path(make_project(env).working_folder) / WORK_SUBDIR
+
+
+def _batch_dirs(work_root: Path) -> list:
+    return sorted(p.name for p in work_root.iterdir() if p.is_dir()) \
+        if work_root.is_dir() else []
+
+
+def test_run_passes_log_queue_to_every_job(env, tmp_path):
+    with multiprocessing.get_context("spawn").Manager() as mgr:
+        q = mgr.Queue(-1)
+        out = ScenarioBatch(make_project(env, n=1), tmp_path / "res").run(
+            [Scenario("base")], PARAMS, outputs=OUTS, runner=logging_runner, log_queue=q)
+        assert set(out.summary["status"]) == {"ok"}
+        msgs = queued_messages(q)
+    assert sum(m.startswith(WORKER_LOG_MARKER) for m in msgs) == len(PARAMS)
+
+
+def test_run_defaults_to_the_logger_queue_and_starts_no_listener(env, tmp_path, monkeypatch):
+    with multiprocessing.get_context("spawn").Manager() as mgr:
+        q = mgr.Queue(-1)
+        monkeypatch.setattr(Logger, "_log_queue", q)
+        monkeypatch.setattr(Logger, "_listener", None)
+        out = ScenarioBatch(make_project(env, n=1), tmp_path / "res").run(
+            [Scenario("base")], PARAMS[:1], outputs=OUTS, runner=logging_runner)
+        assert out.results[0].status == "ok"
+        assert Logger._listener is None          # run() must never start a listener
+        msgs = queued_messages(q)
+    assert any(m.startswith(WORKER_LOG_MARKER) for m in msgs)
+
+
+def test_work_dir_is_keyed_by_results_dir(env, tmp_path):
+    proj = make_project(env, n=1)
+    work_root = _work_root(env)
+    res_a, res_b = tmp_path / "res_a", tmp_path / "res_b"
+
+    ScenarioBatch(proj, res_a).run([Scenario("base")], PARAMS[:1], outputs=OUTS,
+                                   runner=fake_runner)
+    dirs_a = _batch_dirs(work_root)
+    assert len(dirs_a) == 1
+    assert re.fullmatch(r"[0-9a-f]{10}", dirs_a[0])       # key: 10 lowercase hex chars
+    assert (work_root / dirs_a[0] / "TxInOut1").is_dir()
+
+    ScenarioBatch(proj, res_b).run([Scenario("base")], PARAMS[1:2], outputs=OUTS,
+                                   runner=fake_runner)
+    dirs_b = _batch_dirs(work_root)
+    assert len(dirs_b) == 2                                # own work dir, nothing shared
+    assert len(set(dirs_b) - set(dirs_a)) == 1             # the second dir is a new name
+
+    # the same results_dir keeps its work dir: running more jobs adds no new one
+    ScenarioBatch(proj, res_a).run([Scenario("base")], PARAMS[2:3], outputs=OUTS,
+                                   runner=fake_runner)
+    assert _batch_dirs(work_root) == dirs_b

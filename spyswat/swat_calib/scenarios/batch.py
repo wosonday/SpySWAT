@@ -225,6 +225,12 @@ def _series_hash(ser: pd.Series) -> str:
     return h.hexdigest()
 
 
+def _work_dir_key(results_dir) -> str:
+    """10 hex chars naming the work dir of one ``results_dir`` (same dir -> same key)."""
+    resolved = str(Path(results_dir).resolve()).lower()
+    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:10]
+
+
 def _scenario_sig(s: Scenario) -> str:
     weather = []
     if s.weather_dir:
@@ -257,8 +263,11 @@ def _read_csv_or_empty(path: Path, cols: List[str]) -> pd.DataFrame:
 class ScenarioBatch:
     """Run scenarios x parameter sets with a ``SWATProject``'s settings.
 
-    The batch works in ``<project working dir>/_scenario_batch`` so the project's own
-    worker folders are left alone. Needs ``project.param_file`` only when a ParamSet
+    The batch works in ``<project working dir>/_scenario_batch/<key>``, one folder per
+    ``results_dir`` (``<key>`` is 10 hex chars of the resolved ``results_dir``), so two
+    batches with different result folders never share worker folders while a re-run of
+    the same ``results_dir`` keeps them. The project's own worker folders are left alone.
+    Needs ``project.param_file`` only when a ParamSet
     has updates. ``results_dir/.signature.json`` records outputs, metrics, observations
     and the definition of every scenario / parameter set name; ``resume=True`` with a
     different signature raises ValueError (use a new ``results_dir`` or ``resume=False``).
@@ -355,7 +364,7 @@ class ScenarioBatch:
             observed: Optional[Dict[Tuple[str, int], pd.Series]] = None,
             metrics: Sequence[str] = ("nse", "kge", "pbias"),
             resume: bool = True, timeout_s: Optional[float] = None,
-            runner=None) -> BatchResult:
+            runner=None, log_queue=None) -> BatchResult:
         """
         Args:
             outputs:  {variable: [reach ids]} read from output.rch.
@@ -370,6 +379,10 @@ class ScenarioBatch:
                       scenario / parameter set name differ from the stored signature.
             runner:   picklable ``runner(worker_dir)`` replacing the SWAT executable
                       (used by tests).
+            log_queue: queue from ``Logger.init_queue_listener()`` so worker log records
+                      reach the main process; default (``None``) uses
+                      ``Logger._log_queue`` when a listener is already running. No
+                      listener is started here: the caller owns its lifetime.
         """
         if multiprocessing.parent_process() is not None:
             raise RuntimeError(
@@ -409,9 +422,10 @@ class ScenarioBatch:
         n_parallel = proj._wf_manager.n_parallel
         swat_exe = proj.swat_exe.swat_exe_path
         base_default = str(proj.txinout.directory)
-        work_dir = Path(proj.working_folder) / WORK_SUBDIR
-
         res_dir = self.results_dir
+        work_dir = Path(proj.working_folder) / WORK_SUBDIR / _work_dir_key(res_dir)
+        log_q = Logger._log_queue if log_queue is None else log_queue
+
         series_dir = res_dir / "series"
         series_dir.mkdir(parents=True, exist_ok=True)
         summary_path, metrics_path = res_dir / "summary.csv", res_dir / "metrics.csv"
@@ -622,7 +636,7 @@ class ScenarioBatch:
                     fut = executor.submit(
                         _seed_and_run, slot_dir, base, reseed, str(swat_exe),
                         j.param_set.updates, param_file, overlay, prepare, extract,
-                        runner, timeout_s, None)
+                        runner, timeout_s, log_q)
                     futures[fut] = (slot_idx, j)
                     return
 
