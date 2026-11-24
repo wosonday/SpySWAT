@@ -3,8 +3,8 @@
 **Python library for SWAT model calibration, validation, and sensitivity analysis**
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-308%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
+[![Tests](https://img.shields.io/badge/tests-464%20passed-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md) · Contributing with AI agents: [AGENTS.md](AGENTS.md)
@@ -19,9 +19,10 @@
 - [Parameter Key Format](#parameter-key-format)
 - [Quick Start](#quick-start)
 - [Calibration](#calibration)
+- [Multi-site Calibration](#multi-site-calibration)
 - [Fig Viewer](#fig-viewer--interactive-watershed-diagram)
-- [Validation](#validation)
-- [Run Log](#run-log)
+- [Evaluation by Period](#evaluation-by-period)
+- [Session Folder & Run Log](#session-folder--run-log)
 - [Scenario Batch](#scenario-batch)
 - [Sensitivity Analysis](#sensitivity-analysis)
 - [Reading and Writing TxtInOut](#reading-and-writing-txtinout)
@@ -123,72 +124,137 @@ Quick reference:
 
 ## Quick Start
 
+From **0.3.0**, the everyday workflow runs through the `SWATProject` facade (`calibration`, `evaluate`, `sensitivity`, `scenarios`, `apply`) with one shared vocabulary:
+
 ```python
 import pandas as pd
 from spyswat import SWATProject
-from spyswat.swat_calib.analysis import SWATCalibration
+from spyswat.swat_calib.scenarios import Scenario
 
-project = SWATProject(
-    txinout_dir = "D:/SWAT/TxtInOut",
-    working_dir = "D:/SWAT/workspace",
-    swat_exe    = "D:/SWAT/swat.exe",
-    n_parallel  = 8
-)
+if __name__ == "__main__":
+    project = SWATProject(
+        txinout_dir = "D:/SWAT/TxtInOut",
+        working_dir = "D:/SWAT/workspace",
+        swat_exe    = "D:/SWAT/swat_rev688.exe",
+        param_file  = "D:/SWAT/params.txt",
+        n_parallel  = 8,
+    )
 
-obs = pd.read_csv("observed.csv", index_col="date", parse_dates=True)["flow"]
+    obs = pd.read_csv("D:/SWAT/observed.csv", index_col="date", parse_dates=True)["flow"]
 
-param_ranges = {
-    "CN2.mgt":     (35.0, 98.0),
-    "ALPHA_BF.gw": (0.0,  1.0),
-    "GW_DELAY.gw": (30.0, 450.0),
-    "ESCO.hru":    (0.01, 1.0),
-    "SOL_AWC.sol": (0.01, 0.5),
-}
+    param_ranges = {
+        "CN2.mgt":     ((35.0, 98.0), "r"),
+        "ALPHA_BF.gw": (0.0,  1.0),
+        "GW_DELAY.gw": (30.0, 450.0),
+        "ESCO.hru":    (0.01, 1.0),
+        "SOL_AWC.sol": ((0.01, 0.5), "r"),
+    }
 
-calib = SWATCalibration(project)
-calib.manager.setup_parallel(overwrite=True) #Set up in WorkingFolder
-# Full workflow: GLUE → best params → sensitivity → performance
-result = calib.analyze(param_ranges, obs, n_samples=1000, threshold=0.5, seed=42)
+    # 1. Calibrate on calib_period and score valid_period in the same run
+    res = project.calibration(
+        param_ranges,
+        observed     = {("FLOW_OUTcms", 1): obs},
+        calib_period = ("2005-01-01", "2010-12-31"),
+        valid_period = ("2011-01-01", "2015-12-31"),
+        algorithm    = "glue",
+        n_samples    = 500,
+        seed         = 42,
+    )
 
-print(f"Best NSE:  {result['best_score']:.3f}")
-print(result["sensitivity"])
-print(result["performance"])
-```
+    print(res.metrics)       # best run metrics for calib & valid
+    print(res.sensitivity)   # OLS regression sensitivity (0 extra SWAT runs)
 
-What happens inside `analyze()`:
+    # 2. Check any simulated series by hand with the same evaluate()
+    sim_best = res.series("FLOW_OUTcms", 1)[f"run_{res.best_run_id}"]
+    ev = project.evaluate(
+        {("FLOW_OUTcms", 1): sim_best},
+        {("FLOW_OUTcms", 1): obs},
+        periods={"calib": ("2005-01-01", "2010-12-31"),
+                 "valid": ("2011-01-01", "2015-12-31")},
+    )
+    print(ev.table)
 
-```
-1000 LHS samples (seeded for reproducibility)
-         |
-         ▼
- run_batch (N workers, parallel)
-         |
-         ▼
- 1000 (params, score) rows
-      /         |          \
- best        sensitivity   behavioral
- params      (Spearman,    (NSE ≥ 0.5)
-             0 extra runs)
+    # 3. Feed the top 10 parameter sets straight into scenarios
+    scen_res = project.scenarios(
+        [Scenario("LUC2020", txinout_dir="D:/SWAT/LUC2020/TxtInOut")],
+        res.top(10),
+        outputs={"FLOW_OUTcms": [1]},
+        observed={("FLOW_OUTcms", 1): obs},
+    )
+    print(scen_res.summary)
 ```
 
 ---
 
 ## Calibration
 
-From v0.2.1, algorithms are standalone classes accessed via `calib.glue`, `calib.de`, `calib.dds`, `calib.pso`.
+The recommended entry point is `project.calibration(...)`:
+
+```python
+res = project.calibration(
+    param_ranges,
+    observed,
+    calib_period = ("2005-01-01", "2010-12-31"),
+    valid_period = ("2011-01-01", "2015-12-31"),
+    algorithm    = "glue",                       # "glue" | "pso" | "de" | "dds"
+    metric       = "nse",
+    metrics      = ("nse", "kge", "pbias", "r2"),
+    weights      = None,
+    outputs      = None,
+    step         = None,                         # None | "M"
+    agg          = None,                         # {variable: "mean" | "sum"}
+    n_parallel   = None,                         # defaults to project's n_parallel
+    seed         = 42,
+    results_dir  = None,                         # defaults to <working_dir>/calibration_results
+    session      = None,                         # auto-named <YYYYMMDD_HHMMSS>_<algorithm>_<metric>
+    resume       = True,
+    sensitivity  = True,
+    # ...plus algorithm options such as n_samples=500, threshold=0.5
+)
+```
+
+Every evaluation runs the whole `file.cio` simulation period once; `calib_period` drives the objective (`score`), while both `calib_period` and `valid_period` metrics are computed and stored for every run. Your `TxtInOut` is never modified during calibration.
+
+> **Resume by replay (`resume=True`):** planned in 0.3.0 (API-5).
+
+`project.calibration(...)` returns a `CalibrationResult`:
+
+| Attribute / Method | Description |
+|---|---|
+| `res.best_params`, `res.best_score`, `res.best_run_id` | Best parameters (`{name: [(val, method, [subs])]}`), best `score`, and run ID |
+| `res.runs` | DataFrame of all runs (`run_id`, `time`, `status`, `error`, `is_initial`, parameters, `score`) |
+| `res.metrics` | `EvaluationResult.table` of the best run across `calib` and `valid` |
+| `res.sensitivity`, `res.sensitivity_status` | OLS regression sensitivity table (and status string, e.g. `"ok"` or `"insufficient runs"`) |
+| `res.session_dir` | Path to the session folder |
+| `res.top(n)` | Top `n` non-failed runs as `ParamSet` objects named `run_<id>` |
+| `res.select(**conditions)` | Filter runs into `ParamSet` objects, e.g. `select(nse__gt=0.5, site=("FLOW_OUTcms", 1), period="calib", how="all")` (`gt`/`gte`/`lt`/`lte`) |
+| `res.best_param_set()` | Best run as a `ParamSet` |
+| `res.series(variable, reach)` | Lazily load stored simulated series (`date` × `run_<id>`) |
+| `res.site_metrics(variable, reach)` | Lazily load per-site metric rows (`run_id`, `<metric>_<period>`) |
+| `CalibrationResult.load(session_dir)` | Reopen a saved session folder (metadata eager, series lazy) |
+
+Dict-style access (`res["best_params"]`, `res["best_score"]`, `res["history"]`) is kept for backward compatibility.
+
+### Low-level algorithm classes (`SWATCalibration`)
+
+You can also call the underlying algorithm classes directly via `SWATCalibration(project)` (`calib.glue`, `calib.de`, `calib.dds`, `calib.pso`). Deprecated kwargs (`observed_series`, `reach_id`, `output_variable`) still work with `DeprecationWarning` until **0.4.0**; new code should use `observed` and `outputs`.
 
 ### GLUE — Parallel Monte Carlo
 
 ```python
+from spyswat.swat_calib.analysis import SWATCalibration
+
 calib = SWATCalibration(project)
+calib.manager.setup_parallel(overwrite=True)
 
 result = calib.glue.run(
-    param_ranges    = param_ranges,
-    observed_series = obs,
-    n_samples       = 1000,
-    threshold       = 0.5,
-    metric          = "nse",
-    seed            = 42,
+    param_ranges = param_ranges,
+    observed     = obs,
+    n_samples    = 1000,
+    threshold    = 0.5,
+    metric       = "nse",
+    outputs      = {"FLOW_OUTcms": [1]},
+    seed         = 42,
 )
 
 print(result["all_results"])         # DataFrame: all 1000 runs
@@ -200,9 +266,9 @@ print(f"Behavioral: {result['behavioral_ratio']:.1%}")
 
 ```python
 unc = calib.glue.uncertainty_band(
-    behavioral_df   = result["behavioral_results"],
-    observed_series = obs,
-    metric          = "nse",
+    behavioral_df = result["behavioral_results"],
+    observed      = obs,
+    metric        = "nse",
 )
 print(f"p-factor: {unc['p_factor']:.3f}")   # ≥ 0.70 → acceptable
 print(f"r-factor: {unc['r_factor']:.3f}")   # ≤ 1.50 → acceptable
@@ -222,12 +288,13 @@ DDS self-adjusts the perturbation probability: `P = 1 - ln(i)/ln(N)`. Efficient 
 
 ```python
 result = calib.dds.run(
-    param_ranges    = param_ranges,
-    observed_series = obs,
-    n_iterations    = 300,
-    r               = 0.2,
-    seed            = 42,
-    metric          = "nse",
+    param_ranges = param_ranges,
+    observed     = obs,
+    n_iterations = 300,
+    r            = 0.2,
+    seed         = 42,
+    metric       = "nse",
+    outputs      = {"FLOW_OUTcms": [1]},
 )
 print(f"Best NSE: {result['best_score']:.4f}")
 print(result["best_params"])
@@ -256,7 +323,7 @@ Evaluates the entire population per generation in parallel via `run_batch`. Best
 ```python
 result = calib.de.run(
     param_ranges    = param_ranges,
-    observed_series = obs,
+    observed        = obs,
     pop_size        = 20,
     max_generations = 40,
     F               = 0.8,
@@ -276,17 +343,17 @@ Evaluates the entire swarm in parallel via `run_batch` each iteration. Inertia w
 
 ```python
 result = calib.pso.run(
-    param_ranges    = param_ranges,
-    observed_series = obs,
-    n_particles     = 20,
-    max_iterations  = 50,
-    w_max           = 0.9,
-    w_min           = 0.4,
-    c1              = 2.0,
-    c2              = 2.0,
-    seed            = 42,
-    tol             = 1e-6,
-    patience        = 10,
+    param_ranges   = param_ranges,
+    observed       = obs,
+    n_particles    = 20,
+    max_iterations = 50,
+    w_max          = 0.9,
+    w_min          = 0.4,
+    c1             = 2.0,
+    c2             = 2.0,
+    seed           = 42,
+    tol            = 1e-6,
+    patience       = 10,
 )
 print(f"Best NSE: {result['best_score']:.4f}")
 print(result["best_params"])
@@ -314,12 +381,12 @@ result = pso.run()
 
 ```python
 result = calib.optimize(
-    param_ranges    = param_ranges,
-    observed_series = obs,
-    method          = "differential_evolution",  # or "minimize" (L-BFGS-B), "Nelder-Mead", "Powell", ...
-    metric          = "nse",
-    max_iter        = 100,
-    on_failure      = "raise",                  # or "penalize": a failed run scores the worst value
+    param_ranges = param_ranges,
+    observed     = obs,
+    method       = "differential_evolution",  # or "minimize" (L-BFGS-B), "Nelder-Mead", "Powell", ...
+    metric       = "nse",
+    max_iter     = 100,
+    on_failure   = "raise",                  # or "penalize": a failed run scores the worst value
 )
 print(result["best_parameters"])
 print(f"Best NSE: {result['best_objective_value']:.4f}")
@@ -366,7 +433,7 @@ You can still pass `param_methods` / `param_subbasins` as keyword arguments — 
 # Override method for CN2 (spec says "r" but we want "v")
 result = calib.glue.run(
     param_ranges    = param_ranges,
-    observed_series = obs,
+    observed        = obs,
     param_methods   = {"CN2.mgt": "v"},   # overrides spec
     param_subbasins = {"ESCO.hru": [5, 6, 7]},  # adds subbasin for ESCO
 )
@@ -387,6 +454,44 @@ result = calib.dds.run(param_ranges, obs, n_iterations=500)
 print(result["best_params"])
 # {"CN2.mgt": [(val, "r", [71,45,70])], "GW_DELAY.gw": [(val, "v", [12,33,8])], ...}
 ```
+
+---
+
+## Multi-site Calibration
+
+Pass `observed` as a dictionary keyed `(variable, reach)` to calibrate multiple gauges and/or variables at once:
+
+```python
+observed = {
+    ("FLOW_OUTcms", 1):  obs_flow_r1,
+    ("FLOW_OUTcms", 5):  obs_flow_r5,
+    ("SED_OUTtons", 5):  obs_sed_r5,
+}
+weights = {
+    ("FLOW_OUTcms", 1):  0.4,
+    ("FLOW_OUTcms", 5):  0.4,
+    ("SED_OUTtons", 5):  0.2,
+}
+
+res = project.calibration(
+    param_ranges,
+    observed     = observed,
+    calib_period = ("2005-01-01", "2010-12-31"),
+    valid_period = ("2011-01-01", "2015-12-31"),
+    metric       = "nse",
+    weights      = weights,
+    # outputs may also include ungauged sites whose series you want stored:
+    outputs      = {"FLOW_OUTcms": [1, 5, 12], "SED_OUTtons": [5]},
+)
+```
+
+Scoring rules:
+- A bare `pd.Series` for `observed` means one site and requires `outputs` to name exactly one `(variable, reach)` (default `{"FLOW_OUTcms": [1]}`).
+- If `outputs` is omitted when `observed` is a dict, it is derived from the keys of `observed`. Any extra sites in `outputs` without observations are stored in the session folder without metrics.
+- `weights` defaults to equal weights across all observed sites. Explicit weights must be positive numbers for known observed sites and are normalised to sum to 1 (omitted sites get weight 0 and drop out of `score`).
+- Per-site metrics are computed on `calib_period` (and `valid_period` if given) using `evaluate()`. `score` is the weighted mean of the calibration-period objective (`metric`) across sites with `weight > 0`, using **`|pbias|`** when `metric="pbias"` (while per-site metric files keep signed `pbias`).
+- Registry direction is preserved (`score` has the direction of `metric`). A NaN at any weighted site makes `score` NaN (failed runs rank worst). Aggregating `rmse` or `mae` across different variables without explicit `weights` emits a warning.
+- Before any SWAT run, every observed site must overlap `calib_period` and have non-zero variance (fails fast with `ValueError`).
 
 ---
 
@@ -435,52 +540,42 @@ path = viewer.build(
 
 The viewer validates `fig.fig` on parse and reports issues per command in the sidebar.
 
-## Validation
+## Evaluation by Period
+
+Validation is simply evaluating a simulated series on a chosen period. `project.evaluate(...)` is **pure** (no SWAT run, no parameters, no files modified):
 
 ```python
-# Apply best params from calibration.
-# This edits your TxtInOut in place: keep a copy, or use ValidationRunner below.
-project.HRU.update_params(result["best_params"])
-project.run()
-
-sim = project.Output.read_rch(
-    columns  = ["RCH", "MON", "FLOW_OUTcms"],
-    reach_id = 1
-)["FLOW_OUTcms"]
-
-obs_val = obs["2011-01-01":"2015-12-31"]
-sim_val = sim["2011-01-01":"2015-12-31"]
-
-stats  = project.Statistic.calculate_statistics(obs_val, sim_val)
-rating = project.Statistic.evaluate_performance(obs_val, sim_val)
-```
-
-Automated calibration/validation split with `ValidationRunner`:
-
-```python
-from spyswat.swat_calib.calibration import ValidationRunner
-from spyswat.swat_calib.calibration.validation_runner import PeriodConfig
-
-runner = ValidationRunner(
-    project, param_ranges, obs,
-    PeriodConfig(
-        calib_start = "2002-01-01",
-        calib_end   = "2010-12-31",
-        valid_start = "2011-01-01",
-        valid_end   = "2015-12-31"
-    )
+ev = project.evaluate(
+    sim,                                           # pd.Series or {(variable, reach): pd.Series}
+    observed,                                      # same shape as sim
+    periods = {
+        "calib": ("2005-01-01", "2010-12-31"),
+        "valid": ("2011-01-01", "2015-12-31"),
+    },
+    metrics = ("nse", "kge", "pbias", "r2"),
+    step    = None,                                # None or "M"
+    agg     = None,                                # {variable: "mean" | "sum"} for step="M"
 )
-r = runner.run(metric="nse", output_variable="FLOW_OUTcms")   # restore=True to undo
-print("Calib NSE:", r["calibration"]["nse"])
-print("Valid NSE:", r["validation"]["nse"])
-print(r["best_parameters"])
+print(ev.table)          # MultiIndex (variable, reach, period); columns = metrics + n
+ev.to_csv("D:/SWAT/evaluation.csv")
 ```
 
-By default the best parameters **stay in TxtInOut** after `runner.run()` (a warning is logged: applying relative `r`/`a` changes again would compound). Pass `restore=True` to get the original input files back. Best parameters and validation metrics are saved as `<session>_best_params.csv` and `<session>_validation.csv` (see [Run Log](#run-log)).
+- `project.evaluate` automatically fills in the project's print step (`FileCIO.get_iprint()`) and warm-up end (`Timestamp(IYR + NYSKIP, 1, 1)`). Periods starting before the warm-up end or outside the simulation bounds raise `ValueError`.
+- `step="M"` aggregates the **simulation** to month-start timestamps (`"MS"`), using `agg` (default `"mean"`, or `"sum"` for variables starting with `SED_` or ending with `tons` or `kg`); observations are never resampled.
+- A module-level `evaluate(sim, observed, periods=None, *, metrics=..., freq=None, step=None, agg=None, warmup_end=None)` is also available in `spyswat.swat_calib.analysis.evaluate`.
+
+To write calibrated parameters into `TxtInOut` explicitly (e.g. for a manual SWAT run):
+
+```python
+project.apply(res)          # the only facade call that writes parameters into TxtInOut
+project.run()
+```
+
+> **Deprecated (`ValidationRunner`):** `ValidationRunner` and `PeriodConfig` still work with `DeprecationWarning` until **0.4.0**; prefer `project.calibration(..., calib_period=..., valid_period=...)` and `project.evaluate(...)`.
 
 ### Observation time step
 
-Observations must have the same time step as the model's print step (`IPRINT` in `file.cio`): daily observations for daily output, monthly for monthly. SpySWAT never resamples; a mismatch raises `ValueError` before any run. Monthly observations are dated on the **1st** of the month:
+Observations must have the same time step as the model's print step (`IPRINT` in `file.cio`, or `"MS"` when `step="M"`): daily observations for daily output, monthly for monthly. SpySWAT never resamples observations; a mismatch raises `ValueError` before any run. Monthly observations are dated on the **1st** of the month:
 
 ```python
 obs_monthly = obs_daily.resample("MS").mean()                 # flow: monthly mean
@@ -493,32 +588,36 @@ check_observation_step(obs.index, project.FileCIO.get_iprint())   # raises on mi
 
 ---
 
-## Run Log
+## Session Folder & Run Log
 
-Every run (sequential, parallel, validation, GLUE uncertainty band, sensitivity) is appended to CSV **right after it finishes**, so a crash or Ctrl+C never loses finished runs:
+`project.calibration(...)` stores every run in a dedicated session folder under `results_dir` (default `<working_dir>/calibration_results/<YYYYMMDD_HHMMSS>_<algorithm>_<metric>`):
 
 ```
-<working_dir>/calibration_results/
-├── <session>_metrics.csv       one row per run: run_id, time, mode, status, error, reach_id,
-│                               output_variable, <param>, <param>__method, <param>__spec, metrics
-├── <session>_outputs.csv       target series, long format: run_id, date, variable, reach, value
-├── <session>_best_params.csv   ValidationRunner
-└── <session>_validation.csv    ValidationRunner
+<results_dir>/<session>/
+├── session.json                 signature (algorithm, metric(s), seed, param_ranges, periods, step, observed_hash, ...)
+├── runs.csv                     one row per run: run_id, time, status, error, is_initial, <params...>, score
+├── best.csv                     best parameters (parameter, value)
+├── sensitivity.csv              OLS regression sensitivity (when computed)
+└── reach_<id>/
+    ├── <variable>.csv           date, run_<n>, ... (splits at 16 000 columns → <variable>_part2.csv)
+    └── <variable>_metrics.csv   run_id, <metric>_calib, <metric>_valid, ...
 ```
 
-`<session>` is the start time (`YYYYMMDD_HHMMSS`). Files are created only when the first row is written. If the parameter or metric columns change, a new session starts.
+Reopen any saved session later with `CalibrationResult.load(session_dir)` (metadata is read eagerly; simulated series and per-site metrics are loaded lazily via `res.series(variable, reach)` and `res.site_metrics(variable, reach)`).
+
+Low-level primitives (`CalibrationManager.run_iteration`, `run_batch`, `record_run`) continue to append flat `<session>_metrics.csv` and `<session>_outputs.csv` files via `RunLog` unless a `SessionStore` is passed:
 
 ```python
 manager = calib.manager
-manager.log_outputs = "observed"      # "all" (default) | "observed" (dates with obs) | "none"
+manager.log_outputs = "observed"          # "all" (default) | "observed" (dates with obs) | "none"
 manager.results_dir = "D:/SWAT/results"   # None disables the log
-print(manager.session_files)          # {'metrics': Path, 'outputs': Path}
+print(manager.session_files)              # {'metrics': Path, 'outputs': Path}
 
 # custom algorithms that run SWAT themselves:
 manager.record_run({"CN2.mgt": 75.0}, {"nse": 0.71}, sim=sim_series)
 ```
 
-Logging never interrupts a calibration: if a file is locked (e.g. open in Excel), rows are kept in memory, a warning is logged once, and they are written at the next append or `manager.flush_log()`.
+Logging never interrupts a calibration: if a file is locked (e.g. open in Excel), rows are kept in memory, a warning is logged once, and they are written at the next flush or `manager.flush_log()`.
 
 ---
 
@@ -543,14 +642,15 @@ if __name__ == "__main__":
                                 value="MIN", sub="SUBBASIN"),
     ]
 
-    batch = ScenarioBatch(project, "D:/SWAT/results")
-    res = batch.run(
-        scenarios, param_sets,
-        outputs  = {"FLOW_OUTcms": [51, 55], "SED_OUTtons": [51]},
-        observed = {("FLOW_OUTcms", 51): obs},
-        metrics  = ("nse", "kge", "pbias"),
+    res = project.scenarios(
+        scenarios,
+        param_sets,                       # also accepts res.top(10), res.select(...), or a CalibrationResult
+        outputs     = {"FLOW_OUTcms": [51, 55], "SED_OUTtons": [51]},
+        observed    = {("FLOW_OUTcms", 51): obs},
+        results_dir = "D:/SWAT/results",
+        metrics     = ("nse", "kge", "pbias"),
         # pairs=[("LUC2000", "best")],   # default: every scenario × every parameter set
-        resume   = True,                  # skip jobs already 'ok' in summary.csv
+        resume      = True,              # skip jobs already 'ok' in summary.csv
     )
     print(res.summary)      # job_id, scenario, param_set, status, error, duration_s, ...
     print(res.metrics)      # job_id, scenario, param_set, variable, reach, metric, value
@@ -571,7 +671,19 @@ All jobs run on a single process pool across at most `n_parallel` worker folders
 
 ## Sensitivity Analysis
 
-### From GLUE results (recommended — no extra SWAT runs)
+### Regression sensitivity from calibration runs (0 extra SWAT runs)
+
+`project.calibration(..., sensitivity=True)` (default) computes OLS regression of `score` on parameters scaled to `[0, 1]` and stores it in `res.sensitivity` (`parameter`, `coef`, `t_stat`, `p_value`, `rank` by `|t|`, plus `r2`, `n_used`, `n_dropped` in `.attrs`). For GLUE all runs are used; for PSO/DE/DDS only the initial random population (`is_initial=True`) is used.
+
+Recompute it from any saved session without running SWAT:
+
+```python
+sens_df = project.sensitivity(from_session=res.session_dir)
+```
+
+Or run `method="regression"` directly, or call `regression_sensitivity(runs, param_ranges)` in `spyswat.swat_calib.analysis.regression_sensitivity`.
+
+### From GLUE results (Spearman / PRCC)
 
 ```python
 sensitivity = project.Statistic.sensitivity_from_results(
@@ -595,34 +707,33 @@ print(sensitivity)
 ### OAT — One-At-a-Time (parallel)
 
 ```python
-from spyswat.swat_calib.analysis import SWATSensitivity
-
-sens = SWATSensitivity(project)
-oat_df, indices = sens.one_at_a_time(
-    param_ranges    = param_ranges,
-    n_steps         = 10,
-    observed_series = obs,
-    metric          = "nse"
+oat_df, indices = project.sensitivity(
+    param_ranges,
+    observed = obs,
+    method   = "oat",
+    n_steps  = 10,
+    metric   = "nse",
 )
 print(indices)
 # parameter  metric_range  metric_std  range_over_std  sensitivity_index   (sorted, highest first)
 ```
 
-`sensitivity_index` = the parameter's metric range divided by the largest range over all parameters (the most influential parameter gets 1.0). Failed runs are excluded; a parameter with fewer than 2 successful runs gets NaN. Without `observed_series`, OAT and Morris restore your inputs after each run.
+`sensitivity_index` = the parameter's metric range divided by the largest range over all parameters (the most influential parameter gets 1.0). Failed runs are excluded; a parameter with fewer than 2 successful runs gets NaN. Without `observed`, OAT and Morris restore your inputs after each run.
 
 ### Morris Method (parallel)
 
 ```python
-morris = sens.morris_method(
-    param_ranges    = param_ranges,
-    n_trajectories  = 10,
-    observed_series = obs,
-    metric          = "nse"
+morris = project.sensitivity(
+    param_ranges,
+    observed       = obs,
+    method         = "morris",
+    n_trajectories = 10,
+    metric         = "nse",
 )
 print(morris["morris_indices"])
 ```
 
-A trajectory that contains a failed run is dropped from the Morris indices. `sens.sobol_method(...)` raises `RuntimeError` if any run failed, because Sobol indices need the complete sample; the expensive batch is not lost: `sens.last_samples` and `sens.last_scores` (NaN = failed) keep it. `morris_salib` and `sobol_method` need `pip install SALib`.
+A trajectory that contains a failed run is dropped from the Morris indices. `SWATSensitivity(project).sobol_method(...)` (or `project.sensitivity(..., method="sobol")`) raises `RuntimeError` if any run failed, because Sobol indices need the complete sample; the expensive batch is not lost: `sens.last_samples` and `sens.last_scores` (NaN = failed) keep it. `morris_salib` and `sobol_method` need `pip install SALib`.
 
 ---
 
@@ -785,17 +896,17 @@ from spyswat.swat_calib.calibration import CalibrationManager
 manager = CalibrationManager(project)
 manager.setup_parallel(overwrite=True)
 
-results = manager.run_batch(
+scores = manager.run_batch(
     param_sets = [
         {"CN2.mgt": [(70.0, "v")]},
         {"CN2.mgt": [(75.0, "v")]},
         {"CN2.mgt": [(80.0, "v")]},
     ],
     observed = obs,
-    metrics  = ["nse"],
-    reach_id = 1,
+    metrics  = ("nse",),
+    outputs  = {"FLOW_OUTcms": [1]},
 )
-print(results)   # DataFrame: nse (NaN for a failed run)
+print(scores)   # list of floats (NaN for a failed run)
 ```
 
 Guarantees of every parallel run:
@@ -813,6 +924,21 @@ Low-level hooks for custom workflows: `project.WorkingFolder.run_parallel(swat_e
 ### SWATProject
 
 ```
+# 0.3.0 facade
+project.calibration(param_ranges, observed, calib_period, valid_period=None, *,
+                    algorithm="glue", metric="nse", metrics=("nse", "kge", "pbias", "r2"),
+                    weights=None, outputs=None, step=None, agg=None, n_parallel=None,
+                    seed=None, results_dir=None, session=None, resume=True,
+                    sensitivity=True, param_methods=None, param_subbasins=None,
+                    **algorithm_options) → CalibrationResult
+project.evaluate(sim, observed, periods=None, *, metrics=..., step=None, agg=None) → EvaluationResult
+project.sensitivity(param_ranges=None, observed=None, method="morris", *,
+                    from_session=None, **options)
+project.scenarios(scenarios, param_sets, outputs, observed=None, results_dir=None,
+                  **options) → BatchResult
+project.apply(x, methods=None, subbasins=None)   # writes parameters into TxtInOut
+
+# Lower-level managers & helpers
 project.HRU.update_params(param_dict)
 project.HRU.update_by_df(df)
 project.read_params_values(param_list)
@@ -832,6 +958,17 @@ project.WorkingFolder.setup(overwrite)
 project.WorkingFolder.run_parallel(swat_exe, param_sets, prepare=, extract=,
                                    overlays=, timeout_s=) → [WorkerResult]
 project.info()
+```
+
+### Pure Evaluation & Regression Sensitivity
+
+```python
+from spyswat.swat_calib.analysis.evaluate import evaluate, EvaluationResult
+from spyswat.swat_calib.analysis.regression_sensitivity import regression_sensitivity
+
+evaluate(sim, observed, periods=None, *, metrics=("nse", "kge", "pbias", "r2"),
+         freq=None, step=None, agg=None, warmup_end=None) → EvaluationResult
+regression_sensitivity(runs, param_ranges, score_col="score") → pd.DataFrame
 ```
 
 ### SWATCalibration
@@ -896,36 +1033,26 @@ PSOCalibration(manager)
 ```
 CalibrationManager(project)
   .setup_parallel(overwrite=False)
-  .run_iteration(param_dict, obs, metric, reach_id, output_variable,
-                 methods=None, subbasins=None) → float
-      param_dict: {name: float}  (raw)  OR  {name: [(val, method, ...)]}  (formatted)
-  .run_batch(param_sets, observed, metrics, reach_id, output_variable,
-             methods=None, subbasins=None) → DataFrame
-      param_sets: list of raw or formatted dicts — both accepted
+  .run_once(param_dict, *, outputs={"FLOW_OUTcms": [1]}) → {(variable, reach): Series}
+  .run_iteration(param_dict, observed, metric="nse", *, outputs=None, weights=None,
+                 metrics=None, calib_period=None, valid_period=None, step=None, agg=None,
+                 methods=None, subbasins=None, store=None, run_id=None, is_initial=False) → float
+  .run_batch(param_sets, observed, metrics=("nse",), *, metric=None, outputs=None,
+             weights=None, calib_period=None, valid_period=None, step=None, agg=None,
+             methods=None, subbasins=None, store=None, is_initial=False) → list[float]
   .record_run(params, scores, status="ok", error=None, sim=None, mode="sequential",
               reach_id=None, output_variable=None)      append one run to the run log
   .flush_log() → bool                                    write rows buffered while a file was locked
   .results_dir        Path | None (default <working_dir>/calibration_results)
   .log_outputs        "all" | "observed" | "none"
   .session_files      {"metrics": Path, "outputs": Path}
-  ._parse_spec(param_ranges) → (bounds, methods, subbasins)  [staticmethod]
-      Raises ValueError if old-format tuple has > 2 elements
-  ._format_params(raw_dict, methods=None, subbasins=None) → formatted_dict
-  ._align_series(obs, sim) → (obs_aligned, sim_aligned)
-      sim frequency from IPRINT; raises on step mismatch or no common date
 
 check_observation_step(obs_index, sim_freq)              calibration.calib_manager
 ```
 
-### ValidationRunner
+### ValidationRunner (deprecated — removed in 0.4.0)
 
-```
-ValidationRunner(project, param_ranges, observed, PeriodConfig(calib_start, calib_end,
-                 valid_start, valid_end))
-  .run(metric="nse", method="differential_evolution", max_iter=100, reach_id=1,
-       output_variable="FLOW_OUTcms", restore=False)
-      → {"best_parameters", "calibration": {metric: score}, "validation": {all metrics}}
-```
+Use `project.calibration(..., calib_period=..., valid_period=...)` and `project.evaluate(...)` instead.
 
 ### Scenarios
 
@@ -968,15 +1095,16 @@ SpySWAT/
 │   └── swat_calib/
 │       ├── core/       TxInOut, HRUManager, OutputFileManager, WorkingFolderManager
 │       ├── io/         SWATParam, readers, writers, mapping_file, FileCIO
-│       ├── calibration/ CalibrationManager (+ run log), ValidationRunner
+│       ├── calibration/ CalibrationManager, scoring, session_store, result, run_log,
+│       │               ValidationRunner (deprecated)
 │       ├── scenarios/  Scenario, ParamSet, ScenarioBatch
-│       ├── analysis/   SWATAnalysis + metric registry, SWATCalibration (facade), SWATSensitivity
+│       ├── analysis/   SWATAnalysis + metric registry, evaluate, regression_sensitivity,
+│       │               SWATCalibration (facade), SWATSensitivity
 │       │               └── algorithms/  dds.py, glue.py, parallel_de.py, pso.py
 │       ├── run/        SWATRun (subprocess, timeout)
 │       └── visualization/ FigViewer
-├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py,
-│                       agents/ (AI-agent team workflow)
-├── tests/              319 tests (pytest, no SWAT executable needed)
+├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py
+├── tests/              475 tests (464 passed, 11 skipped on Windows; no SWAT executable needed)
 ├── .agents/            per-task notes kept with the code (see AGENTS.md)
 ├── AGENTS.md           guide for AI agents and contributors (CLAUDE.md imports it)
 ├── ARCHITECTURE.md     Architecture + connection diagrams
@@ -998,4 +1126,4 @@ SpySWAT/
 
 ---
 
-*SpySWAT v0.2.6 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*
+*SpySWAT v0.3.0 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*

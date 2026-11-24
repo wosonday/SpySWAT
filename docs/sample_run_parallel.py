@@ -1,178 +1,81 @@
-# run_parallel_analysis.py
+"""Parallel calibration, evaluation, and sensitivity using the 0.3.0 facade.
+
+Placeholder Windows paths: edit them before running. Everything that runs SWAT
+must stay under ``if __name__ == "__main__":`` because Windows spawns worker
+processes that re-import this script.
+"""
 import pandas as pd
 from spyswat import SWATProject
-from spyswat.swat_calib.analysis import SWATCalibration, SWATSensitivity
-
-# NOTE (Windows): everything that runs SWAT must live under main() and be started from the
-# `if __name__ == "__main__":` guard below. Windows starts child processes with "spawn", which
-# re-imports this script in every worker; without the guard each worker would re-run the whole
-# setup (re-creating the worker folders that are in use) and fail with file errors.
 
 
 def main():
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 1 — Khởi tạo với n_parallel
-    # ══════════════════════════════════════════════════════════════
+    # 1. Initialize project with parallel workers
     project = SWATProject(
-        txinout_dir="my_swat_project/TxtInOut",
-        working_dir="my_swat_project/workers",
+        txinout_dir="D:/SWAT/TxtInOut",
+        working_dir="D:/SWAT/working",
         swat_exe="D:/SWAT/swat_rev688.exe",
-        param_file="my_swat_project/params.txt",
-        n_parallel=8          # ← số core bạn muốn dùng
+        param_file="D:/SWAT/params.txt",
+        n_parallel=8,
     )
 
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 2 — Tải quan trắc và định nghĩa không gian tham số
-    # ══════════════════════════════════════════════════════════════
+    # 2. Load observations and define parameter space (name.ext format)
     obs = pd.read_csv(
-        "my_swat_project/observed_flow.csv",
-        index_col="date", parse_dates=True
+        "D:/SWAT/observed_flow.csv",
+        index_col="date",
+        parse_dates=True,
     )["flow"]
+    observed = {("FLOW_OUTcms", 1): obs}
 
     param_ranges = {
-        "CN2":      (35,   98),
-        "ALPHA_BF": (0.0,  1.0),
-        "GW_DELAY": (30,   450),
-        "ESCO":     (0.01, 1.0),
-        "SOL_AWC":  (0.01, 0.5),
+        "CN2.mgt":     ((35.0, 98.0), "r"),
+        "ALPHA_BF.gw": (0.0, 1.0),
+        "GW_DELAY.gw": (30.0, 450.0),
+        "ESCO.hru":    (0.01, 1.0),
+        "SOL_AWC.sol": ((0.01, 0.5), "r"),
     }
 
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 3 — Setup worker directories (1 lần duy nhất)
-    # ══════════════════════════════════════════════════════════════
-    # Tạo 8 bản sao TxtInOut trong thư mục workers/
-    # workers/TxInOut1/, workers/TxInOut2/, ..., workers/TxInOut8/
-    calib = SWATCalibration(project)
-    calib.manager.setup_parallel(overwrite=True)
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 4 — Chạy GLUE song song: 1000 mẫu / 8 workers
-    # ══════════════════════════════════════════════════════════════
-    # Thời gian ≈ ceil(1000/8) × T_swat = 125 × T_swat
-    # Ví dụ: T_swat = 30s → tổng ≈ 63 phút (thay vì 500 phút tuần tự)
-    print("Đang chạy GLUE 1000 mẫu song song...")
-
-    glue_result = calib.glue.run(
-        param_ranges=param_ranges,
-        observed_series=obs,
+    # 3. Run parallel GLUE calibration with calib/valid periods + regression sensitivity
+    res = project.calibration(
+        param_ranges,
+        observed=observed,
+        calib_period=("2005-01-01", "2010-12-31"),
+        valid_period=("2011-01-01", "2015-12-31"),
+        algorithm="glue",
+        metric="nse",
+        metrics=("nse", "kge", "pbias", "r2"),
         n_samples=1000,
-        threshold=0.5,          # NSE ≥ 0.5 → behavioral
+        threshold=0.5,
+        seed=42,
+        sensitivity=True,
+    )
+
+    print(f"Best run #{res.best_run_id} | score (NSE): {res.best_score:.4f}")
+    print("\nBest run metrics (calib + valid):")
+    print(res.metrics)
+
+    print("\nRegression sensitivity (from initial sample, 0 extra SWAT runs):")
+    print(res.sensitivity)
+
+    # 4. Inspect top 10 behavioral parameter sets and session outputs
+    top10 = res.top(10)
+    print(f"\nExtracted {len(top10)} top parameter sets for scenarios.")
+    print(f"Session saved to: {res.session_dir}")
+
+    # 5. Optional: recompute regression sensitivity later from the saved session
+    sens_reloaded = project.sensitivity(from_session=res.session_dir)
+    print(sens_reloaded)
+
+    # 6. Optional: Morris sensitivity analysis (parallel)
+    morris = project.sensitivity(
+        param_ranges,
+        observed=observed,
+        method="morris",
+        n_trajectories=10,
         metric="nse",
-        output_variable="FLOW_OUTcms",
-        reach_id=1
+        calib_period=("2005-01-01", "2010-12-31"),
     )
-
-    all_results   = glue_result["all_results"]        # DataFrame 1000 hàng
-    behavioral_df = glue_result["behavioral_results"] # NSE ≥ 0.5
-
-    print(f"Behavioral sets: {len(behavioral_df)}/1000 "
-          f"({glue_result['behavioral_ratio']:.1%})")
-
-    # ── Xem phân bố NSE ─────────────────────────────────────────
-    print(all_results["nse"].describe())
-    #   count    1000.0
-    #   mean        0.48
-    #   max         0.74
-    #   ...
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 5 — Best parameters & NSE tốt nhất
-    # ══════════════════════════════════════════════════════════════
-    best_idx    = all_results["nse"].idxmax()
-    best_row    = all_results.loc[best_idx]
-    best_score  = float(best_row["nse"])
-
-    best_params = {
-        name: [(float(best_row[name]), "v")]
-        for name in param_ranges
-    }
-
-    print(f"\nBest NSE = {best_score:.4f}")
-    print("Best parameters:")
-    for name, val in best_params.items():
-        print(f"  {name:12s} = {val[0][0]:.4f}")
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 6 — Kiểm định với best params
-    # ══════════════════════════════════════════════════════════════
-    # Áp best params vào TxtInOut gốc → chạy SWAT 1 lần
-    project.HRU.update_params(best_params)
-    project.run()
-
-    sim_best = project.Output.read_rch(
-        columns=["RCH", "MON", "FLOW_OUTcms"],
-        reach_id=1
-    )["FLOW_OUTcms"]
-
-    # Cắt giai đoạn kiểm định (ví dụ: 2010–2015)
-    obs_val = obs["2010-01-01":"2015-12-31"]
-    sim_val = sim_best["2010-01-01":"2015-12-31"]
-
-    stats_val  = project.Statistic.calculate_statistics(obs_val, sim_val)
-    rating_val = project.Statistic.evaluate_performance(obs_val, sim_val)
-
-    print(f"\nValidation:")
-    print(f"  NSE  = {stats_val['nse']:.3f}  → {rating_val['nse']}")
-    print(f"  KGE  = {stats_val['kge']:.3f}")
-    print(f"  PBIAS= {stats_val['pbias']:.1f}%  → {rating_val['pbias']}")
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 7 — Sensitivity từ kết quả GLUE (0 SWAT runs thêm)
-    # ══════════════════════════════════════════════════════════════
-    sensitivity = project.Statistic.sensitivity_from_results(
-        results_df=all_results,
-        metric="nse",
-        method="spearman"   # hoặc "prcc" cho kết quả chặt hơn
-    )
-
-    print("\nSensitivity ranking (Spearman):")
-    print(sensitivity[["parameter", "sensitivity_index", "rank"]].to_string(index=False))
-    # parameter  sensitivity_index  rank
-    # ALPHA_BF        0.83            1
-    # CN2             0.61            2
-    # GW_DELAY        0.45            3
-    # ESCO            0.31            4
-    # SOL_AWC         0.18            5
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 8 (Tùy chọn) — Morris SALib nếu cần báo cáo học thuật
-    # ══════════════════════════════════════════════════════════════
-    sens = SWATSensitivity(project)
-
-    results_morris = sens.morris_salib(
-        param_ranges=param_ranges,
-        observed_series=obs,
-        n_trajectories=20,   # 20 × (5+1) = 120 runs
-        num_levels=4,
-        metric="nse"
-    )
-
-    print("\nMorris (SALib):")
-    print(results_morris[["parameter","mu_star","sigma","ci_95"]].to_string(index=False))
-
-    # Vẽ biểu đồ
-    sens.plot_morris(
-        results_morris,
-        title="SWAT Sensitivity — Morris Method",
-        save_path="morris_sensitivity.png"
-    )
-
-    # ══════════════════════════════════════════════════════════════
-    # BƯỚC 9 — Xuất kết quả tổng hợp ra CSV
-    # ══════════════════════════════════════════════════════════════
-    all_results.to_csv("glue_all_results.csv", index=False)
-    behavioral_df.to_csv("glue_behavioral.csv", index=False)
-
-    sens.export_results(
-        results_morris=results_morris,
-        save_path="sensitivity_results.csv"
-    )
-
-    print("\nHoàn tất. Các file đã xuất:")
-    print("  glue_all_results.csv    ← 1000 bộ tham số + NSE")
-    print("  glue_behavioral.csv     ← chỉ bộ tham số NSE ≥ 0.5")
-    print("  sensitivity_results.csv ← xếp hạng độ nhạy")
-    print("  morris_sensitivity.png  ← biểu đồ μ*–σ")
+    print("\nMorris indices:")
+    print(morris["morris_indices"])
 
 
 if __name__ == "__main__":
