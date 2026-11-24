@@ -26,6 +26,10 @@ Shared harness source (read-only, outside the repo): `D:/.harnessing/agent-tutor
 Never touch SpySWAT library docs: `docs/SYSTEM_DESIGN_*.md`, `docs/sample_run_*.py`.
 
 ## Steps
+**Steps 1–2 were done by the CEO in commit `docs-5: sync harness files` (copies, `git mv`, `git rm`). Start at step 3.**
+Lint after steps 1–2: 14 errors = 6 LINK007 (AGENTS.md ×5, README_VI.md ×1) + 8 MD001 trailing whitespace in `docs/SYSTEM_DESIGN_EN.md`/`_VI.md` (the lint now scans all of `docs/`): remove that trailing whitespace only (in scope).
+Your shell only allows `python`, `pytest`, `git status|diff|log|add|commit`; use your file read/grep/edit tools for everything else.
+
 1. Copy per the table (use `cp`, not hand edits).
 2. `docs/agents/SETUP-WINDOWS.md` is SpySWAT-only: `git mv` it to `docs/SETUP-WINDOWS.md`.
    Files in `docs/agents/superpowers/**` that do not exist in `docs/superpowers/` are `git mv`ed there.
@@ -45,13 +49,13 @@ Never touch SpySWAT library docs: `docs/SYSTEM_DESIGN_*.md`, `docs/sample_run_*.
 7. `python -m pytest tests/ -q` → all pass; record counts (baseline 454 passed, 11 skipped; harness
    test count changes). Update the counts sentence(s) in `AGENTS.md` "Commands" to the new numbers
    (keep the wording style: "measured on main <sha>: N passed, M skipped").
-8. `git grep -n "docs/agents"` outside `.agents/` history files → no hits (record).
+8. Search (grep tool) for `docs/agents` outside `.agents/` history files → no hits (record).
 
 ## Files in scope
 Repo-root harness `*.md`, `docs/*.md` (harness ones), `docs/superpowers/**`, `docs/agents/**` (removal),
 `scripts/*.py`, `tests/test_harness_*.py`, `tests/test_guardrail_examples.py`, `tests/test_skill_routing.py`,
 `AGENTS.md`, `CLAUDE.md`, `README_VI.md`, `CHANGELOG.md`, `.agents/README.md`, `.gitignore`,
-`pyproject.toml`, `.agents/log/DOCS-5.md`.
+`pyproject.toml`, `docs/SYSTEM_DESIGN_EN.md`/`_VI.md` (trailing whitespace only), `.agents/log/DOCS-5.md`.
 
 ## Acceptance criteria
 - [ ] `diff -rq` of each mapped pair shows no differences (except `__pycache__`).

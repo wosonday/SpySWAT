@@ -141,6 +141,38 @@ class GuardrailExampleTests(unittest.TestCase):
         self.commit()
         self.check(0)
 
+    def run_skill_dispatch(self, selected_skills):
+        text = (ROOT / "HERDR-CORE-BOT.md").read_text(encoding="utf-8")
+        section = text.split("### 1.5.", 1)[1]
+        script = re.search(r"```bash\n(.*?)\n```", section, re.S)[1]
+        self.write(".agents/bot/dispatch.sh", script)
+        self.write(".agents/bot.env", f'PROJECT_DIR="{self.root.as_posix()}"\nWT_DIR=.wt\nBASE_BRANCH=main\nMANAGER=fixture\n')
+        self.write(".agents/tasks/skill-test.md", f"tier: nhanh\nskills: {selected_skills}\n")
+        (self.root / ".wt/skill-test").mkdir(parents=True)
+        # Intercept only the external agent launcher; execute the documented script.
+        invocation = 'agm() { printf "%s\\n" "$@"; }; export -f agm; bash .agents/bot/dispatch.sh skill-test'
+        return subprocess.run([BASH, "-c", invocation], cwd=self.root, env=self.env,
+                              capture_output=True, text=True, encoding="utf-8", timeout=20)
+
+    def test_dispatch_accepts_explicit_third_required_skill(self):
+        selected = "systematic-debugging, rust-best-practices, verification-before-completion"
+        result = self.run_skill_dispatch(selected)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        for skill in selected.split(", "):
+            self.assertIn(skill, result.stdout)
+
+    def test_dispatch_allows_mechanical_task_without_workflow_skills(self):
+        result = self.run_skill_dispatch("")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("--task", result.stdout)
+
+    def test_dispatch_accepts_explicit_four_skill_phase_exception(self):
+        selected = "receiving-code-review, systematic-debugging, rust-best-practices, verification-before-completion"
+        result = self.run_skill_dispatch(selected)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        for skill in selected.split(", "):
+            self.assertIn(skill, result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

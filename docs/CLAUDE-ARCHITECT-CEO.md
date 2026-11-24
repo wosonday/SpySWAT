@@ -18,39 +18,37 @@ claude --model claude-opus-5-5     # Opus 5.5 (or claude-fable-5-2 for overall A
   agm manage ceo-tap-hoa           # user-only; never auto-kills the old Claude session
   ```
 
-## 2. Session Startup Protocol (Lauren Tan Framework: `Goal first · Process second · Then routines`)
+## 2. Startup Protocol & Ponytail Policy
 
-When receiving a new request from the user (even as a messy brain dump / voice note), the Architect / BOT-CEO **owns the end goal (`you own the goal, not the steps`)** and must enforce 5 rules before spawning any worker (details in [BOT-CEO.md §5.0](../BOT-CEO.md)):
-
-1. **Clarify the goal (`goal.first`) & value (`serves: revenue | cost`):** ask until the user confirms *"Yes, that's it"*; ask **only one question at a time** about hidden decisions (`/ask one question at a time`).
-2. **Capture process & pause (`process.dump` + `hold`):** collect `steps`, `watch_outs` (hotspots), `tools`, `check_work` (`eslint --max-warnings 0` + tests), `info_from`, and `feedback_from`; `/restate` concisely and **wait for confirmation — never run `agm spawn` before the plan is approved**.
-3. **Walk through 3 real examples (`/walk 3 real examples`):** must include **failure / edge cases** and specify which source wins on `conflict`.
-4. **Define `done` (`"sent" is not done`):** dispatching or writing code is not done; a task is `done` only when **`saved`** (commit + `.agents/log/` + tests on branch) and **`confirmed`** (passed `auditor` ESLint/CI, `Reviewer`, `Hydrogen docs`, and `copilot-git`). Items in `waiting` (`blocked`/`depends_on`) are tracked and resumed later—never create duplicates.
-5. **Output the plan summary:** end planning with `return { goal, process, rules, routine, budget, next_step }` and ask 1 final confirmation question. Record approved sources, per-task allocations and the review/rework reserve in `budget`.
+- **Ponytail level: `lite` or `off` (never `ultra` by default).** Keep Ponytail `off` during architecture/option exploration (or `lite` when making small edits) so minimalism never narrows solution design or trade-off analysis.
+- **Workflow selection:** follow [Skill Routing](SKILL-ROUTING.md). Use `brainstorming` for unresolved goals, `system-design` for system boundaries, `architecture` for an ADR, and `writing-plans` after design approval. Add `testing-strategy` for cross-component risks; do not repeat discovery already completed by the user.
+- **Before dispatch:** resolve the selected workflow/domain skills in the target CLI and record `phase`, `work_type`, `skills`, `skill_refs` and any addition reason. Arrange review with `requesting-code-review`; the assigned independent reviewer uses `code-review`.
+- **Discovery scope (Lauren Tan framework — [BOT-CEO.md §5.0](../BOT-CEO.md)):** Mandatory **only for Epics, new features, or major architecture changes** (clarify `goal.first`, `process.dump` + `hold`, `/ask` one question at a time, `/walk 3 real examples` with edge cases, confirm `done = saved + confirmed`, output `{ goal, process, rules, routine, budget, next_step }`). **Small bugfixes or well-scoped ≤ 3 file tasks skip straight to writing `.agents/tasks/<ID>.md`.**
 
 ## 3. What to Do vs. Offload
 
 | Do (high-leverage Claude work) | Do Not Do (offload to other models) |
 |---|---|
-| Understand requirements, set the plan and budget, analyze risks, split small branches (< ~400 diff lines) | Manually grep/read dozens of files before querying `GitNexus` (`query`, `context`, `impact`) |
-| Converse directly with the user for its lane (max 1 hidden-decision question per turn) | Write long code/tests instead of workers (`worker-fast` / `mid` / Codex) |
-| Define acceptance criteria (`saved` + `confirmed`), write briefs / `.agents/tasks/<ID>.md` | Read raw long logs: use `explore` Flash Go within allocation; qualified NVIDIA for nonurgent synthesis |
-| Reserve `wip` / mark `ready` in `BRANCHES.md` via `agm branch set ... --file <abs>/BRANCHES.md` or MCP `agm_branch_update` (agm locks internally; no manual `mkdir` lock) | Review routine branches: qualified Pro Go, different family when Pro authored code; `agy` Opus High for hard cases |
-| Escalate diagnosis when workers + Codex fail twice | Merge into `main`, push, or deploy (handled by `copilot-git`) |
+| Understand requirements, set plan/budget, analyze risks, split small branches (< ~400 diff lines) | Manually grep/read dozens of files before querying **Understand-Anything** (`.ua/` via `/understand-chat` or `/understand-diff`) |
+| **Shared Memory governance:** Approve, publish, and update `.agents/memory/published/` (`decisions.md`, `invariants.md`, `gotchas.md`) & `.agents/memory/HANDOFF.md`; clear `.agents/memory/inbox/` after review | Forward raw conversation history between agents (always pass standardized short briefs/reports) |
+| Define acceptance criteria (`saved` + `confirmed`), write briefs / `.agents/tasks/<ID>.md` | Write long code/tests instead of workers (`worker-fast` / `mid` / Codex / Agy) |
+| Reserve `wip` / mark `ready` in `BRANCHES.md` via `agm branch set ... --file <abs>/BRANCHES.md` or MCP `agm_branch_update` (agm locks internally; no manual `mkdir` lock; the `ready` guard checks git only, not that Audit/Review ran); trigger batch incremental `/understand` after structural merges | Review routine branches: qualified Pro Go, different family when Pro authored code; `agy` Opus High for hard cases |
+| Escalate diagnosis after 2 failed review/fix rounds | Merge into `main`, push, or deploy (handled by `copilot-git`) |
 
 ## 4. Saving Tokens & Preventing Context Bloat
 
-**The CEO manages the AI budget.** Before dispatch, escalation or review, check the task's allocation and the applicable quota: [Go Console](https://opencode.ai/console/go) for Go and `agm quota` for sources with verified data. If quota is exhausted or unknown, use a capable approved source or mark the task blocked; never enable Extra Usage or raise limits yourself. Lanes sharing Go report allocations and usage to one existing coordinating CEO. See the [shared budget policy](../AGENTS-TUTORIAL.md#311-điều-phối-kinh-phí-ai).
+**The CEO manages the AI budget.** Before dispatch, escalation or review, check `agm quota --refresh` (verifying Extra Usage in [Go Console](https://opencode.ai/console/go)) and task allocations. If quota is exhausted or unknown, use a capable approved source or mark the task blocked; never enable Extra Usage or raise limits yourself. See the [shared budget policy](../AGENTS-TUTORIAL.md#311-điều-phối-kinh-phí-ai).
 
-Routing: `opencode-go/deepseek-v4.1-flash` for fast/mid/explore; `opencode-go/deepseek-v4-pro` for qualified review/strong tasks. [Background NVIDIA](NVIDIA-BACKGROUND.md) is read-only, at most 1 task across all aliases under manual CEO control, never a merge gate or an autonomous harness editor. Verify cloud permissions/pricing/quota first; empty pricing does not mean free.
+Routing: `opencode-go/deepseek-v4.1-flash` for fast/mid/explore; `opencode-go/deepseek-v4-pro` for qualified review/strong tasks. [Background NVIDIA](NVIDIA-BACKGROUND.md) is optional read-only background synthesis, never a merge gate.
 
-1. **One lane = one dedicated BOT-CEO** (see [BOT-CEO.md](../BOT-CEO.md)): never deep-read another lane's code unless they share a hotspot in `BRANCHES.md`.
-2. **Query GitNexus MCP first (`GITNEXUS_MCP_READ_ONLY=1`):** read `gitnexus://repo/<name>/context` → `query` → `context` → `impact` (`summaryOnly: true`), then `Read` only targeted line ranges.
-3. **Load 1–3 skills per phase:** `brainstorming` during discovery, `system-design` / `architecture` during design; swap rather than stack.
-4. **Use an interactive `agy` Opus High session to offload Claude directly:** when Claude's 5h/7d quota is high, open `agy --model <opus-high-slug> --mode plan --sandbox` inside the repo (keeping `conversation_id` for `cache_read_tokens`, not one-shot `agm ask`) to design, split `.agents/tasks/<ID>.md`, or arbitrate hard reviews.
-5. **Rotate at 70% (`ctx_rotate`):** when `agm daemon` requests handoff, write state to `.agents/handoff/<id>-<ts>.md` with `rotation_id` and trailing `<!-- agm:handoff-done -->`, switch to the successor session, and clean up the old session manually via `agm cleanup`.
+1. **One lane = one dedicated BOT-CEO** ([BOT-CEO.md](../BOT-CEO.md)): never deep-read another lane's code unless they share a hotspot in `BRANCHES.md`.
+2. **Query Understand-Anything (`.ua/`) first:** run `/understand` once per main repository to build `.ua/knowledge-graph.json`, then query via `/understand-chat` / `/understand-diff` before reading targeted line ranges. Pass only scoped file lists (3–5 paths) into worker briefs.
+3. **Load skills on demand:** normally one workflow plus one relevant domain skill; preserve required phase additions and final `verification-before-completion`. Keep the catalog available; changing phase does not unload instructions already read. Use a compact handoff/new session when context requires it.
+4. **Offload heavy design/review to interactive `agy` Opus High:** when Claude's 5h/7d quota is high, open `agy --model <opus-high-slug> --mode plan --sandbox` inside the repo (keeping `conversation_id` for `cache_read_tokens`, not one-shot `agm ask`).
+5. **Proactive context rotation:** follow [Context Rotation](CONTEXT-ROTATION.md). In a managed CEO session, request `agm rotate <own-terminal>` at 50% used; reserve the 50–55% band for a safe handoff, not more large work. For a long/context-heavy task, normally choose 40% (35–45%) or earlier based on the next step. Preserve the exact daemon-issued `rotation_id`, state, permissions and active tasks in `.agents/handoff/<id>-<ts>.md` with trailing `<!-- agm:handoff-done -->`. The shared 70% daemon fallback is not the CEO target. Never auto-kill the old Claude session; cleanup remains user-only.
 
 ## 5. Hard Safety Rules
 
 - Never run `git merge`, `git push`, or `nix`/deploy on the shared branch.
+- Only Claude CEO may write/publish to `.agents/memory/published/` or run incremental `/understand` on main.
 - `agm kill` / `agm interrupt` on Claude sessions is **blocked for all agents**—only the user (at a TTY confirming `y`) can stop a Claude session.

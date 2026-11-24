@@ -1,6 +1,6 @@
-# OpenCode v2 Guide — Workers, Audit, `gitnexus-sync` & Default Reviewer
+# OpenCode v2 Guide — Workers, Audit & Default Reviewer
 
-OpenCode v2 (`@opencode/cli`) is the primary execution engine for worktree-isolated automated roles: **Audit (`auditor`)**, **Repo Search (`explore`)**, **GitNexus Sync (`gitnexus-sync`)**, **Engineering Workers (`worker-fast/mid/strong`)**, and **Default Reviewer (`reviewer`)**.
+OpenCode v2 (`@opencode/cli`) is the primary execution engine for worktree-isolated automated roles: **Audit (`auditor`)**, **Repo Search (`explore`)**, **Engineering Workers (`worker-fast/mid/strong`)**, and **Default Reviewer (`reviewer`)**.
 
 ## 1. Installation & Windows 11 Gotchas (verified on v2.3.2)
 
@@ -24,7 +24,6 @@ The workspace catalog confirms the two DeepSeek Go IDs below. Catalog presence i
 | Role | Preferred source | Scope |
 |---|---|---|
 | `auditor` | `script/CI` | Lint/tests/build + diff/log checks; approved free/local LLM only for interpretation if needed; no code edits |
-| `gitnexus-sync` | `script/CI` | `gitnexus analyze --index-only`; do not spend Go quota repeating deterministic work |
 | `explore` | `opencode-go/deepseek-v4.1-flash` | Interactive repo search/log summaries; read-only with file:line evidence |
 | `worker-fast` | `opencode-go/deepseek-v4.1-flash` | Well-specified ≤ 2–3 file tasks with lint, typecheck and tests |
 | `worker-mid` | `opencode-go/deepseek-v4.1-flash` | 3–5 file tasks within proven capability; a different tier label does not make the model stronger |
@@ -46,7 +45,7 @@ NVIDIA stays off the critical path: see [NVIDIA-BACKGROUND.md](NVIDIA-BACKGROUND
 
 1. The user has enabled Go. Use `/connect` → **OpenCode Go** only if the worker environment is not connected. Keep keys out of repositories, briefs and logs.
 2. On the worker environment, check sign-in via `opencode auth list` and find actual IDs via `/models` or `opencode models | Select-String '^opencode-go/'` (PowerShell). When using `opencode run`, pass `--model <provider/model>` explicitly (Go IDs use `opencode-go/<model-id>`). Changing agents does not automatically change the model in a primary session. Do not set Go globally for every role.
-3. Check the [Go Console](https://opencode.ai/console/go) before dispatch. Paid Go models **share** the 5-hour, weekly and monthly allowances. `agm cost` tracks tokens and their worth at list API prices, not Go allowance or invoices. Keep Extra Usage off by default; only the user can approve enabling it.
+3. Check `agm quota --refresh` and [Go Console](https://opencode.ai/console/go) before dispatch. Paid Go models **share** the 5-hour, weekly and monthly allowances. `agm cost` tracks tokens and their worth at list API prices, not Go allowance or invoices. Keep Extra Usage off by default; only the user can approve enabling it.
 4. If Go returns `429`, check Console. If the allowance is exhausted, another paid Go model is not a workaround. Use a capable preapproved source or mark the task blocked; never fall back silently to pay-as-you-go. See the [budget policy](../AGENTS-TUTORIAL.md#311-điều-phối-kinh-phí-ai) and the [official Go guide](https://opencode.ai/docs/go/) for privacy rules.
 5. If Console is unavailable, request recent figures from the user; sign-in does not prove available quota. Reserve review/rework capacity. Flash and Pro share Go allowance and are not free sources.
 
@@ -59,26 +58,29 @@ opencode run --agent reviewer --model opencode-go/deepseek-v4-pro "Read the task
 
 The `worker-fast`/`reviewer` agents must already exist with scoped permissions. These examples do not create agents, grant permissions or prove qualification.
 
-### Tips for Running Lightweight / Free Models Reliably
-- **Lock down with ESLint & CI guardrails ([ESLINT-CI-GUARDRAILS.md](ESLINT-CI-GUARDRAILS.md)):** every `worker-fast` must pass `npx eslint . --max-warnings 0 --report-unused-disable-directives` (or `ruff` / `clippy -D warnings`) with `0 errors, 0 warnings` before committing, and is strictly forbidden from inserting `eslint-disable` or `@ts-ignore`. The linter acts as a zero-cost supervisor so lightweight models self-correct in the worktree.
-- **Tool-calling qualification first:** this applies to new Go models as well as free/local models. Use the trials above, not the “coding” label or catalog capability declarations.
-- **Local Ollama:** always set `num_ctx ≥ 64k`, otherwise OpenCode tool calls frequently fail.
-- **`429` fallbacks:** OpenRouter `:free` endpoints enforce strict per-minute rate limits; keep 2–3 fallback slugs in `opencode.json`.
-- **Track tokens, not invoices:** use `agm cost --by source` for workload distribution and Go Console for Go allowance. `agm cost --by model` keys OpenCode usage as `provider/id` (`opencode-go/deepseek-v4-pro`, `nvidia-kimi/…`), so Go, NVIDIA and free Zen models are separated automatically; its USD column is list-price value, not what Go bills. OpenCode terminals are linked to their newest session in the same folder, including sessions started long after the TUI opened or via `/new`. Use scripts/CI before calling a model for deterministic lint, test and GitNexus tasks.
+### Shared Context, Memory & Compact Ponytail for Workers
+
+- **Phase skills:** use [Skill Routing](SKILL-ROUTING.md): feature logic → `test-driven-development`; unresolved bug → `systematic-debugging`; review feedback → `receiving-code-review`; independent reviewer → `code-review`. Add a relevant domain skill and preserve final verification. A mechanical task can select no workflow/domain skill; project checks still run.
+- **Resolve, then dispatch:** record `phase`, `work_type`, comma-separated `skills`, actual runtime `skill_refs` and any addition reason in the brief. One workflow plus one domain is the default; do not reject a justified third/fourth skill or suppress a mandatory client workflow. A skill in a Codex plugin cache is not proof it is exposed to OpenCode. Report unresolved required skills or use an explicitly approved equivalent playbook.
+- **Understand-Anything (`.ua/`):** Workers do **not** read the full `.ua/knowledge-graph.json` directly into context. Receive scoped file paths in `.agents/tasks/<ID>.md` (or use the read-only Understand-Anything MCP server when configured). Never edit `.ua/` from a worker worktree.
+- **Shared Memory permissions (`Write task logs, implementation findings`):** Workers write only to `.agents/log/<ID>.md` using the standardized short report format (never forward chat history; never touch `.agents/memory/published/`).
+- **Compact Ponytail for Free/Lightweight Workers (no `ultra`):** Keep worker prompts short and scope-locked: (1) implement only the Task Brief and `files_allowed`, never expand or narrow CEO-approved scope; (2) read target files and reuse existing helpers first; (3) never drop validation, error handling, security checks, or required tests; (4) report honestly what was run or skipped.
+- **Lock down with ESLint & CI guardrails ([ESLINT-CI-GUARDRAILS.md](ESLINT-CI-GUARDRAILS.md)):** every `worker-fast` must pass `npx eslint . --max-warnings 0 --report-unused-disable-directives` (or `ruff` / `clippy -D warnings`) with `0 errors, 0 warnings` before committing, and is strictly forbidden from inserting `eslint-disable` or `@ts-ignore`.
+- **Track tokens, not invoices:** use `agm cost --by source` for workload distribution and `agm quota --refresh` / Go Console for Go allowance. Use scripts/CI before calling a model for deterministic lint and test tasks.
 
 ---
 
-## 3. Permissions & Lifecycle in `.opencode/agents/`
+## 3. Permissions & Lifecycle in `.opencode/agent/`
 
-*(Use the v2 directory for new configs. Standalone sessions need `mode: primary` or `all`; `mode: subagent` is only for OpenCode child sessions.)*
+*(Standalone sessions need `mode: primary` or `all`; `mode: subagent` is only for OpenCode child sessions.)*
 
 - **Strict per-role permissions & `agm mcp` scoping:**
-  - `worker-*`: use v2 `permissions` to restrict `edit` and `shell`. Allow only approved writes; block out-of-role Git operations and deny access to secrets through both file and shell tools. **Do NOT attach `agm` MCP (`"mcp": { "agm": ... }`) to regular worker profiles** (because `agm_spawn` can spawn terminals); workers report via CLI `agm send` (`REPORT|BLOCKED|ERROR` or Vietnamese equivalents) and are rejected from writing `BRANCHES.md`.
-  - `auditor` / `reviewer` / `gitnexus-sync`: forbidden from editing product source code. Only manager/review profiles (such as `reviewer`) may mount `agm` MCP (`type: "local", command: ["agm", "mcp"]`).
+  - `worker-*`: use v2 `permissions` to restrict `edit` and `shell`. Allow only approved writes; block out-of-role Git operations, `.agents/memory/published/`, `.ua/`, and deny access to secrets through both file and shell tools. **Do NOT attach `agm` MCP (`"mcp": { "agm": ... }`) to regular worker profiles** (because `agm_spawn` can spawn terminals); workers report via CLI `agm send` (`REPORT|BLOCKED|ERROR` or Vietnamese equivalents) and are rejected from writing `BRANCHES.md`.
+  - `auditor` / `reviewer`: forbidden from editing product source code. Start every read-only profile with `"*": deny` and explicit `read`/`glob`/`grep` allows: denying only `bash` and `execute` exposes plugin tools such as `browse_*` and the worktree tools ([verified lessons](WINDOWS-AGENT-RUNTIME.md#3-read-only-boundary-for-opencode-agents)). Only manager/review profiles (such as `reviewer`) may mount `agm` MCP (`type: "local", command: ["agm", "mcp"]`).
 - **Automatic rotation via `agm daemon`:**
-  - When an OpenCode worker (`agm spawn ... --role worker`) hits **`ctx_rotate` (default 70%)**, `agm` prompts it to write a handoff entry to `.agents/log/<ID>.md` + commit, verifies a clean worktree, then kills the old session and spawns a fresh successor in the same worktree.
-- **Concurrency:** hard-capped by `[policy].max_workers` in `~/.agmag/providers.toml` (keep within your Ollama Cloud plan's concurrent limit if applicable).
-- **NVIDIA background:** one task across all aliases is a manual CEO policy, not something `max_workers` enforces across every role. A task deadline is not an HTTP timeout; do not enable a NVIDIA watcher without verified permissions and budget.
+  - Ordinary OpenCode workers retain the shared **`ctx_rotate` (example/default 70%)** fallback: `agm` requests a handoff in `.agents/log/<ID>.md` + commit, verifies a clean worktree, then replaces the old OpenCode session in the same worktree. A task explicitly using the **Codex High** profile follows the earlier [50% proactive request policy](CONTEXT-ROTATION.md), normally 40% for context-heavy work, by calling `agm rotate` on its own OpenCode terminal and using the existing worker handoff protocol. This does not authorize killing interactive Codex/Claude sessions or change all workers' thresholds.
+- **Concurrency:** hard-capped by `[policy].max_workers` in `~/.agmag/providers.toml`.
+- **NVIDIA background:** one task across all aliases is a manual CEO policy, not something `max_workers` enforces across every role.
 
 ## 4. Lint This Harness Collection
 

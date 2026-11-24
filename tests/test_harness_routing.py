@@ -205,6 +205,10 @@ class IntegrationTests(unittest.TestCase):
         self.write(".opencode/agent/worker.md", "---\nmodel: x\n---\nNo heading here.\n")
         self.assertEqual(self.codes(), set())
 
+    def test_ua_graph_directory_is_ignored(self):
+        self.write(".ua/notes.md", "No H1 heading; local Understand-Anything data.\n")
+        self.assertEqual(self.codes(), set())
+
     def test_external_url_is_not_requested(self):
         self.write("docs/a.md", "# T\n[x](https://invalid.example/no-network)\n")
         self.assertEqual(self.codes(), set())

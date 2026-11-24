@@ -9,7 +9,6 @@ FLASH = "opencode-go/deepseek-v4.1-flash"
 PRO = "opencode-go/deepseek-v4-pro"
 ROUTING = {
     "auditor": "script/CI",
-    "gitnexus-sync": "script/CI",
     "explore": FLASH,
     "worker-fast": FLASH,
     "worker-mid": FLASH,
@@ -33,9 +32,20 @@ SAFETY = {
     "outer-retry": "none",
     "cloud-approval": "required",
 }
+SKILL_ROUTING = {
+    "discovery": "brainstorming", "system-design": "system-design",
+    "adr": "architecture", "planning": "writing-plans",
+    "test-strategy": "testing-strategy", "feature": "test-driven-development",
+    "bugfix": "systematic-debugging", "review-fix": "receiving-code-review",
+    "review-request": "requesting-code-review", "review": "code-review",
+    "audit": "script/CI", "docs": "documentation",
+    "verification": "verification-before-completion",
+    "skill-authoring": "writing-skills", "mechanical": "none",
+}
 CONTRACTS = {
     "OPENCODE-WORKERS-REVIEWER.md": {"routing": ROUTING},
     "NVIDIA-BACKGROUND.md": {"background": BACKGROUND, "safety": SAFETY},
+    "SKILL-ROUTING.md": {"skill-routing": SKILL_ROUTING},
 }
 MODELS = {
     FLASH: {"low", "high", "max"},

@@ -11,7 +11,7 @@ from harness_markdown import Document, Issue, check_links, parse_document
 from harness_routing import SECRET, check_contracts, check_model_ids
 
 
-IGNORED = {".git", ".wt", ".agents", ".opencode", ".venv", "node_modules", "__pycache__"}
+IGNORED = {".git", ".wt", ".agents", ".opencode", ".ua", ".venv", "node_modules", "__pycache__"}
 REQUIRED = {
     "AGENTS-TUTORIAL.md", "BOT-CEO.md", "HERDR-CORE-BOT.md",
     # docs/ is English-only; the root rule documents stay Vietnamese.
