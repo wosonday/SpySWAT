@@ -18,7 +18,6 @@ from spyswat.swat_calib.core.output_manager import OutputFileManager
 
 from spyswat.logger import Logger
 from .param_spec import parse_spec, format_params, is_raw, param_columns
-from .replay import ReplayCursor
 from .run_log import RunLog
 from .scoring import (
     normalise_observed, check_weights, preflight, score_sites, _resolve_metrics,
@@ -803,10 +802,14 @@ class CalibrationManager:
                 self._store_counter += n_live
             else:
                 run_ids = list(run_ids)
-                if len(run_ids) != n_live:
+                if len(run_ids) != total:
                     raise ValueError(
-                        f"run_ids has {len(run_ids)} entries, expected {n_live}."
+                        f"run_ids has {len(run_ids)} entries, expected {total}."
                     )
+                # The caller passed one id per submitted parameter set: the
+                # first ``n_replayed`` belong to replayed runs, the rest are
+                # allocated to the live tail.
+                run_ids = run_ids[n_replayed:]
 
         columns = ["score"] + [
             f"{m}@{var}@{reach}"
