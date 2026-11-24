@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -154,6 +155,91 @@ def test_torn_tail_ignored_by_open(tmp_path):
 
     sm = opened.site_metrics("FLOW_OUTcms", 1)
     assert sm["run_id"].tolist() == [1]
+
+    # A subsequent flush rewrites the CSV files without the torn-tail column/row.
+    add_simple_run(opened, 2)
+    opened.close()
+    assert "run_999" not in series_path.read_text(encoding="utf-8")
+    written_metrics = (tmp_path / "session" / "reach_1" /
+                       "FLOW_OUTcms_metrics.csv").read_text(encoding="utf-8")
+    assert "999" not in written_metrics
+
+
+def test_reopen_restores_max_columns(tmp_path):
+    store = make_store(tmp_path, max_columns=2)
+    for i in range(1, 6):
+        add_simple_run(store, i)
+    store.close()
+    d = tmp_path / "session" / "reach_1"
+    assert (d / "FLOW_OUTcms_part3.csv").exists()
+
+    opened = SessionStore.open(tmp_path / "session")
+    assert opened.max_columns == 2
+    add_simple_run(opened, 6)
+    opened.close()
+
+    ser = opened.series("FLOW_OUTcms", 1)
+    assert list(ser.columns) == [f"run_{i}" for i in range(1, 7)]
+    assert len(ser.columns) == len(set(ser.columns))       # no duplicate columns
+    p1 = pd.read_csv(d / "FLOW_OUTcms.csv", index_col="date")
+    p2 = pd.read_csv(d / "FLOW_OUTcms_part2.csv", index_col="date")
+    p3 = pd.read_csv(d / "FLOW_OUTcms_part3.csv", index_col="date")
+    assert list(p1.columns) == ["run_1", "run_2"]
+    assert list(p2.columns) == ["run_3", "run_4"]
+    assert list(p3.columns) == ["run_5", "run_6"]
+
+
+def test_flush_removes_stale_part_files(tmp_path):
+    store = make_store(tmp_path, max_columns=10)
+    add_simple_run(store, 1)
+    store.close()
+    d = tmp_path / "session" / "reach_1"
+    stale = d / "FLOW_OUTcms_part2.csv"
+    pd.DataFrame({"run_77": [1.0] * len(DATES)}, index=DATES).rename_axis(
+        "date").to_csv(stale)
+    assert stale.exists()
+
+    opened = SessionStore.open(tmp_path / "session")
+    add_simple_run(opened, 2)
+    opened.close()
+    assert not stale.exists()
+
+
+def test_locked_best_and_sensitivity_retried_on_close(tmp_path, monkeypatch, caplog):
+    store = make_store(tmp_path)
+    real_replace = os.replace
+    state = {"fail": True}
+
+    def fake_replace(src, dst):
+        if state["fail"] and str(dst).endswith(("best.csv", "sensitivity.csv")):
+            raise PermissionError("open in Excel")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(session_store.os, "replace", fake_replace, raising=False)
+    with caplog.at_level("WARNING"):
+        store.write_best({"CN2.mgt": 75.0, "ALPHA_BF.gw": 0.5})
+        store.write_sensitivity(pd.DataFrame({"parameter": ["CN2.mgt"], "t": [2.0]}))
+    assert not (tmp_path / "session" / "best.csv").exists()
+    assert not (tmp_path / "session" / "sensitivity.csv").exists()
+
+    state["fail"] = False
+    store.close()                                     # must retry buffered payloads
+    best = pd.read_csv(tmp_path / "session" / "best.csv", dtype=str)
+    assert best.set_index("parameter")["value"].to_dict() == {
+        "CN2.mgt": "75.0", "ALPHA_BF.gw": "0.5",
+    }
+    sens = pd.read_csv(tmp_path / "session" / "sensitivity.csv")
+    assert sens["parameter"].tolist() == ["CN2.mgt"]
+
+
+def test_signature_canon_handles_path_and_timestamp(tmp_path):
+    sig = {"model": Path("D:/SWAT/TxtInOut"), "start": pd.Timestamp("2000-01-01")}
+    store = SessionStore(tmp_path / "sig", signature=sig,
+                         param_names=PARAMS, sites=SITES)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "sig")
+    opened.check_signature(sig)                        # no raise after reopen
 
 
 def test_part2_split_with_small_max_columns(tmp_path):

@@ -73,9 +73,13 @@ def _run_id_from_col(col):
 
 
 def _canon(value):
-    """Canonical form for signature comparison (tuples -> lists, keys sorted)."""
+    """Canonical form for signature comparison (tuples -> lists, keys sorted).
+
+    ``default=str`` matches how ``_write_session_json()`` serialises the stored
+    signature, so ``Path``/``Timestamp`` values compare equal after a re-open.
+    """
     try:
-        return json.loads(json.dumps(value, sort_keys=True))
+        return json.loads(json.dumps(value, sort_keys=True, default=str))
     except (TypeError, ValueError):
         return value
 
@@ -106,6 +110,8 @@ class SessionStore:
         self._runs = []                                    # list of run dicts, in run_id order
         self._series = {}                                  # {(var, reach): {run_id: pd.Series}}
         self._metrics = {}                                 # {(var, reach): {run_id: {metric: value}}}
+        self._pending_best = None                          # buffered best.csv payload
+        self._pending_sensitivity = None                   # buffered sensitivity.csv payload
         self._pending = 0
         self._last_flush = _time.monotonic()
         self._locked_files = set()
@@ -131,6 +137,7 @@ class SessionStore:
             "sites": [list(site) for site in self.sites],
             "spyswat_version": _spyswat_version(),
             "numpy_version": np.__version__,
+            "max_columns": self.max_columns,
         }
 
         def write(tmp):
@@ -154,6 +161,7 @@ class SessionStore:
             signature=meta.get("signature", {}),
             param_names=meta.get("param_names", []),
             sites=[tuple(site) for site in meta.get("sites", [])],
+            max_columns=meta.get("max_columns", 16000),
             create=False,
         )
         store._load_committed()
@@ -235,8 +243,16 @@ class SessionStore:
             self.flush()
 
     def flush(self) -> None:
-        """Write pending runs. Series and metric files first, ``runs.csv`` last."""
-        if self._closed or not self._runs:
+        """Write pending runs. Series and metric files first, ``runs.csv`` last.
+
+        Buffered ``best.csv`` / ``sensitivity.csv`` payloads are retried here too, so a
+        file that was locked when written is committed by the next flush or by ``close()``.
+        """
+        if self._closed:
+            return
+        self._flush_best()
+        self._flush_sensitivity()
+        if not self._runs:
             return
         ok = True
         for site in sorted(self._series):
@@ -255,11 +271,26 @@ class SessionStore:
             return
         self.flush()
         if self._locked_files:
+            self.flush()                # one more retry for files still locked
+        if self._locked_files:
             names = ", ".join(str(p) for p in sorted(self._locked_files))
             raise OSError(f"[SessionStore] Cannot write session files (still locked): {names}")
         self._closed = True
 
     def write_best(self, params) -> None:
+        self._pending_best = dict(params)
+        self._flush_best()
+
+    def write_sensitivity(self, df: pd.DataFrame) -> None:
+        self._pending_sensitivity = df.copy()
+        self._flush_sensitivity()
+
+    # ------------------------------------------------------------ flush helpers
+
+    def _flush_best(self) -> bool:
+        if self._pending_best is None:
+            return True
+        params = self._pending_best
         path = self.session_dir / "best.csv"
 
         def write(tmp):
@@ -269,13 +300,19 @@ class SessionStore:
                 for name in sorted(params):
                     w.writerow([name, _fmt_float(params[name])])
 
-        self._commit_file(path, write)
+        if self._commit_file(path, write):
+            self._pending_best = None
+            return True
+        return False
 
-    def write_sensitivity(self, df: pd.DataFrame) -> None:
+    def _flush_sensitivity(self) -> bool:
+        if self._pending_sensitivity is None:
+            return True
         path = self.session_dir / "sensitivity.csv"
-        self._commit_csv(path, df)
-
-    # ------------------------------------------------------------ flush helpers
+        if self._commit_csv(path, self._pending_sensitivity):
+            self._pending_sensitivity = None
+            return True
+        return False
 
     def _write_series_files(self, site) -> bool:
         series_dict = self._series.get(site)
@@ -286,6 +323,7 @@ class SessionStore:
         site_dir = self.session_dir / f"reach_{reach}"
         columns = sorted(frame.columns, key=_run_id_from_col)
         ok = True
+        parts = 0
         for start in range(0, len(columns), self.max_columns):
             chunk = columns[start:start + self.max_columns]
             index = start // self.max_columns
@@ -293,7 +331,24 @@ class SessionStore:
             sub = frame[chunk].reset_index()          # "date" column + run columns
             if not self._commit_csv(site_dir / name, sub):
                 ok = False
+            parts += 1
+        if ok:
+            self._remove_stale_parts(site_dir, variable, parts)
         return ok
+
+    @staticmethod
+    def _remove_stale_parts(site_dir, variable, keep_parts) -> None:
+        """Remove ``_part<k>.csv`` files beyond the chunks just written."""
+        k = keep_parts + 1
+        while True:
+            stale = site_dir / f"{variable}_part{k}.csv"
+            if not stale.exists():
+                break
+            try:
+                stale.unlink()
+            except OSError:
+                break
+            k += 1
 
     def _write_metrics_file(self, site) -> bool:
         metric_map = self._metrics.get(site)

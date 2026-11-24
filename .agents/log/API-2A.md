@@ -30,6 +30,40 @@ Key behaviours implemented:
 - `git diff --check` -> clean.
 
 ## Open questions
-- `open()` does not restore `flush_every` / `flush_seconds` / `max_columns` (they are not in
-  `session.json`); resume uses the defaults. The manager (API-2b / API-5) may want to store
-  them if resume must reproduce batching exactly.
+- `open()` does not restore `flush_every` / `flush_seconds` (they are not in `session.json`);
+  resume uses the defaults. `max_columns` is now persisted and restored (rework round 1).
+  The manager (API-2b / API-5) may want to store the batching knobs too if resume must
+  reproduce batching exactly.
+
+## Rework round 1 — review API-2A-1 (four Minor findings)
+
+Fixed all four Minor findings from `.agents/reviews/API-2A-1.md` exactly as proposed, test-first
+(new tests were run and failed against the old code before the fixes):
+
+- Persisted `max_columns` in `session.json` and restored it in `open()`; added
+  `_remove_stale_parts()` so a flush unlinks `_part<k>.csv` files beyond the chunks written.
+- Buffered `best.csv` / `sensitivity.csv` payloads (`_pending_best`, `_pending_sensitivity`);
+  `flush()` retries them, and `close()` calls `flush()` once more when files stay locked
+  before raising `OSError`.
+- `_canon()` now uses `json.dumps(..., default=str)`, matching `_write_session_json()`
+  serialisation, so `Path` / `Timestamp` signature values compare equal after `open()`.
+- Extended `test_torn_tail_ignored_by_open` to `add_run` + `close()` and assert `run_999`
+  is absent from the rewritten series and metrics CSV files.
+
+New tests: `test_reopen_restores_max_columns`, `test_flush_removes_stale_part_files`,
+`test_locked_best_and_sensitivity_retried_on_close`,
+`test_signature_canon_handles_path_and_timestamp` (+ torn-tail rewrite assertions).
+
+### Files changed
+- `spyswat/swat_calib/calibration/session_store.py`
+- `tests/test_session_store.py`
+- `.agents/log/API-2A.md` (this file)
+
+### Commands + results
+- `python -m pytest tests/test_session_store.py -q` -> `17 passed`.
+- `python -m pytest tests/ -q` -> `492 passed, 11 skipped` (was 488/11 before the 4 new tests).
+- `git diff --check` -> clean (only CRLF advisory warnings from Git on Windows).
+
+### Open questions
+- None blocking. `flush_every` / `flush_seconds` are still not persisted (not requested by
+  the review); the manager can pass them explicitly on resume if exact batching matters.
