@@ -12,7 +12,7 @@ permission:
   edit: {"*": deny, ".agents/log/*": allow}
   bash: {
     "*": deny, "git status*": allow, "gitnexus status*": allow, "gitnexus analyze --index-only*": allow,
-    "opencode mcp list*": allow, "git add .agents/log/*": allow, "git commit*": allow, "agm send*": allow
+    "opencode mcp list*": allow, "git add .agents/log/*": allow, "git commit*": allow, "git commit *--amend*": deny, "agm send*": allow
   }
   webfetch: deny
   websearch: deny

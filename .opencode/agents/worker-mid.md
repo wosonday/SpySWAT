@@ -14,7 +14,7 @@ permission:
     "*": deny, "python *": allow, "pytest*": allow, "python -m pytest*": allow, ".venv/*pytest*": allow,
     "uv pip*": allow, "uv sync*": allow, "uv run pytest*": allow, "uv run python -m pytest*": allow,
     "pip *": allow, "python -m pip*": allow, ".venv/*pip*": allow,
-    "git status*": allow, "git diff*": allow, "git log*": allow, "git add*": allow, "git add .agents/tasks*": deny, "git commit*": allow,
+    "git status*": allow, "git diff*": allow, "git log*": allow, "git add*": allow, "git add .agents/tasks*": deny, "git add .agents/reviews*": deny, "git add .opencode*": deny, "git commit*": allow, "git commit *--amend*": deny,
     "agm send*": allow
   }
   webfetch: deny
