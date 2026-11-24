@@ -19,3 +19,6 @@ pytest-cache-files-*/
 .agents/.runtime/
 .agents/locks/
 .gitnexus/
+
+# understand-anything knowledge graph (local only)
+.ua/
