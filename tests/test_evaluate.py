@@ -351,6 +351,71 @@ def test_empty_simulation_series_raises():
         evaluate(empty, obs)
 
 
+# ── rework regressions (review round 2) ──────────────────────────────────────
+
+def test_step_m_period_may_end_on_the_last_simulated_day():
+    # A full-year daily simulation aggregated to "MS" ends 2000-12-01 internally,
+    # but a period ending on the real last day (2000-12-31) must be accepted.
+    idx = pd.date_range("2000-01-01", "2000-12-31", freq="D")
+    sim = pd.Series([float(month) for month in idx.month], index=idx)
+    obs = monthly("2000-01-01", list(range(1, 13)))
+
+    res = evaluate(sim, obs, metrics=("nse",), step="M",
+                   periods={"valid": ("2000-01-01", "2000-12-31")})
+
+    row = res.table.loc[(None, None, "valid")]
+    assert row["n"] == 12
+    assert row["nse"] == pytest.approx(1.0)
+
+
+def test_step_m_period_may_end_mid_the_last_simulated_month():
+    # The simulation stops on 2000-02-04: the aggregated series ends 2000-02-01,
+    # yet a period ending on the real last simulated day is valid.
+    idx = pd.date_range("2000-01-01", "2000-02-04", freq="D")
+    sim = pd.Series([5.0] * 31 + [25.0] * 4, index=idx)
+    obs = monthly("2000-01-01", [5, 25])
+
+    res = evaluate(sim, obs, metrics=("nse",), step="M",
+                   periods={"valid": ("2000-01-01", "2000-02-04")})
+
+    row = res.table.loc[(None, None, "valid")]
+    assert row["n"] == 2
+    assert row["nse"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("bound", [None, pd.NaT])
+def test_period_bound_that_is_not_a_date_raises(pair, bound):
+    sim, obs = pair
+
+    with pytest.raises(ValueError, match="bad"):
+        evaluate(sim, obs, periods={"bad": (bound, "2000-01-04")})
+    with pytest.raises(ValueError, match="bad"):
+        evaluate(sim, obs, periods={"bad": ("2000-01-01", bound)})
+
+
+def test_warmup_end_that_is_not_a_date_raises(pair):
+    sim, obs = pair
+
+    with pytest.raises(ValueError, match="warmup_end"):
+        evaluate(sim, obs, warmup_end=pd.NaT)
+
+
+def test_reaches_are_sorted_numerically():
+    sim = {
+        ("FLOW_OUTcms", 10): series("2000-01-01", [1, 2, 3]),
+        ("FLOW_OUTcms", 2): series("2000-01-01", [1, 2, 3]),
+    }
+    obs = {
+        ("FLOW_OUTcms", 10): series("2000-01-01", [1, 2, 3]),
+        ("FLOW_OUTcms", 2): series("2000-01-01", [1, 2, 3]),
+    }
+
+    res = evaluate(sim, obs, metrics=("nse",))
+
+    order = list(res.table.index.droplevel("period"))
+    assert order == [("FLOW_OUTcms", 2), ("FLOW_OUTcms", 10)]
+
+
 # ── export ───────────────────────────────────────────────────────────────────
 
 def test_to_csv_writes_the_table(pair, tmp_path):

@@ -119,6 +119,9 @@ def evaluate(
     print_step = _normalise_freq(freq) if freq is not None else _infer_freq(sim_sites)
 
     obs_sites = _prepare_observations(obs_sites, print_step, step)
+    # Last real simulated day, before any monthly aggregation moves it back to
+    # the first of the month: a period may still end on that day.
+    raw_max = max(s.index.max() for s in sim_sites.values())
     if step == "M" and print_step == "D":
         sim_sites = {
             key: _aggregate_to_months(series, _aggregation_method(key[0], agg))
@@ -126,10 +129,18 @@ def evaluate(
         }
 
     # Bounds come from the simulation as it will actually be scored: after
-    # aggregation, and only for the sites that have observations.
+    # aggregation (which may start a mid-month record on the 1st), only for the
+    # sites that have observations, and never before the raw last day.
     sim_min = min(s.index.min() for s in sim_sites.values())
-    sim_max = max(s.index.max() for s in sim_sites.values())
-    warmup = None if warmup_end is None else pd.Timestamp(warmup_end)
+    sim_max = max(raw_max, max(s.index.max() for s in sim_sites.values()))
+
+    warmup = None
+    if warmup_end is not None:
+        warmup = pd.Timestamp(warmup_end)
+        if pd.isna(warmup):
+            raise ValueError(
+                f"warmup_end must be a real date, got {warmup_end!r}."
+            )
 
     period_bounds = _resolve_periods(
         periods, obs_sites, sim_sites, sim_min, sim_max, warmup
@@ -233,7 +244,8 @@ def _check_time_series(series, label: str, key: SiteKey) -> None:
 
 
 def _sorted_keys(sites: Mapping[SiteKey, pd.Series]) -> List[SiteKey]:
-    return sorted(sites, key=lambda k: (str(k[0]), str(k[1])))
+    # Reaches sort numerically (2 before 10); a missing reach sorts last.
+    return sorted(sites, key=lambda k: (str(k[0]), k[1] is None, k[1]))
 
 
 def _check_metrics(metrics) -> Tuple[str, ...]:
@@ -347,17 +359,28 @@ def _resolve_periods(periods, obs_sites: Mapping[SiteKey, pd.Series],
         raise ValueError("periods must be a non-empty dict {name: (start, end)}.")
     resolved = {}
     for name, bounds in periods.items():
-        try:
-            start_raw, end_raw = bounds
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"Period {name!r} must be a (start, end) pair, got {bounds!r}."
-            ) from None
-        resolved[name] = (pd.Timestamp(start_raw), pd.Timestamp(end_raw))
+        resolved[name] = _period_bounds(name, bounds)
 
     for name, (start, end) in resolved.items():
         _validate_period(name, start, end, sim_min, sim_max, warmup)
     return resolved
+
+
+def _period_bounds(name: str, bounds) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    try:
+        start_raw, end_raw = bounds
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Period {name!r} must be a (start, end) pair, got {bounds!r}."
+        ) from None
+    start = pd.Timestamp(start_raw)
+    end = pd.Timestamp(end_raw)
+    # None or NaT would make every comparison below False and hide the error.
+    if pd.isna(start) or pd.isna(end):
+        raise ValueError(
+            f"Period {name!r} needs two real dates, got {bounds!r}."
+        )
+    return start, end
 
 
 def _common_dates(obs_sites: Mapping[SiteKey, pd.Series],

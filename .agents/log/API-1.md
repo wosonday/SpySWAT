@@ -82,3 +82,32 @@ tests added before any code change).
     229.12 s (baseline 490 after the first round + 8 regressions);
   - `git diff --check` → exit 0 (only Git LF→CRLF warnings).
 - Open questions: none; the log entries above still describe the accepted choices.
+
+## 2026-11-25 · deepseek-v4.1-flash (worker-mid) · rework round 2
+
+Fix the three findings of `.agents/reviews/API-1-2.md`, test-first (6 new regression
+tests added before any code change).
+
+- RED: `python -m pytest tests/test_evaluate.py -q` → **6 failed, 34 passed**: the
+  full-year `step="M"` period ending `2000-12-31` and the mid-last-month period ending
+  `2000-02-04` both failed with `after the simulation end`; `None`/`NaT` period bounds and
+  `warmup_end=pd.NaT` returned `n=0` instead of raising; reach `10` sorted before reach `2`.
+- Major 1 (last simulated day lost by aggregation): `evaluate()` records
+  `raw_max = max(s.index.max() ...)` before `_aggregate_to_months` and uses
+  `sim_max = max(raw_max, post-aggregation max)`; `sim_min` stays the post-aggregation
+  (month-start) bound so a mid-month start still includes its first month.
+- Minor 2 (`NaT` bounds): new `_period_bounds()` raises
+  `ValueError: Period '<name>' needs two real dates` when `pd.isna(start)` or
+  `pd.isna(end)`; `warmup_end` converts and raises
+  `ValueError: warmup_end must be a real date` when `pd.isna(...)`.
+- Minor 3 (reach order): `_sorted_keys` sorts by `(str(variable), reach is None, reach)`,
+  so reach 2 precedes reach 10 and a missing reach sorts last.
+- Files changed: `spyswat/swat_calib/analysis/evaluate.py`, `tests/test_evaluate.py`,
+  `.agents/log/API-1.md`.
+- Checks:
+  - `python -m pytest tests/test_evaluate.py -q` → **40 passed** in 2.38 s;
+  - `python -m pytest tests/ -q` → **504 passed / 11 skipped / 0 failed**, 5 warnings,
+    28 subtests passed, 235.03 s (baseline 498 + 6 new regressions);
+  - `git diff --check` → exit 0 (only Git LF→CRLF warnings).
+- Open questions: none.
+
