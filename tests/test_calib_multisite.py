@@ -334,7 +334,8 @@ def test_run_iteration_no_old_kwargs_does_not_warn(proj):
 
 
 def test_preflight_runs_before_any_swat_run(proj):
-    proj.run_impl = _run_writes_rch
+    ran = []
+    proj.run_impl = lambda p: ran.append(1)
     mgr = CalibrationManager(proj)
     obs = {("FLOW_OUTcms", 1): pd.Series([5.0] * 10, index=DATES)}  # zero variance
     with pytest.raises(ValueError, match="zero variance"):
@@ -342,6 +343,42 @@ def test_preflight_runs_before_any_swat_run(proj):
             {"CN2.mgt": 50.0}, obs, metric="nse", outputs={"FLOW_OUTcms": [1]},
             calib_period=("2000-01-01", "2000-01-10"),
         )
+    assert ran == []  # preflight failed before any SWAT run
+
+
+# ── metrics validated before any SWAT run (Minor 1) ─────────────────────────
+
+def test_run_iteration_unknown_metric_fails_before_run(proj):
+    ran = []
+    proj.run_impl = lambda p: ran.append(1)
+    mgr = CalibrationManager(proj)
+    obs = {("FLOW_OUTcms", 1): pd.Series(np.arange(10, dtype=float), index=DATES)}
+    with pytest.raises(ValueError, match="Unknown metric"):
+        mgr.run_iteration(
+            {"CN2.mgt": 50.0}, obs, metric="no_such_metric",
+            outputs={"FLOW_OUTcms": [1]},
+            calib_period=("2000-01-01", "2000-01-10"),
+        )
+    assert ran == []
+
+
+def test_run_iteration_unknown_reported_metric_fails_before_run(proj):
+    ran = []
+    proj.run_impl = lambda p: ran.append(1)
+    mgr = CalibrationManager(proj)
+    obs = pd.Series(np.arange(10, dtype=float), index=DATES)
+    with pytest.raises(ValueError, match="Unknown metric"):
+        mgr.run_iteration({"CN2.mgt": 50.0}, obs, metrics=("no_such_metric",))
+    assert ran == []
+
+
+def test_run_iteration_metrics_alone_uses_new_path(proj):
+    proj.run_impl = _run_writes_rch
+    mgr = CalibrationManager(proj)
+    obs = pd.Series(np.arange(10, dtype=float), index=DATES)
+    score = mgr.run_iteration({"CN2.mgt": 50.0}, obs, metrics=("nse",))
+    # constant sim 3.0 against obs 0..9: NSE = 1 - 105/82.5 = -0.2727...
+    assert score == pytest.approx(1 - 105 / 82.5)
 
 
 # ── run_once output normalisation (Minor 2) ─────────────────────────────────
