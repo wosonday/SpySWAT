@@ -11,9 +11,11 @@ __author__ = 'Sondayyyy'
 
 
 from spyswat.swat_project import SWATProject
+from spyswat.swat_calib.calibration import CalibrationResult
 
 __all__ = [
-    'SWATProject'
+    'SWATProject',
+    'CalibrationResult',
 ]
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())

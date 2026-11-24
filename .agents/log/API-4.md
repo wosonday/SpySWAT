@@ -1,0 +1,131 @@
+# API-4 — facade on `SWATProject` + `CalibrationResult`
+
+## Report (worker-strong)
+
+### Files changed
+- `spyswat/swat_calib/calibration/result.py` (new) — `CalibrationResult` (fields
+  `best_params/best_score/best_run_id/metric/runs/metrics/sensitivity/
+  sensitivity_status/session_dir/seed/algorithm/methods/subbasins`), dict-style
+  `res["best_params"|"best_score"|"history"]` (`history` == `runs`), `top(n)`
+  (drops failed/NaN, best first by the registry direction), `select(**conditions)`
+  (`<metric>__<op>` with `gt/gte/lt/lte`, `site=`, `period=`, `how=`), `best_param_set()`,
+  `series()`/`site_metrics()` (lazy via the store), and `CalibrationResult.load(session_dir)`
+  (metadata eager, series lazy). Also the `RawParamsStore` adapter (converts the manager's
+  *formatted* `{name: [(value, method, ...)]}` to raw floats so `runs.csv` stores repr-exact
+  values) and the `best_run` / `raw_params_for_run` / `evaluate_best_metrics` /
+  `regression_for_store` helpers used by the facade.
+- `spyswat/swat_project.py` — `SWATProject.calibration(...)` (algorithm ∈ glue/pso/de/dds;
+  resolves seed first, creates the session folder `<results_dir>/<YYYYMMDD_HHMMSS>_<alg>_<metric>`,
+  a `SessionStore` with the decision-9 signature, runs the algorithm with `store`, then best-run
+  metrics via `evaluate`, regression sensitivity on `is_initial` rows → `sensitivity.csv`,
+  `best.csv`, store closed in `finally`; `resume=False` → `FileExistsError`, `resume=True` →
+  `NotImplementedError`; never modifies TxtInOut), `evaluate` (fills print step + warm-up end),
+  `sensitivity` (`from_session` → regression without SWAT; else oat/morris/morris_salib/sobol/
+  regression), `scenarios` (converts `ParamSet`/`CalibrationResult`/lists to `ParamSet`s),
+  `apply` (ParamSet / CalibrationResult / dict; non-`"v"` dict without `methods=` raises; logs a
+  warning). Module helpers `_to_param_sets`, `_non_v_methods`.
+- `spyswat/swat_calib/calibration/__init__.py` — exports `CalibrationResult`.
+- `spyswat/__init__.py` — exports `CalibrationResult`.
+- `tests/test_calibration_result.py` (new) — 14 tests (dict access, top max/min, select
+  score/site/period/how, invalid operator, best_param_set, load round-trip, adapter).
+- `tests/test_project_facade.py` (new) — 13 tests (glue/pso/dds end-to-end with a fake runner,
+  session layout, best-run metrics with calib+valid rows, sensitivity/status, TxtInOut restore,
+  load round-trip, existing-session resume semantics, evaluate, sensitivity from_session /
+  regression, scenarios accepts result/top, apply).
+
+### Commands + result lines
+- `python -m pytest tests/test_calibration_result.py -q -p no:cacheprovider` → `14 passed`.
+- `python -m pytest tests/test_project_facade.py -q -p no:cacheprovider` → `13 passed`.
+- `python -m pytest tests/ -q -p no:cacheprovider` → `655 passed, 11 skipped, 28 subtests passed`
+  (main baseline: 628 passed, 11 skipped; +27 new tests).
+- `git diff --check` → clean (only Git's LF→CRLF autocrlf notice on `calibration/__init__.py`,
+  no whitespace errors).
+
+### Decisions / deviations (documented for the reviewer)
+1. **`RawParamsStore` bridges formatted → raw.** `CalibrationManager._run_batch_multi` /
+   `_run_iteration_multi` pass the *formatted* `{name: [(value, method, subbasins)]}` dict to
+   `store.add_run`, but `runs.csv` must store repr-exact floats (decision 9) and `SessionStore.runs()`
+   reads them back as floats. `calib_manager.py` and `session_store.py` are outside this task's
+   scope, so the facade wraps the `SessionStore` in `RawParamsStore`, which strips the
+   method/subbasin metadata to `{name: value}` before delegating `add_run` (and `__getattr__` for
+   everything else). `runs`, `best.csv` and `load` therefore round-trip the raw floats exactly.
+2. **`runs` = `SessionStore.runs()`** (run_id, time, status, error, is_initial, params, score),
+   not the algorithms' `runs` DataFrame (which carries per-site `<metric>@<var>@<reach>` columns
+   but no run_id/status). This keeps the in-memory result and `load` byte-identical, and per-site
+   metrics stay reachable through `store.site_metrics()` (used by `select`), with the runs
+   columns as a fallback for the calib period.
+3. **`select` semantics.** `score__op` uses the aggregate `score` column; any other
+   `<metric>__op` reads `store.site_metrics()` column `<metric>_<period>` (default `"calib"`).
+   Without `site=`, the condition applies to every calibrated (observed) site and `how="all"|"any"`
+   combines them; multiple conditions are AND-ed. Failed/NaN runs never match (NaN comparisons
+   are False).
+4. **Sensitivity errors become a status** (decision 11). `_regression_sensitivity` catches the
+   `ValueError`s from `regression_sensitivity` (API-3a raises): "Not enough usable runs" →
+   `sensitivity_status == "insufficient runs"`, anything else → the message; any other exception
+   is also folded into the status so sensitivity can never break a calibration. `n_used`/`r2`
+   warnings (decision 11) are emitted as `UserWarning`s.
+5. **`n_parallel`** is recorded in the signature and, for batch algorithms (glue/pso/de), applied
+   by setting `WorkingFolderManager.n_parallel` and re-running `setup_parallel`; DDS (sequential)
+   needs no workers. Defaults to the project's.
+6. **`scenarios`/`apply` do the result→ParamSet conversion** in the facade (`_to_param_sets`), so
+   `spyswat/swat_calib/scenarios/{model,batch}.py` needed no change (the task listed them only
+   "to accept results as param sets"); the conversion avoids a `scenarios ↔ calibration` import
+   cycle.
+7. **`method="regression"`** in `project.sensitivity` reuses `calibration(algorithm="glue",
+   sensitivity=True, ...)` and returns `res.sensitivity` — the "run a GLUE/LHS sample first" helper.
+
+### Open questions
+- None blocking. `CalibrationResult.load` leaves `metrics` as `None` (series are lazy); the
+  facade recomputes best-run metrics eagerly on the returned result. If the reviewer wants
+  `load` to also rebuild `metrics`, that needs the observed series, which are not stored in the
+  session (only their hash) — deferred to API-5 (resume by replay) where `session.json` matching
+  is implemented.
+
+## Rework round 1 (worker-strong, review `API-4-1.md`)
+
+### Changes per finding
+- **Major (`spyswat/swat_project.py` — `param_methods` / `param_subbasins`):** Verified
+  `param_methods=param_methods, param_subbasins=param_subbasins` is forwarded to `algo.run(...)`.
+  Added `test_calibration_param_methods_and_subbasins` in `tests/test_project_facade.py`
+  confirming worker updates passed to `run_parallel` carry method `"r"` and subbasins `[1]`,
+  and `res.best_params` / `res.methods` / `res.subbasins` / `session.json` record them.
+- **Minor 1 (`spyswat/swat_calib/calibration/result.py` — `_site_metric_values` fallback):**
+  Verified `if period == "calib":` guard and NaN-only fill (`np.isnan(values) & ~np.isnan(vals)`)
+  are in place so `valid`-period metrics are never overwritten.
+- **Minor 2 (`spyswat/swat_project.py` & `spyswat/swat_calib/calibration/result.py` —
+  constant/collinear sensitivity):** Extended `constant_parameters()` in `result.py` to filter
+  collinear columns (when `n > len(kept_cols) + 1`) in addition to constant columns, updated
+  `reinsert_constant()` to preserve `sens.attrs` (`n_used`, `r2`) and handle empty frames, and
+  added `test_calibration_constant_and_collinear_parameter_sensitivity` in
+  `tests/test_project_facade.py`.
+- **Minor 3 (`spyswat/swat_project.py` — `signature` serialization & `on_failure`):**
+  Verified `_serialize_period()` ISO-stringifies `calib_period`/`valid_period` (extended to
+  also handle `datetime.date`) and `"on_failure": algorithm_options.get("on_failure", "raise")`.
+  Added `test_calibration_timestamp_periods_and_on_failure_signature` in
+  `tests/test_project_facade.py`.
+- **Minor 4 (`spyswat/swat_project.py` — `apply()` formatted dict + `methods`/`subbasins`):**
+  Verified `apply()` reformats formatted dicts via `format_params(raw_params(x), methods, subbasins)`
+  when `methods` or `subbasins` is passed. Added
+  `test_apply_formatted_dict_with_methods_and_subbasins` in `tests/test_project_facade.py`.
+- **Minor 5 (`tests/test_project_facade.py` — coverage gaps):** Added `de` to
+  `test_calibration_other_algorithms` and added `test_calibration_param_methods_and_subbasins`
+  and `test_calibration_monthly_step_and_bare_series_observed` (covering `step="M"` and bare
+  `pd.Series` `observed`).
+
+### Checks
+- Tests were **not** run by me (no shell commands allowed in this rework step).
+- CEO: Go 5h quota ran out mid-rework (worker-strong stopped with uncommitted edits); agy gemini-4-hydrogen-high finished the edits (no shell). CEO ran `pytest tests/test_project_facade.py tests/test_calibration_result.py` → 33 passed.
+
+## Rework round 2 (agy Gemini 4 Hydrogen High, review `API-4-2.md`)
+
+### Changes per finding
+- **Major 1 (`spyswat/swat_project.py` — `session.json` signature):** Added `_hash_observed()` (SHA-256 over sorted `(variable, reach)` + ISO index + float64 bytes per decision 8) and included `"observed_hash"`, `"options": dict(algorithm_options)`, and `"numpy_version": np.__version__` in `signature`. Strengthened `test_calibration_glue_end_to_end` and `test_calibration_timestamp_periods_and_on_failure_signature`, and added `test_calibration_observed_hash_order_and_data_sensitivity` in `tests/test_project_facade.py`.
+- **Major 2 (`spyswat/swat_calib/calibration/result.py` — DDS `sensitivity_status`):** Changed `if data.empty:` to `if len(data) < 2:` in `constant_parameters()` so a 1-row `is_initial` sample (DDS) is not treated as all-constant parameters and surfaces `"insufficient runs"`. Strengthened `test_calibration_other_algorithms` in `tests/test_project_facade.py` to assert `res.sensitivity is None` and `res.sensitivity_status == "insufficient runs"` for DDS.
+- **Major 3 (`spyswat/swat_project.py` — `sensitivity(method="regression", calib_period=...)`):** Popped `calib_period = options.pop("calib_period", None)` before calling `self.calibration(...)`. Added `test_sensitivity_regression_accepts_calib_period` in `tests/test_project_facade.py`.
+- **Minor 1 (`spyswat/swat_project.py` — `scenarios()` bare inputs):** Handled `isinstance(param_sets, (ParamSet, CalibrationResult))` directly via `_to_param_sets(param_sets)` before iterating. Added `test_scenarios_accepts_bare_result_and_param_set` in `tests/test_project_facade.py`.
+- **Minor 2 (`spyswat/swat_project.py` — `apply()` with `subbasins=` on non-`"v"` dict):** Moved the `methods is None` + `_non_v_methods(x)` validation before the `methods is not None or subbasins is not None` reformatting branch. Added `test_apply_dict_non_v_with_subbasins_without_methods_raises` in `tests/test_project_facade.py`.
+- **Minor 3 (`spyswat/swat_calib/calibration/result.py` & `spyswat/swat_project.py` — consistency cleanups):** Set `sensitivity_status="ok" if sensitivity is not None else ""` in `CalibrationResult.load()`, validated requested metric columns in `_site_metric_values()` (raising `ValueError` when missing), and dropped the unused `result =` binding on `algo.run(...)`. Strengthened `test_calibration_load_roundtrip` (`sensitivity_status`) and added `test_select_unknown_metric_raises` in `tests/test_project_facade.py`.
+
+### Checks
+- Tests were **not** run by me (no shell commands allowed).
+- CEO: round-2 edits by agy Hydrogen; facade tests → 38 passed.
