@@ -23,3 +23,11 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Decision: counts re-measured after the docs edits; no source code touched, so the suite is unaffected.
 - Blocked / question: none. The sdist itself is not built here (not permitted); the Architect verifies the exclusion.
 - Previous commit: af9ee53
+
+## 2026-11-24 · worker-fast · step 4/4 — done
+- Done: all of changes 1-6 complete; nothing outside the task scope was touched, nothing merged or pushed.
+- Files changed (whole branch): `.agents/decisions/BG-1.md`, `.agents/decisions/HARN-1.md`, `.agents/tasks/HARN-1.md`, `.agents/tasks/MERGE-3.md`, `.agents/tasks/MERGE-4A.md`, `.agents/tasks/MERGE-4.md` (committed unchanged), `.agents/log/HARN-1.md`, `pyproject.toml`, `AGENTS.md`, `.opencode/agents/explore.md`, `.opencode/agents/reviewer.md`, `.opencode/agents/auditor.md`, `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md`
+- Checks: `python -m pytest tests/ -q` → 451 passed / 11 skipped / 0 failed, 5 warnings, 24 subtests passed, 188.86s (matches the 451/11 baseline). `git diff --stat main...HEAD` → the 13 files above and nothing else.
+- Decision: sdist not built (task forbids `uv build`/`python -m build`); the exclusion is verified by the Architect.
+- Blocked / question: none.
+- Previous commit: 7946614
