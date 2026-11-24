@@ -25,9 +25,8 @@ resume=True)`), the API-4-3 Minors, and the API-5A-1 Minors; finalises the resum
   live runs (API-5A-1 Minor 2).
 - `tests/test_project_facade.py` — replaced `...resume_true_not_implemented` with
   `...resume_true_replays` (resume now works, no `NotImplementedError`); added
-  `test_observed_hash_normalises_minus_zero` (API-4-3 Minor 2).
-- `tests/test_calibration_result.py` — added `test_select_drops_failed_even_with_finite_score`
-  (API-4-3 Minor 1).
+  `test_observed_hash_normalises_minus_zero` (API-4-3 Minor 2) and
+  `test_select_drops_failed_even_with_finite_score` (API-4-3 Minor 1).
 - `tests/test_resume_replay.py` — strengthened mismatch message assertions
   (`"CN2.mgt"` / `"50.0"` / `"99.0"`), fixed the mid-chunk comment, added three edge-case tests
   (formatted-dict unwrap in `take`, cursor non-advancement on batch mismatch, `replay` with
