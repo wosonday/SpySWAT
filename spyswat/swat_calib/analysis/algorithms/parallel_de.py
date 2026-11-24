@@ -94,6 +94,7 @@ class ParallelDE:
         step=None,
         agg=None,
         store=None,
+        replay=None,
     ) -> Dict:
         """
         Run Parallel DE and return results dict.
@@ -179,6 +180,7 @@ class ParallelDE:
                 calib_period=calib_period, valid_period=valid_period,
                 step=step, agg=agg, store=store,
                 methods=methods, subbasins=subbasins, is_initial=is_initial,
+                replay=replay,
             )
             return _batch_scores(batch_df, metric), batch_df
 
