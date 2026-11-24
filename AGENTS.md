@@ -220,7 +220,7 @@ See `docs/sample_run_scenarios.py`.
 
 ```bash
 pip install -e .             # or: uv sync
-pytest tests/ -q             # measured on feat/docs-5 (harness sync): 464 passed, 11 skipped (~4 min on Windows)
+pytest tests/ -q             # measured on main 4dc7541: 464 passed, 11 skipped (~4 min on Windows)
 python -m spyswat --help
 ```
 
@@ -253,7 +253,7 @@ summary for this repo.
 |---|---|---|---|
 | Architect / BOT-CEO | Opus 5.5 (extra effort) or Fable 5.2, Claude Code (`agm manage`) | read-only on source; writes `decisions/` | Plan, risks, acceptance criteria; hard diagnoses; `READY` before release. **Owns the AI budget**: per-task allocation + review/rework reserve, checks quotas before dispatch, never enables Extra Usage. **Only regular Claude Code role** |
 | Sparring / Pre-review | Opus High via `agy` (`agm ask` or `--mode plan --sandbox`) | read-only | Optional plan sparring and diff pre-check before formal review to conserve Claude tokens |
-| Reviewer (default) | `opencode-go/deepseek-v4-pro` (OpenCode, fresh session; a different model family when Pro wrote the code) | read-only on product code; writes `reviews/` | `PASS` / `FAIL` with Critical / Major / Minor findings, location and fix; runs GitNexus `detect_changes`/`impact` if active. **Escalate to Claude Opus 5.5 High** only for security, real data, format/schema migrations, major architecture, or 2 consecutive `FAIL`s |
+| Reviewer (default) | `agy` Gemini 4 Hydrogen High (`--mode plan --sandbox`, diff inlined in the prompt; user decision 2026-11-24); hard analysis → Gemini 4 Neon High (`agy`); OpenCode `opencode-go/deepseek-v4-pro` as fallback | read-only on product code; writes `reviews/` | `PASS` / `FAIL` with Critical / Major / Minor findings, location and fix; runs GitNexus `detect_changes`/`impact` if active. **Escalate to Claude Opus 5.5 High** only when Neon cannot resolve it: security, real data, format/schema migrations, major architecture, or 2 consecutive `FAIL`s |
 | Manager | Codex CLI (`codex-mgr`) | coordination files only (`tasks/`, `reports/`, `decisions/`) | Split plan into tasks, dispatch and supervise OpenCode workers, switch models/tiers, hand off verified branch + final SHA to Copilot after Review + Docs. Never edits worker code |
 | Technical Advisor & Harness Optimizer | Gemini Argon (`gemini-4-argon-medium`/`high` via `agy`, `argon-adv`) | read-only via `agm ask`; writes harness/coordination files (`AGENTS.md`, `CLAUDE.md`, `.agents/`, templates, skills) in its own worktree when tasked | Independent technical advice; analyses major/recurring session issues to update and optimize harnessing between sessions |
 | Git Version Manager | GitHub Copilot CLI (`copilot-git`, 1 instance) | merge verified final SHA onto `main`, revert/rollback, clean merged/clean worktrees & branches | Serial integration of verified branches and post-merge audit re-run. Never edits business logic or fixes failing tests; push/tag/release/history-rewrite require user approval |
