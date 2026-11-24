@@ -14,7 +14,7 @@ main.py
 logs/
 pytest-cache-files-*/
 
-# Agent workflow (docs/agents/): worktrees, locks, index cache and bot scratch are never committed
+# Agent workflow (harness at the repo root and docs/): worktrees, locks, index cache and bot scratch are never committed
 .wt/
 .agents/.runtime/
 .agents/locks/

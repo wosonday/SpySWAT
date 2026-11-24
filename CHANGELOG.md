@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- The team-workflow harness now has one copy, laid out like the shared harness: the
+  `AGENTS-TUTORIAL.md`, `BOT-CEO.md`, `HERDR-CORE-BOT.md` and `AGM-UPGRADE-SPEC.md` rule
+  documents are at the repository root, every guide lives directly under `docs/`
+  (`docs/SETUP-WINDOWS.md` keeps the SpySWAT-only Windows setup), and `docs/agents/` was
+  removed, so old `docs/agents/...` paths no longer exist.
 - `ScenarioBatch.run()` now uses one process pool (`ProcessPoolExecutor`) for the whole
   batch via `scenarios/scheduler.py` (`Scheduler`, `Slot`): a free slot takes the next
   pending job (same base TxtInOut first, otherwise re-copied), using at most `n_parallel`

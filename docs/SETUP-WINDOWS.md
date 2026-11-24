@@ -1,6 +1,6 @@
 # Cài đặt đội agent nhiều model trên Windows (SpySWAT)
 
-Bổ sung cho `AGENTS-TUTORIAL.md` (phiên bản 3.6) và `HERDR-CORE-BOT.md`. Tệp đó nói
+Bổ sung cho `../AGENTS-TUTORIAL.md` (phiên bản 3.6) và `../HERDR-CORE-BOT.md`. Tệp đó nói
 **ai làm gì**; tệp này nói **mở các agent thế nào và theo dõi cuộc trò chuyện ở đâu**.
 Các lệnh gốc đã được kiểm trên máy Windows 11 ngày 2026-11-18; phần bổ sung v3.4
 (`agm`, `agy`, `copilot`, OpenCode Reviewer) ghi theo thực tế cài đặt trên máy ngày
@@ -80,11 +80,11 @@ permission:
 ---
 ```
 
-Gợi ý bậc theo v3.6 (bảng chuẩn: `models/OPENCODE-WORKERS-REVIEWER.md`; kiểm slug bằng `opencode models` và hạn mức Go trong Go Console trước khi giao):
+Gợi ý bậc theo v3.6 (bảng chuẩn: `OPENCODE-WORKERS-REVIEWER.md`; kiểm slug bằng `opencode models` và hạn mức Go trong Go Console trước khi giao):
 `worker-fast`, `worker-mid`, `explore` → `opencode-go/deepseek-v4.1-flash`;
 `worker-strong`, `reviewer` → `opencode-go/deepseek-v4-pro` (reviewer khác họ model nếu Pro viết code);
 `auditor`, `gitnexus-sync` → script/CI (`pytest`, `git diff --check`); `:free`/Ollama chỉ là dự phòng đã duyệt;
-NVIDIA (Kimi/Mistral/Nemotron) chỉ làm việc nền, chỉ đọc, không chặn merge (`models/NVIDIA-BACKGROUND.md`).
+NVIDIA (Kimi/Mistral/Nemotron) chỉ làm việc nền, chỉ đọc, không chặn merge (`NVIDIA-BACKGROUND.md`).
 Việc chạm dữ liệu lưu vực thật chỉ dùng model cục bộ hoặc khi bạn đồng ý gửi lên cloud.
 
 Trong giao diện OpenCode, phím `Tab` đổi agent (`worker-fast` / `worker-mid` / ...). Chạy
@@ -178,7 +178,7 @@ Get-ChildItem .agents/reviews/CAL-1-*.md            # các vòng duyệt
 
 Các tệp lịch sử này nằm ngoài repo và có thể chứa dữ liệu riêng: không commit chúng
 (repo công khai). Điều gì cần giữ lâu thì "nâng lên bền" vào `.agents/` (mục 2.3 của
-`HERDR-CORE-BOT.md`).
+`../HERDR-CORE-BOT.md`).
 
 ### 3.4. Từ xa (điện thoại / máy khác)
 
@@ -191,10 +191,10 @@ Optional features) trước.
 ## 4. Giai đoạn 2: điều phối nền với `agm` + `herdr-core` (`hc`)
 
 `hc` (`0.1.21`), `agm` (`0.1.0`), `agy` và `copilot` đã cài trên máy, nhưng **chưa có template**
-(`hc templates` rỗng). Theo v3.4 (`HERDR-CORE-BOT.md`), `agm daemon` thay thế `watch.sh` để
+(`hc templates` rỗng). Theo v3.4 (`../HERDR-CORE-BOT.md`), `agm daemon` thay thế `watch.sh` để
 theo dõi `hc events --json`, đo token, kiểm ngân sách, đẩy câu hỏi `blocked` vào `agm inbox`
 và xoay vòng phiên. Trên Windows 11 dùng PowerShell và Task Scheduler (thay `systemd`). Làm
-theo danh sách kiểm ở Phần 4 của `HERDR-CORE-BOT.md` (lưu ý `HERDR-CORE-BOT.md` tham chiếu
+theo danh sách kiểm ở Phần 4 của `../HERDR-CORE-BOT.md` (lưu ý tệp đó tham chiếu
 `agm v0.2.0`; cần đối chiếu lệnh của bản `0.1.0` đang cài bằng `agm --help`).
 
 Lệnh hữu ích ngay cả khi chưa chạy tự động hoàn toàn: `hc ls`, `hc read <t>`,
