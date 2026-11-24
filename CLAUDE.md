@@ -11,8 +11,8 @@ binding team-workflow summary live in `AGENTS.md`, imported here so both stay in
   Fable 5.2) — read-only on source code; writes `.agents/decisions/`. This is the **only**
   regular Claude Code session (in optional multi-lane mode, 1 BOT-CEO per lane per
   `BOT-CEO.md`).
-- **Escalation-only Reviewer:** Default review uses OpenCode (`opencode-go/deepseek-v4-pro`) plus
-  optional `agy` Opus High sparring. Claude Code Opus 5.5 (high effort) is opened as
+- **Escalation-only Reviewer:** Default review uses `agy` Gemini 4 Hydrogen High; hard analysis goes to
+  Gemini 4 Neon High (`agy`); OpenCode `opencode-go/deepseek-v4-pro` is the fallback (user decision 2026-11-24). Claude Code Opus 5.5 (high effort) is opened as
   Reviewer **only** for high-risk changes (security, real data, format/schema migrations,
   major architecture) or after 2 consecutive OpenCode Reviewer `FAIL`s; writes
   `.agents/reviews/`.
