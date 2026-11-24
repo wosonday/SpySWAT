@@ -339,7 +339,8 @@ def _validation_setup(proj, monkeypatch, obs):
     monkeypatch.setattr(ValidationRunner, "_calibrate",
                         lambda self, *a: ({"CN2.mgt": 0.1}, 0.5))
     period = PeriodConfig("2000-01-01", "2000-01-05", "2000-01-06", "2000-01-10")
-    runner = ValidationRunner(proj, {"CN2.mgt": ((-0.2, 0.2), "r", [1, 2])}, obs, period)
+    with pytest.warns(DeprecationWarning, match="project.calibration"):
+        runner = ValidationRunner(proj, {"CN2.mgt": ((-0.2, 0.2), "r", [1, 2])}, obs, period)
     return base, before, runner
 
 
