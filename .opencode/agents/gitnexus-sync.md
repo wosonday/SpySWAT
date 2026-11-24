@@ -4,20 +4,19 @@ mode: primary
 # Optional: pin a verified free/local model from `opencode models`, e.g.:
 # model: opencode/deepseek-v4.1-flash-free
 permission:
-  edit:
-    "*": deny
-    ".agents/log/*": allow
-  bash:
-    "*": deny
-    "git status*": allow
-    "gitnexus status*": allow
-    "gitnexus analyze --index-only*": allow
-    "gitnexus clean*": allow
-    "opencode mcp list*": allow
-    "git add .agents/log/*": allow
-    "git commit*": allow
-    "agm send*": allow
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
+  external_directory: deny
+  edit: {"*": deny, ".agents/log/*": allow}
+  bash: {
+    "*": deny, "git status*": allow, "gitnexus status*": allow, "gitnexus analyze --index-only*": allow,
+    "opencode mcp list*": allow, "git add .agents/log/*": allow, "git commit*": allow, "git commit *--amend*": deny, "agm send*": allow
+  }
   webfetch: deny
+  websearch: deny
+  execute: deny
   task: deny
 ---
 You are `gitnexus-sync`. Never edit product code, `AGENTS.md`, `CLAUDE.md`, or `BRANCHES.md`.

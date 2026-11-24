@@ -4,21 +4,23 @@ mode: primary
 # Optional: pin a verified strong model from `opencode models`, e.g.:
 # model: openai/gpt-6.1-sol
 permission:
-  edit: allow
-  bash:
-    "*": ask
-    "pytest*": allow
-    "python -m pytest*": allow
-    ".venv/*pytest*": allow
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git add*": allow
-    "git commit*": allow
-    "git merge*": deny
-    "git push*": deny
-    "agm kill*": deny
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
+  skill: allow
+  external_directory: deny
+  edit: {"*": allow, ".agents/tasks/*": deny, ".agents/reviews/*": deny, ".agents/locks/*": deny, ".opencode/*": deny, ".wt/*": deny, "../*": deny, "/*": deny, "[A-Za-z]:*": deny}
+  bash: {
+    "*": deny, "python *": allow, "pytest*": allow, "python -m pytest*": allow, ".venv/*pytest*": allow,
+    "uv pip*": allow, "uv sync*": allow, "uv run pytest*": allow, "uv run python -m pytest*": allow,
+    "pip *": allow, "python -m pip*": allow, ".venv/*pip*": allow,
+    "git status*": allow, "git diff*": allow, "git log*": allow, "git add*": allow, "git add .agents/tasks*": deny, "git add .agents/reviews*": deny, "git add .opencode*": deny, "git commit*": allow, "git commit *--amend*": deny,
     "agm send*": allow
+  }
+  webfetch: deny
+  websearch: deny
+  execute: deny
   task: deny
 ---
 You are a strong Worker (`worker-strong`). Follow the task rules strictly:
