@@ -115,3 +115,17 @@
 ### Checks
 - Tests were **not** run by me (no shell commands allowed in this rework step).
 - CEO: Go 5h quota ran out mid-rework (worker-strong stopped with uncommitted edits); agy gemini-4-hydrogen-high finished the edits (no shell). CEO ran `pytest tests/test_project_facade.py tests/test_calibration_result.py` → 33 passed.
+
+## Rework round 2 (agy Gemini 4 Hydrogen High, review `API-4-2.md`)
+
+### Changes per finding
+- **Major 1 (`spyswat/swat_project.py` — `session.json` signature):** Added `_hash_observed()` (SHA-256 over sorted `(variable, reach)` + ISO index + float64 bytes per decision 8) and included `"observed_hash"`, `"options": dict(algorithm_options)`, and `"numpy_version": np.__version__` in `signature`. Strengthened `test_calibration_glue_end_to_end` and `test_calibration_timestamp_periods_and_on_failure_signature`, and added `test_calibration_observed_hash_order_and_data_sensitivity` in `tests/test_project_facade.py`.
+- **Major 2 (`spyswat/swat_calib/calibration/result.py` — DDS `sensitivity_status`):** Changed `if data.empty:` to `if len(data) < 2:` in `constant_parameters()` so a 1-row `is_initial` sample (DDS) is not treated as all-constant parameters and surfaces `"insufficient runs"`. Strengthened `test_calibration_other_algorithms` in `tests/test_project_facade.py` to assert `res.sensitivity is None` and `res.sensitivity_status == "insufficient runs"` for DDS.
+- **Major 3 (`spyswat/swat_project.py` — `sensitivity(method="regression", calib_period=...)`):** Popped `calib_period = options.pop("calib_period", None)` before calling `self.calibration(...)`. Added `test_sensitivity_regression_accepts_calib_period` in `tests/test_project_facade.py`.
+- **Minor 1 (`spyswat/swat_project.py` — `scenarios()` bare inputs):** Handled `isinstance(param_sets, (ParamSet, CalibrationResult))` directly via `_to_param_sets(param_sets)` before iterating. Added `test_scenarios_accepts_bare_result_and_param_set` in `tests/test_project_facade.py`.
+- **Minor 2 (`spyswat/swat_project.py` — `apply()` with `subbasins=` on non-`"v"` dict):** Moved the `methods is None` + `_non_v_methods(x)` validation before the `methods is not None or subbasins is not None` reformatting branch. Added `test_apply_dict_non_v_with_subbasins_without_methods_raises` in `tests/test_project_facade.py`.
+- **Minor 3 (`spyswat/swat_calib/calibration/result.py` & `spyswat/swat_project.py` — consistency cleanups):** Set `sensitivity_status="ok" if sensitivity is not None else ""` in `CalibrationResult.load()`, validated requested metric columns in `_site_metric_values()` (raising `ValueError` when missing), and dropped the unused `result =` binding on `algo.run(...)`. Strengthened `test_calibration_load_roundtrip` (`sensitivity_status`) and added `test_select_unknown_metric_raises` in `tests/test_project_facade.py`.
+
+### Checks
+- Tests were **not** run by me (no shell commands allowed).
+- CEO: round-2 edits by agy Hydrogen; facade tests → 38 passed.

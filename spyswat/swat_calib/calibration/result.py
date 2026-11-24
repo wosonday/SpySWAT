@@ -176,7 +176,7 @@ def constant_parameters(store, param_ranges, param_names) -> list:
             return []
         score_cols = ["score"] if "score" in runs.columns else []
         data = runs[present + score_cols].apply(pd.to_numeric, errors="coerce").dropna()
-        if data.empty:
+        if len(data) < 2:
             return []
 
         n = len(data)
@@ -376,11 +376,15 @@ class CalibrationResult:
         """Per-run values of ``name`` at ``site`` for ``period``, aligned to ``runs``."""
         runs = self.runs
         values = np.full(len(runs), np.nan)
+        found = False
+        available = []
         if self._store is not None:
             variable, reach = site
             df = self._store.site_metrics(variable, reach)
+            available = [c for c in df.columns if c != "run_id"]
             col = f"{name}_{period}"
             if not df.empty and col in df.columns:
+                found = True
                 by_id = dict(zip(df["run_id"].tolist(), df[col].tolist()))
                 for i, rid in enumerate(runs["run_id"].tolist()):
                     if rid in by_id:
@@ -391,9 +395,15 @@ class CalibrationResult:
         if period == "calib":
             fallback = f"{name}@{site[0]}@{site[1]}"
             if fallback in runs.columns:
+                found = True
                 vals = runs[fallback].to_numpy(dtype=float)
                 missing = np.isnan(values) & ~np.isnan(vals)
                 values[missing] = vals[missing]
+        if not found:
+            raise ValueError(
+                f"metric {name!r} for period {period!r} not found at site {site!r}"
+                + (f" (available: {available})" if available else "")
+            )
         return values
 
     # ── load ────────────────────────────────────────────────────────────────
@@ -430,7 +440,8 @@ class CalibrationResult:
         return cls(
             best_params=best_params, best_score=score, best_run_id=run_id,
             metric=metric, runs=runs, metrics=None, sensitivity=sensitivity,
-            sensitivity_status="", session_dir=Path(session_dir),
+            sensitivity_status="ok" if sensitivity is not None else "",
+            session_dir=Path(session_dir),
             seed=sig.get("seed"), algorithm=sig.get("algorithm"),
             methods=methods, subbasins=subbasins, sites=sites, store=store,
         )

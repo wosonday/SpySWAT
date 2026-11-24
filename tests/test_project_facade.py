@@ -135,6 +135,12 @@ def test_calibration_glue_end_to_end(proj):
     assert "parameter" in res.sensitivity.columns
     assert res.sensitivity_status == "ok"
 
+    # session.json signature records options, observed_hash and numpy_version
+    sig = json.loads((res.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]
+    assert sig["options"] == {"n_samples": 8}
+    assert sig["numpy_version"] == np.__version__
+    assert isinstance(sig["observed_hash"], str) and len(sig["observed_hash"]) == 64
+
     # TxtInOut input files are byte-identical afterwards
     assert snapshot(proj.txinout.directory) == before
 
@@ -151,8 +157,11 @@ def test_calibration_other_algorithms(proj, algorithm, kwargs):
     assert res.algorithm == algorithm
     assert np.isfinite(res.best_score)
     assert list(res.runs["run_id"]) == sorted(res.runs["run_id"])
-    # sensitivity is a DataFrame or a status (small populations may be insufficient)
-    assert res.sensitivity is not None or res.sensitivity_status
+    if algorithm == "dds":
+        assert res.sensitivity is None
+        assert res.sensitivity_status == "insufficient runs"
+    else:
+        assert res.sensitivity is not None or res.sensitivity_status
     assert snapshot(proj.txinout.directory) == before
 
 
@@ -210,6 +219,28 @@ def test_calibration_timestamp_periods_and_on_failure_signature(proj):
     assert sig["calib_period"] == ["2000-01-01T00:00:00", "2000-01-10T00:00:00"]
     assert sig["valid_period"] == ["2000-01-06T00:00:00", "2000-01-10T00:00:00"]
     assert sig["on_failure"] == "penalize"
+    assert sig["options"] == {"n_iterations": 3, "on_failure": "penalize"}
+    assert sig["numpy_version"] == np.__version__
+
+
+def test_calibration_observed_hash_order_and_data_sensitivity(proj):
+    obs1 = _obs()
+    obs2 = {k: obs1[k] for k in reversed(list(obs1))}
+    obs3 = {
+        ("FLOW_OUTcms", 1): obs1[("FLOW_OUTcms", 1)] + 1.0,
+        ("SED_OUTtons", 51): obs1[("SED_OUTtons", 51)],
+    }
+    r1 = proj.calibration(PARAM_RANGES, obs1, CALIB, algorithm="glue",
+                          n_samples=3, seed=1, sensitivity=False)
+    r2 = proj.calibration(PARAM_RANGES, obs2, CALIB, algorithm="glue",
+                          n_samples=3, seed=1, sensitivity=False)
+    r3 = proj.calibration(PARAM_RANGES, obs3, CALIB, algorithm="glue",
+                          n_samples=3, seed=1, sensitivity=False)
+    h1 = json.loads((r1.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]["observed_hash"]
+    h2 = json.loads((r2.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]["observed_hash"]
+    h3 = json.loads((r3.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]["observed_hash"]
+    assert h1 == h2
+    assert h1 != h3
 
 
 def test_calibration_constant_and_collinear_parameter_sensitivity(proj, tmp_path):
@@ -267,7 +298,23 @@ def test_calibration_load_roundtrip(proj):
     assert loaded.best_run_id == res.best_run_id
     assert loaded.best_params == res.best_params
     assert loaded.metric == res.metric
+    assert loaded.sensitivity_status == "ok"
+    assert isinstance(loaded.sensitivity, pd.DataFrame)
     pd.testing.assert_frame_equal(loaded.runs, res.runs)
+
+    res_no_sens = proj.calibration(PARAM_RANGES, _obs(), CALIB,
+                                   algorithm="glue", n_samples=3, seed=1,
+                                   sensitivity=False)
+    loaded_no_sens = CalibrationResult.load(res_no_sens.session_dir)
+    assert loaded_no_sens.sensitivity is None
+    assert loaded_no_sens.sensitivity_status == ""
+
+
+def test_select_unknown_metric_raises(proj):
+    res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
+                           n_samples=4, metrics=("nse",), seed=1, sensitivity=False)
+    with pytest.raises(ValueError, match="metric"):
+        res.select(bogus__gt=0.5)
 
 
 def test_calibration_existing_session_resume_false_raises(proj):
@@ -318,6 +365,13 @@ def test_sensitivity_regression_runs_glue_first(proj):
     assert "parameter" in sens.columns
 
 
+def test_sensitivity_regression_accepts_calib_period(proj):
+    sens = proj.sensitivity(PARAM_RANGES, _obs(), method="regression",
+                            calib_period=CALIB, n_samples=8, seed=1)
+    assert isinstance(sens, pd.DataFrame)
+    assert "parameter" in sens.columns
+
+
 # ── scenarios facade ─────────────────────────────────────────────────────────
 
 def test_scenarios_accepts_result_and_top(proj, monkeypatch):
@@ -342,6 +396,26 @@ def test_scenarios_accepts_result_and_top(proj, monkeypatch):
     assert all(isinstance(ps, ParamSet) for ps in captured["param_sets"])
 
 
+def test_scenarios_accepts_bare_result_and_param_set(proj, monkeypatch):
+    from spyswat.swat_calib.scenarios import ScenarioBatch
+    captured = {}
+
+    def fake_run(self, scenarios, param_sets, *, outputs=None, observed=None, **kw):
+        captured["param_sets"] = param_sets
+        return "batch-result"
+
+    monkeypatch.setattr(ScenarioBatch, "run", fake_run)
+    res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
+                           n_samples=4, seed=1, sensitivity=False)
+
+    assert proj.scenarios([Scenario("s1")], res, outputs={"FLOW_OUTcms": [1]}) == "batch-result"
+    assert [ps.name for ps in captured["param_sets"]] == [f"run_{res.best_run_id}"]
+
+    ps = ParamSet("p1", {"CN2.mgt": [(60.0, "v")]})
+    assert proj.scenarios([Scenario("s1")], ps, outputs={"FLOW_OUTcms": [1]}) == "batch-result"
+    assert captured["param_sets"] == [ps]
+
+
 # ── apply facade ─────────────────────────────────────────────────────────────
 
 def test_apply_dict_writes_and_warns(proj, caplog):
@@ -354,6 +428,11 @@ def test_apply_dict_writes_and_warns(proj, caplog):
 def test_apply_dict_non_v_methods_without_methods_raises(proj):
     with pytest.raises(ValueError, match="non-'v'"):
         proj.apply({"CN2.mgt": [(50.0, "r")]})
+
+
+def test_apply_dict_non_v_with_subbasins_without_methods_raises(proj):
+    with pytest.raises(ValueError, match="non-'v'"):
+        proj.apply({"CN2.mgt": [(0.1, "r")]}, subbasins={"CN2.mgt": [1]})
 
 
 def test_apply_param_set_and_result(proj, caplog):

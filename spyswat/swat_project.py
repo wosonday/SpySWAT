@@ -277,6 +277,7 @@ class SWATProject:
             _resolve_metrics, _flatten_sites,
         )
         from spyswat.swat_calib.calibration.session_store import SessionStore
+        import numpy as np
 
         if algorithm not in ("glue", "pso", "de", "dds"):
             raise ValueError(
@@ -329,7 +330,10 @@ class SWATProject:
             "n_parallel": n_parallel,
             "outputs": {v: list(rs) for v, rs in outputs_dict.items()},
             "observed_sites": [[v, r] for (v, r) in observed_sites],
+            "observed_hash": _hash_observed(observed_dict),
+            "options": dict(algorithm_options),
             "on_failure": algorithm_options.get("on_failure", "raise"),
+            "numpy_version": np.__version__,
         }
         store = SessionStore(session_dir, signature=signature,
                              param_names=param_names, sites=sites)
@@ -340,7 +344,7 @@ class SWATProject:
         algo = algo_cls(manager)
 
         try:
-            result = algo.run(
+            algo.run(
                 param_ranges, observed,
                 metric=metric, metrics=metrics, weights=weights, outputs=outputs,
                 calib_period=calib_period, valid_period=valid_period,
@@ -488,7 +492,8 @@ class SWATProject:
         if method == "regression":
             if param_ranges is None or observed is None:
                 raise ValueError("regression sensitivity needs param_ranges and observed")
-            return self.calibration(param_ranges, observed, None,
+            calib_period = options.pop("calib_period", None)
+            return self.calibration(param_ranges, observed, calib_period,
                                     algorithm="glue", sensitivity=True,
                                     **options).sensitivity
         raise ValueError(
@@ -503,13 +508,18 @@ class SWATProject:
         (its best) and the lists returned by ``CalibrationResult.top`` /
         ``CalibrationResult.select``.
         """
+        from spyswat.swat_calib.calibration.result import CalibrationResult
         from spyswat.swat_calib.scenarios import ScenarioBatch
+        from spyswat.swat_calib.scenarios.model import ParamSet
 
         results_dir = (Path(results_dir) if results_dir is not None
                        else (self.working_folder / "scenario_results"))
-        resolved = []
-        for ps in param_sets:
-            resolved.extend(_to_param_sets(ps))
+        if isinstance(param_sets, (ParamSet, CalibrationResult)):
+            resolved = _to_param_sets(param_sets)
+        else:
+            resolved = []
+            for ps in param_sets:
+                resolved.extend(_to_param_sets(ps))
         batch = ScenarioBatch(self, results_dir)
         return batch.run(scenarios, resolved, outputs=outputs, observed=observed,
                          **options)
@@ -534,18 +544,20 @@ class SWATProject:
         elif isinstance(x, dict):
             if is_raw(x):
                 updates = format_params(x, methods, subbasins)
-            elif methods is not None or subbasins is not None:
-                # Reformatted with the explicit methods/subbasins (decision 4).
-                updates = format_params(raw_params(x), methods, subbasins)
             else:
-                non_v = _non_v_methods(x)
-                if non_v:
-                    raise ValueError(
-                        "apply() got a dict with non-'v' methods "
-                        f"({sorted(non_v)}) but no methods=; pass methods= or a "
-                        "ParamSet / CalibrationResult."
-                    )
-                updates = x
+                if methods is None:
+                    non_v = _non_v_methods(x)
+                    if non_v:
+                        raise ValueError(
+                            "apply() got a dict with non-'v' methods "
+                            f"({sorted(non_v)}) but no methods=; pass methods= or a "
+                            "ParamSet / CalibrationResult."
+                        )
+                if methods is not None or subbasins is not None:
+                    # Reformatted with the explicit methods/subbasins (decision 4).
+                    updates = format_params(raw_params(x), methods, subbasins)
+                else:
+                    updates = x
         else:
             raise TypeError(
                 "apply() takes a ParamSet, CalibrationResult or dict, got "
@@ -554,6 +566,25 @@ class SWATProject:
         self.HRU.update_params(updates)
         logger.warning("apply() modified TxtInOut parameters (not restored automatically).")
         return updates
+
+
+def _hash_observed(observed_dict) -> str:
+    """SHA-256 over sorted ``(variable, reach)`` + ISO index + float64 bytes (decision 8)."""
+    import hashlib
+    import numpy as np
+    import pandas as pd
+
+    h = hashlib.sha256()
+    for var, reach in sorted(observed_dict):
+        series = observed_dict[(var, reach)]
+        h.update(f"{var}\0{reach}\0".encode("utf-8"))
+        idx = pd.DatetimeIndex(series.index)
+        for ts in idx:
+            h.update(ts.isoformat().encode("utf-8"))
+            h.update(b"\0")
+        vals = np.ascontiguousarray(series.to_numpy(dtype=np.float64))
+        h.update(vals.tobytes())
+    return h.hexdigest()
 
 
 def _to_param_sets(x):
