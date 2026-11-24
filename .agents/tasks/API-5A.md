@@ -91,3 +91,5 @@ Append to `.agents/log/API-5.md`: files changed, commands + result lines, open q
 7. **`runs.csv` byte-equality criterion is nondeterministic due to the `time` column**
    `SessionStore.add_run` stamps `time = datetime.now().isoformat(timespec="seconds")`, so reference vs. resumed `runs.csv` bytes differ whenever execution crosses a second boundary.
    - **Spec correction:** Compare `runs.csv` parsed via `csv.reader` with the `time` column excluded (exact cell-string equality on `run_id`, `status`, `error`, `is_initial`, all parameter `repr`s, and `score`), or freeze timestamps in the test.
+
+**Update (CEO, after API-4/6 merged into this branch):** the facade (`project.calibration`) now exists on this branch; still do NOT edit `spyswat/swat_project.py` (API-5b). Also apply these two Minors from review API-4-3 inside `replay.py`/tests only if they concern replay; otherwise leave them to API-5b.
