@@ -113,8 +113,9 @@ class GLUE:
         subbasins = {**_s, **(param_subbasins or {})}
 
         param_names = list(bounds.keys())
+        rng         = np.random.default_rng(seed)
         samples_df  = self._analysis._generate_samples(
-            bounds, n_samples, method="lhs", seed=seed
+            bounds, n_samples, method="lhs", seed=rng
         )
 
         # Pre-format so callers/mocks of run_batch always see {name: [(val, method, ...)]}
