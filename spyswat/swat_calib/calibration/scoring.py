@@ -85,6 +85,8 @@ def normalise_observed(observed, outputs=None):
                 outputs_dict[var] = [reach]
             elif reach not in outputs_dict[var]:
                 outputs_dict[var] = list(outputs_dict[var]) + [reach]
+        if not observed_dict:
+            raise ValueError("observed must contain at least one site.")
         return observed_dict, outputs_dict
     raise ValueError(
         f"observed must be a pandas Series or a dict keyed (variable, reach), "
@@ -150,6 +152,8 @@ def preflight(observed_dict, calib_period) -> None:
     Each observed site must overlap ``calib_period`` (skipped when it is ``None``,
     i.e. "whole overlap") and have non-zero variance; otherwise ``ValueError``.
     """
+    if not observed_dict:
+        raise ValueError("observed must contain at least one site.")
     start, end = _period_bounds(calib_period)
     for key, series in observed_dict.items():
         if not isinstance(series, pd.Series):
@@ -172,6 +176,38 @@ def preflight(observed_dict, calib_period) -> None:
                 f"observed[{key!r}] has zero variance within the calibration period; "
                 f"it cannot be scored."
             )
+
+
+def _validate_config(valid_period=None, step=None, agg=None) -> None:
+    """Validate ``valid_period`` bounds and ``step``/``agg`` before any SWAT run.
+
+    These mirror the checks ``evaluate`` performs, but run up-front so a bad
+    configuration raises before SWAT runs and is never swallowed as an
+    "output unreadable" failure.
+    """
+    if valid_period is not None:
+        start, end = _period_bounds(valid_period)
+        if start > end:
+            raise ValueError(
+                f"valid_period is reversed: it starts {start.date()} after it "
+                f"ends {end.date()}."
+            )
+    if step not in (None, "M"):
+        raise ValueError(f"Unsupported step {step!r}: use None or 'M'.")
+    if agg is not None:
+        if step != "M":
+            raise ValueError("agg is only used with step='M'.")
+        if not isinstance(agg, Mapping):
+            raise ValueError(
+                f"agg must be a mapping {{variable: 'mean' | 'sum'}}, got "
+                f"{type(agg).__name__}."
+            )
+        for variable, how in agg.items():
+            if how not in ("mean", "sum"):
+                raise ValueError(
+                    f"Unsupported aggregation {how!r} for {variable!r}: "
+                    f"use 'mean' or 'sum'."
+                )
 
 
 def _resolve_metrics(metric, metrics) -> tuple:

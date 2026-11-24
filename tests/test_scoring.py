@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from spyswat.swat_calib.calibration.scoring import (
-    normalise_observed, check_weights, preflight, score_sites,
+    normalise_observed, check_weights, preflight, score_sites, _validate_config,
 )
 
 
@@ -54,6 +54,11 @@ def test_normalise_rejects_non_series_non_dict():
 def test_normalise_scalar_reach_is_wrapped():
     _, outputs = normalise_observed(daily("2000-01-01", [1, 2]), {"FLOW_OUTcms": 1})
     assert outputs == {"FLOW_OUTcms": [1]}
+
+
+def test_normalise_empty_dict_raises():
+    with pytest.raises(ValueError, match="at least one site"):
+        normalise_observed({})
 
 
 # ── check_weights ───────────────────────────────────────────────────────────
@@ -110,6 +115,33 @@ def test_preflight_none_period_checks_variance_only():
     assert preflight(obs, None) is None
     with pytest.raises(ValueError, match="zero variance"):
         preflight({("FLOW_OUTcms", 1): daily("2000-01-01", [9, 9, 9])}, None)
+
+
+def test_preflight_empty_dict_raises():
+    with pytest.raises(ValueError, match="at least one site"):
+        preflight({}, None)
+
+
+# ── _validate_config (fail fast before any SWAT run) ────────────────────────
+
+def test_validate_config_rejects_bad_step():
+    with pytest.raises(ValueError, match="step"):
+        _validate_config(step="Y")
+
+
+def test_validate_config_rejects_agg_without_step_M():
+    with pytest.raises(ValueError, match="agg is only used"):
+        _validate_config(agg={"FLOW_OUTcms": "sum"})
+
+
+def test_validate_config_rejects_bad_agg_value():
+    with pytest.raises(ValueError, match="mean' or 'sum"):
+        _validate_config(step="M", agg={"FLOW_OUTcms": "median"})
+
+
+def test_validate_config_rejects_reversed_valid_period():
+    with pytest.raises(ValueError, match="reversed"):
+        _validate_config(valid_period=("2000-02-01", "2000-01-01"))
 
 
 # ── score_sites ─────────────────────────────────────────────────────────────
@@ -227,3 +259,29 @@ def test_unknown_metric_raises():
     with pytest.raises(ValueError, match="Unknown metric"):
         score_sites(sim, obs, metric="foo", metrics=("nse",), weights=None,
                     calib_period=("2000-01-01", "2000-01-04"))
+
+
+def test_step_M_aggregates_daily_sim_to_monthly():
+    idx = pd.date_range("2000-01-01", "2000-03-31", freq="D")
+    vals = np.arange(len(idx), dtype=float) + 1.0
+    sim = {("FLOW_OUTcms", 1): pd.Series(vals, index=idx)}
+    monthly_idx = pd.date_range("2000-01-01", periods=3, freq="MS")
+    obs_vals = [vals[:31].mean(), vals[31:60].mean(), vals[60:].mean()]
+    obs = {("FLOW_OUTcms", 1): pd.Series(obs_vals, index=monthly_idx)}
+    score, site = score_sites(sim, obs, metric="nse", metrics=("nse",), weights=None,
+                              calib_period=("2000-01-01", "2000-03-31"), step="M")
+    # monthly means match exactly → NSE 1.0
+    assert site[("FLOW_OUTcms", 1)]["nse_calib"] == pytest.approx(1.0)
+    assert score == pytest.approx(1.0)
+
+
+def test_calib_none_with_valid_period():
+    sim = {("FLOW_OUTcms", 1): daily("2000-01-01", [1, 2, 3, 5, 5, 6, 7, 10])}
+    obs = {("FLOW_OUTcms", 1): daily("2000-01-01", [1, 2, 3, 4, 5, 6, 7, 8])}
+    score, site = score_sites(sim, obs, metric="nse", metrics=("nse",), weights=None,
+                              calib_period=None, valid_period=("2000-01-05", "2000-01-08"))
+    s = site[("FLOW_OUTcms", 1)]
+    # valid period is fixed; the calib period is the whole overlap
+    assert s["nse_valid"] == pytest.approx(0.2)
+    assert "nse_calib" in s
+    assert score == pytest.approx(s["nse_calib"])

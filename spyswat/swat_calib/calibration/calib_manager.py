@@ -21,6 +21,7 @@ from .param_spec import parse_spec, format_params, is_raw, param_columns
 from .run_log import RunLog
 from .scoring import (
     normalise_observed, check_weights, preflight, score_sites, _resolve_metrics,
+    _normalise_outputs, _validate_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,25 @@ logger = logging.getLogger(__name__)
 # Sentinel for the deprecated reach_id / output_variable kwargs: lets the manager
 # tell "not passed" (use the old defaults, no warning) from "passed explicitly".
 _SENTINEL = object()
+
+
+def _resolve_deprecated_reach(reach_id, output_variable):
+    """Resolve the deprecated ``reach_id`` / ``output_variable`` sentinels.
+
+    Returns ``(reach_id, output_variable)`` with the old defaults (1 and
+    'FLOW_OUTcms'), emitting a ``DeprecationWarning`` only when either was
+    passed explicitly (never on the new multi-site ``outputs`` path).
+    """
+    explicit = reach_id is not _SENTINEL or output_variable is not _SENTINEL
+    reach_id = 1 if reach_id is _SENTINEL else reach_id
+    output_variable = 'FLOW_OUTcms' if output_variable is _SENTINEL else output_variable
+    if explicit:
+        warnings.warn(
+            "reach_id and output_variable are deprecated; pass "
+            f"outputs={{{output_variable!r}: [{reach_id}]}} instead.",
+            DeprecationWarning, stacklevel=3,
+        )
+    return reach_id, output_variable
 
 
 def _extract_outputs(worker_dir: str, outputs: dict) -> dict:
@@ -253,6 +273,8 @@ class CalibrationManager:
         """
         formatted = (self._format_params(params, methods, subbasins)
                      if self._is_raw(params) else params)
+        if outputs is not None:
+            outputs = _normalise_outputs(outputs)   # fail before touching TxtInOut
         self._apply_and_run(formatted)
         if outputs is not None:
             freq = self._sim_freq()
@@ -264,15 +286,7 @@ class CalibrationManager:
                     )[var]
                     sim[(var, reach)] = self._to_model_dates(series, freq)
             return sim
-        explicit = reach_id is not _SENTINEL or output_variable is not _SENTINEL
-        reach_id = 1 if reach_id is _SENTINEL else reach_id
-        output_variable = 'FLOW_OUTcms' if output_variable is _SENTINEL else output_variable
-        if explicit:
-            warnings.warn(
-                "reach_id and output_variable are deprecated; pass "
-                f"outputs={{{output_variable!r}: [{reach_id}]}} instead.",
-                DeprecationWarning, stacklevel=2,
-            )
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
         return self.project.Output.read_rch(
             columns=['RCH', 'MON', output_variable], reach_id=reach_id
         )[output_variable]
@@ -311,22 +325,16 @@ class CalibrationManager:
                       *, outputs=None, weights=None, metrics=None,
                       calib_period=None, valid_period=None, step=None, agg=None,
                       store=None, run_id=None, is_initial=False) -> float:
-        if self._new_path(observed, outputs, weights, calib_period, store):
+        if self._new_path(observed, outputs, weights, calib_period, store,
+                          valid_period=valid_period, step=step, agg=agg,
+                          run_id=run_id, is_initial=is_initial):
             return self._run_iteration_multi(
                 param_dict, observed, metric, outputs, weights, metrics,
                 calib_period, valid_period, step, agg, store, run_id, is_initial,
                 methods, subbasins,
             )
         # ── deprecated single-site path (behaviour unchanged) ──────────────
-        explicit = reach_id is not _SENTINEL or output_variable is not _SENTINEL
-        reach_id = 1 if reach_id is _SENTINEL else reach_id
-        output_variable = 'FLOW_OUTcms' if output_variable is _SENTINEL else output_variable
-        if explicit:
-            warnings.warn(
-                "reach_id and output_variable are deprecated; pass "
-                f"outputs={{{output_variable!r}: [{reach_id}]}} instead.",
-                DeprecationWarning, stacklevel=2,
-            )
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
         formatted = self._format_params(param_dict, methods, subbasins) if self._is_raw(param_dict) else param_dict
         # Resolved before the backup: nothing between backup and restore may raise.
         obs_index = observed.index if isinstance(observed, pd.Series) else None
@@ -382,14 +390,29 @@ class CalibrationManager:
         )[output_variable]
 
     @staticmethod
-    def _new_path(observed, outputs, weights, calib_period, store) -> bool:
-        """True when the multi-site vocabulary is used (design: outputs, dict observed,
-        weights, calib_period or store)."""
+    def _new_path(observed, outputs, weights, calib_period, store,
+                  valid_period=None, step=None, agg=None,
+                  metric=None, run_ids=None, run_id=None, is_initial=False) -> bool:
+        """True when the multi-site vocabulary is used.
+
+        Covers the design vocabulary (``outputs``, a dict ``observed``,
+        ``weights``, ``calib_period`` or ``store``) plus every keyword-only
+        argument the old single-site path would silently drop: ``valid_period``,
+        ``step``, ``agg``, ``metric`` / ``run_ids`` (run_batch) and ``run_id`` /
+        ``is_initial`` (run_iteration).
+        """
         return (outputs is not None
                 or isinstance(observed, Mapping)
                 or weights is not None
                 or calib_period is not None
-                or store is not None)
+                or store is not None
+                or valid_period is not None
+                or step is not None
+                or agg is not None
+                or metric is not None
+                or run_ids is not None
+                or run_id is not None
+                or is_initial)
 
     def _store_next_id(self) -> int:
         """Next run id for the session store (continues the manager's counter)."""
@@ -414,6 +437,7 @@ class CalibrationManager:
         metric = "nse" if metric is None else metric
         check_weights(weights, list(observed_dict.keys()))
         preflight(observed_dict, calib_period)
+        _validate_config(valid_period, step, agg)
         formatted = (self._format_params(param_dict, methods, subbasins)
                      if self._is_raw(param_dict) else param_dict)
         freq = self._sim_freq()
@@ -585,22 +609,16 @@ class CalibrationManager:
         Worker log records are routed through a multiprocessing.Queue so
         multiple subprocesses never write to the log file simultaneously.
         """
-        if self._new_path(observed, outputs, weights, calib_period, store):
+        if self._new_path(observed, outputs, weights, calib_period, store,
+                          valid_period=valid_period, step=step, agg=agg,
+                          metric=metric, run_ids=run_ids, is_initial=is_initial):
             return self._run_batch_multi(
                 param_sets, observed, metric, outputs, weights, metrics,
                 calib_period, valid_period, step, agg, store, run_ids, is_initial,
                 methods, subbasins,
             )
         # ── deprecated single-site path (behaviour unchanged) ──────────────
-        explicit = reach_id is not _SENTINEL or output_variable is not _SENTINEL
-        reach_id = 1 if reach_id is _SENTINEL else reach_id
-        output_variable = 'FLOW_OUTcms' if output_variable is _SENTINEL else output_variable
-        if explicit:
-            warnings.warn(
-                "reach_id and output_variable are deprecated; pass "
-                f"outputs={{{output_variable!r}: [{reach_id}]}} instead.",
-                DeprecationWarning, stacklevel=2,
-            )
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
         if metrics is None:
             metrics = ['nse', 'kge', 'r2', 'rmse', 'pbias']
         elif isinstance(metrics, str):
@@ -710,6 +728,7 @@ class CalibrationManager:
         metric = "nse" if metric is None else metric
         check_weights(weights, list(observed_dict.keys()))
         preflight(observed_dict, calib_period)
+        _validate_config(valid_period, step, agg)
         reported = _resolve_metrics(metric, metrics)
 
         formatted_sets = [
@@ -783,6 +802,10 @@ class CalibrationManager:
                                 calib_period=calib_period, valid_period=valid_period,
                                 freq=freq, step=step, agg=agg, warmup_end=warmup,
                             )
+                        except ValueError:
+                            # A misconfigured period / step / metric must surface,
+                            # not be turned into NaN rows after every batch ran.
+                            raise
                         except Exception as e:
                             run_error = f"output unreadable: {e}"
                             score = np.nan
