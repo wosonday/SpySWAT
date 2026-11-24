@@ -1,72 +1,63 @@
-# run_single.py
+"""Single-run SWAT workflow using the 0.3.0 SWATProject facade.
+
+Placeholder Windows paths: edit them before running. Keep code under
+``if __name__ == "__main__":`` because Windows spawns child processes.
+"""
 import pandas as pd
 from spyswat import SWATProject
 
-# NOTE (Windows): everything that runs SWAT must live under main() and be started from the
-# `if __name__ == "__main__":` guard below. Windows starts child processes with "spawn", which
-# re-imports this script in every worker; without the guard each worker would re-run the whole
-# setup (re-creating the worker folders that are in use) and fail with file errors.
-
 
 def main():
-    # ── 1. Khởi tạo project ─────────────────────────────────────────
+    # 1. Initialize project
     project = SWATProject(
-        txinout_dir="my_swat_project/TxtInOut",
-        working_dir="my_swat_project/workers",
+        txinout_dir="D:/SWAT/TxtInOut",
+        working_dir="D:/SWAT/working",
         swat_exe="D:/SWAT/swat_rev688.exe",
-        param_file="my_swat_project/params.txt",
-        n_parallel=1   # 1 luồng là đủ khi chỉ chạy 1 lần
+        param_file="D:/SWAT/params.txt",
+        n_parallel=1,
     )
 
-    # ── 2. Xem thông tin dự án ──────────────────────────────────────
+    # 2. Inspect project info
     project.info()
-    # TxtInOut: my_swat_project/TxtInOut
-    # HRUs: 45 | Subbasins: 12
 
-    # ── 3. Đọc giá trị tham số HIỆN TẠI trước khi thay đổi ─────────
-    current = project.read_params_values(["CN2", "ALPHA_BF", "ESCO"])
+    # 3. Read current parameter values (always use name.ext keys)
+    current = project.read_params_values(["CN2.mgt", "ALPHA_BF.gw", "ESCO.hru"])
     print(current)
-    #    param_name  hru_id  current_value
-    #    CN2         1       72.0
-    #    CN2         2       68.5
-    #    ALPHA_BF    1       0.048
-    #    ...
 
-    # ── 4. Thay thế tham số ─────────────────────────────────────────
-    # Format: {tên: [(giá_trị, phương_thức)]}
-    #   'v'   → gán trực tiếp:   CN2 = 75.0
-    #   'r'   → tương đối:       CN2 = CN2 × (1 + 0.1) → tăng 10%
-    #   'add' → cộng thêm:       CN2 = CN2 + 5.0
+    # 4. Explicitly apply parameters to TxtInOut (project.apply is the only
+    #    facade call that modifies TxtInOut)
+    project.apply(
+        {"CN2.mgt": 75.0, "ALPHA_BF.gw": 0.05, "ESCO.hru": 0.1},
+        methods={"CN2.mgt": "v", "ALPHA_BF.gw": "v", "ESCO.hru": "r"},
+    )
 
-    project.HRU.update_params({
-        "CN2.mgt":      [(75.0,  "v")],    # gán trực tiếp = 75
-        "ALPHA_BF": [(0.05,  "v")],    # gán = 0.05
-        "ESCO":     [(0.1,   "r")],    # nhân với (1 + 0.1) → +10%
-    })
-
-    # ── 5. Chạy SWAT ────────────────────────────────────────────────
+    # 5. Run SWAT once
     project.run()
 
-    # ── 6. Đọc kết quả ──────────────────────────────────────────────
+    # 6. Read simulated discharge at reach 1
     sim = project.Output.read_rch(
         columns=["RCH", "MON", "FLOW_OUTcms"],
-        reach_id=1
+        reach_id=1,
     )["FLOW_OUTcms"]
+    print(f"Mean simulated flow: {sim.mean():.2f} m3/s")
 
-    print(f"Mean simulated flow: {sim.mean():.2f} m³/s")
-
-    # ── 7. So sánh với quan trắc ────────────────────────────────────
+    # 7. Evaluate against observations by period (pure: no SWAT run)
     obs = pd.read_csv(
-        "my_swat_project/observed_flow.csv",
-        index_col="date", parse_dates=True
+        "D:/SWAT/observed_flow.csv",
+        index_col="date",
+        parse_dates=True,
     )["flow"]
 
-    stats  = project.Statistic.calculate_statistics(obs, sim)
-    rating = project.Statistic.evaluate_performance(obs, sim)
-
-    print(f"NSE  = {stats['nse']:.3f}  → {rating['nse']}")
-    print(f"KGE  = {stats['kge']:.3f}")
-    print(f"PBIAS= {stats['pbias']:.1f}%  → {rating['pbias']}")
+    ev = project.evaluate(
+        {("FLOW_OUTcms", 1): sim},
+        {("FLOW_OUTcms", 1): obs},
+        periods={
+            "calib": ("2005-01-01", "2010-12-31"),
+            "valid": ("2011-01-01", "2015-12-31"),
+        },
+        metrics=("nse", "kge", "pbias", "r2"),
+    )
+    print(ev.table)
 
 
 if __name__ == "__main__":

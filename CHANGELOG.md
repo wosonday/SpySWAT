@@ -5,10 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [0.3.0] – 2026-11-25
+
+Standardised 0.3.0 public API across calibration, evaluation, sensitivity, and scenarios:
+one vocabulary, a facade on `SWATProject`, multi-site/multi-variable calibration,
+per-session folder storage, and regression sensitivity from calibration runs.
+
+### Added
+
+- **`SWATProject` facade** (`spyswat/swat_project.py`):
+  - `project.calibration(param_ranges, observed, calib_period, valid_period=None, *, algorithm="glue", metric="nse", metrics=("nse", "kge", "pbias", "r2"), weights=None, outputs=None, step=None, agg=None, n_parallel=None, seed=None, results_dir=None, session=None, resume=True, sensitivity=True, ...)` returning `CalibrationResult`.
+  - `project.evaluate(sim, observed, periods=None, *, metrics=..., step=None, agg=None)` filling in `freq` (`FileCIO.get_iprint()`) and `warmup_end` (`Timestamp(IYR + NYSKIP, 1, 1)`).
+  - `project.sensitivity(param_ranges=None, observed=None, method="morris", *, from_session=None, **options)` supporting `"oat"`, `"morris"`, `"morris_salib"`, `"sobol"`, `"regression"`, and `from_session=` without re-running SWAT.
+  - `project.scenarios(scenarios, param_sets, outputs, observed=None, results_dir=None, **options)` accepting `ParamSet`, `CalibrationResult` (its best), or lists from `top()` / `select()`.
+  - `project.apply(x, methods=None, subbasins=None)` — the only facade call that writes parameters into `TxtInOut`.
+- **Pure evaluation** (`spyswat/swat_calib/analysis/evaluate.py`): `evaluate()` and `EvaluationResult(table, to_csv())` with multi-period evaluation, warm-up guard, and `step="M"` simulation-only monthly aggregation (`agg` defaulting to `sum` for `SED_*`, `*tons`, `*kg` and `mean` otherwise).
+- **Multi-site scoring** (`spyswat/swat_calib/calibration/scoring.py`): `normalise_observed()`, `check_weights()`, `preflight()`, `score_sites()`, `DEFAULT_OUTPUTS`, `DEFAULT_METRICS`. Per-site metrics are computed via `evaluate()`; `score` uses weighted mean of per-site objectives (using `|pbias|` for `pbias`) and warns when `rmse`/`mae` are aggregated across variables without explicit weights.
+- **Per-session folder storage** (`spyswat/swat_calib/calibration/session_store.py`): `SessionStore` writes `session.json`, `runs.csv`, `best.csv`, `sensitivity.csv`, and `reach_<id>/<variable>.csv` (splitting at 16 000 run columns into `<variable>_part2.csv`) + `reach_<id>/<variable>_metrics.csv`.
+- **`CalibrationResult`** (`spyswat/swat_calib/calibration/result.py`): `best_params`, `best_score`, `best_run_id`, `runs`, `metrics`, `sensitivity`, `sensitivity_status`, `session_dir`, `top(n)`, `select(...)`, `best_param_set()`, `series(variable, reach)`, `site_metrics(variable, reach)`, `CalibrationResult.load(session_dir)`, and dict-style access (`"best_params"`, `"best_score"`, `"history"`).
+- **Regression sensitivity** (`spyswat/swat_calib/analysis/regression_sensitivity.py`): `regression_sensitivity(runs, param_ranges, score_col="score")` computing OLS regression on `[0, 1]`-scaled parameters (`coef`, `t_stat`, `p_value`, `rank`, plus `r2`, `n_used`, `n_dropped` in `attrs`).
+- **Resume by replay** (`resume=True` in `project.calibration`): see the [Calibration](README.md#calibration) section for status.
 
 ### Changed
 
+- Unified vocabulary across `CalibrationManager` (`run_once`, `run_iteration`, `run_batch`), algorithms (`GLUE`, `PSOCalibration`, `ParallelDE`, `DDSCalibration`), `SWATSensitivity`, and `SWATCalibration`: `observed`, `outputs`, `weights`, `metric`, `metrics`, `calib_period`, `valid_period`, `step`, `agg`.
+- `CalibrationManager.run_once(outputs=...)` returns `{(variable, reach): pd.Series}` (the deprecated `reach_id`/`output_variable` path still returns a `pd.Series`).
+- `CalibrationManager.run_iteration(...)` returns `float` (`score`) and `run_batch(...)` delegates multi-site scoring and optional `SessionStore` persistence.
 - The team-workflow harness now has one copy, laid out like the shared harness: the
   `AGENTS-TUTORIAL.md`, `BOT-CEO.md`, `HERDR-CORE-BOT.md` and `AGM-UPGRADE-SPEC.md` rule
   documents are at the repository root, every guide lives directly under `docs/`
@@ -37,6 +59,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   batches with different `results_dir` on one project no longer overwrite each other, and
   the same `results_dir` reuses its folder (resume). Slot folders left directly under
   `_scenario_batch/` by older versions are no longer used and can be deleted.
+
+### Deprecated
+
+Accepted with `DeprecationWarning` until **0.4.0**:
+
+- `observed_series` → use `observed`
+- `reach_id` + `output_variable` → use `outputs={output_variable: [reach_id]}`
+- `ValidationRunner` / `PeriodConfig` → use `project.calibration(..., calib_period=..., valid_period=...)` and `project.evaluate(...)`
+
+### Migration from 0.2.x
+
+| 0.2.x | 0.3.0 |
+|---|---|
+| `calib = SWATCalibration(project); calib.glue.run(param_ranges, observed_series=obs, reach_id=1, output_variable="FLOW_OUTcms")` | `res = project.calibration(param_ranges, observed={("FLOW_OUTcms", 1): obs}, calib_period=..., algorithm="glue")` |
+| `ValidationRunner(project, param_ranges, obs, PeriodConfig(...)).run(...)` | `res = project.calibration(param_ranges, obs, calib_period=..., valid_period=...)` |
+| `project.Statistic.calculate_statistics(obs_val, sim_val)` on sliced periods | `project.evaluate(sim, obs, periods={"calib": ..., "valid": ...}, step="M")` |
+| `calib.analyze(...)["sensitivity"]` (Spearman/PRCC) | `res.sensitivity` (OLS regression on initial sample) or `project.sensitivity(..., from_session=res.session_dir)` |
+| `project.HRU.update_params(result["best_params"])` | `project.apply(res)` (explicitly writes `TxtInOut`) |
+| `ScenarioBatch(project, results_dir).run(scenarios, param_sets, outputs=...)` | `project.scenarios(scenarios, res.top(10), outputs=..., observed=...)` |
 
 ---
 
