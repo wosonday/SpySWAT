@@ -1,6 +1,6 @@
 # SpySWAT — Agent Guide
 
-> Version: 0.2.6 | Updated: 2026-11-21 (team workflow v3.6)
+> Version: 0.3.0 | Updated: 2026-11-25 (team workflow v3.6)
 
 Orientation for AI agents (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini via `agy`)
 and developers working in the SpySWAT codebase. **Project rules in this file win over the
@@ -45,8 +45,12 @@ spyswat/
     │   ├── calib_manager.py        ← CalibrationManager: run_once, sandbox, run_iteration, run_batch,
     │   │                             check_observation_step()
     │   ├── param_spec.py           ← Pure parameter parsing, formatting and log columns
+    │   ├── replay.py               ← Ordered cursor replay cache for resume=True (API-5)
+    │   ├── result.py               ← CalibrationResult: top, select, load, series, site_metrics
     │   ├── run_log.py              ← RunLog: CSV sessions, buffered writes, per-run results
-    │   └── validation_runner.py    ← ValidationRunner, PeriodConfig
+    │   ├── scoring.py              ← Multi-site scoring: normalise_observed, check_weights, score_sites
+    │   ├── session_store.py        ← SessionStore: per-session folder (runs.csv, reach_<id>/...)
+    │   └── validation_runner.py    ← ValidationRunner, PeriodConfig (deprecated; removed in 0.4.0)
     ├── scenarios/
     │   ├── model.py                ← Scenario, ParamSet, Job, RunResult
     │   ├── batch.py                ← ScenarioBatch, BatchResult
@@ -54,6 +58,8 @@ spyswat/
     │   └── signature.py            ← txinout_fingerprint(): per-scenario TxtInOut input stats
     ├── analysis/
     │   ├── statistics.py           ← SWATAnalysis + metric registry (METRIC_DIRECTIONS, ...)
+    │   ├── evaluate.py             ← Pure evaluate(), EvaluationResult (periods, step="M", warm-up guard)
+    │   ├── regression_sensitivity.py ← Pure OLS regression sensitivity on runs DataFrame
     │   ├── calibration.py          ← SWATCalibration: facade (optimize, analyze)
     │   ├── sensitivity.py          ← SWATSensitivity: OAT, Morris, SALib (Morris, Sobol)
     │   └── algorithms/
@@ -177,31 +183,43 @@ project.HRU.validate_inputs()          # empty DataFrame = layout matches the pa
 ```python
 from spyswat.swat_calib.calibration import CalibrationManager
 manager = CalibrationManager(project)
-score = manager.run_iteration({"CN2.mgt": 75.0, "ALPHA_BF.gw": 0.5}, obs, metric="nse")
+score = manager.run_iteration(
+    {"CN2.mgt": 75.0, "ALPHA_BF.gw": 0.5},
+    obs,
+    metric="nse",
+    outputs={"FLOW_OUTcms": [1]},
+)
 ```
 
 For a raw simulated series with restoration (no metrics or automatic run log):
 ```python
 with manager.sandbox(names=["CN2.mgt"]):
-    sim = manager.run_once({"CN2.mgt": 75.0}, reach_id=1, output_variable="FLOW_OUTcms")
+    sim = manager.run_once({"CN2.mgt": 75.0}, outputs={"FLOW_OUTcms": [1]})
 ```
 
-### Run a calibration algorithm
+### Run a calibration and evaluate via the facade
 ```python
-from spyswat.swat_calib.analysis import SWATCalibration
-calib = SWATCalibration(project)
-calib.manager.setup_parallel(overwrite=True)
-result = calib.glue.run(param_ranges, obs, n_samples=500, threshold=0.5, seed=42)
-result = calib.pso.run(param_ranges, obs, n_particles=20, max_iterations=50, seed=42)
-# every algorithm returns {"best_params", "best_score", "history", ...}
+res = project.calibration(
+    param_ranges,
+    observed={("FLOW_OUTcms", 1): obs},
+    calib_period=("2005-01-01", "2010-12-31"),
+    valid_period=("2011-01-01", "2015-12-31"),
+    algorithm="glue",
+    n_samples=500,
+    seed=42,
+)
+ev = project.evaluate(sim, obs, periods={"valid": ("2011-01-01", "2015-12-31")})
 ```
 
 ### Run scenarios × parameter sets
 ```python
-from spyswat.swat_calib.scenarios import Scenario, ParamSet, ScenarioBatch
-batch = ScenarioBatch(project, results_dir)
-res = batch.run([Scenario("LUC2000", txinout_dir=...)], [ParamSet.from_dict("p1", {...})],
-                outputs={"FLOW_OUTcms": [51]}, observed={("FLOW_OUTcms", 51): obs})
+from spyswat.swat_calib.scenarios import Scenario
+res_scen = project.scenarios(
+    [Scenario("LUC2000", txinout_dir="D:/SWAT/LUC2000/TxtInOut")],
+    res.top(5),
+    outputs={"FLOW_OUTcms": [51]},
+    observed={("FLOW_OUTcms", 51): obs},
+)
 ```
 See `docs/sample_run_scenarios.py`.
 
