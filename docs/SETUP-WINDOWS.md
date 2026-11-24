@@ -172,7 +172,7 @@ Get-ChildItem .agents/reviews/CAL-1-*.md            # các vòng duyệt
 
 | Công cụ | Mở lại phiên | Danh sách / xuất | Nơi lưu |
 |---|---|---|---|
-| Claude Code | `claude -c` (phiên gần nhất), `claude --resume` (chọn) | trong `--resume` | `~\.claude\projects\D--SWAT-model-SpySWAT\*.jsonl` |
+| Claude Code | `claude -c` (phiên gần nhất), `claude --resume` (chọn) | trong `--resume` | `~\.claude\projects\<project-folder-slug>\*.jsonl` |
 | Codex | `codex resume --last`, `codex resume <id>` | `codex resume` (bộ chọn) | `~\.codex\sessions\` |
 | OpenCode | `opencode -c`, `opencode -s <id>` | `opencode session list`, `opencode session export <id>` | dịch vụ nền của OpenCode |
 

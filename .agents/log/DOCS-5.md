@@ -129,3 +129,12 @@ copied harness docs.
 - Public-repository rule check: `docs/SETUP-WINDOWS.md` still names the local project path
   (`D:\SWAT-model\SpySWAT`) and the CLI project-folder name `D--SWAT-model-SpySWAT`. Left as
   is (only reported here); say if it should be generalised.
+
+## 2026-11-24 — CEO (Auditor)
+
+- `python scripts/lint_harness.py` → `Harness lint: 32 documents, 0 errors.`
+- `python -m pytest tests/ -q` → `464 passed, 11 skipped, 5 warnings, 28 subtests passed in 217.00s`.
+- `git diff --check main...HEAD` → clean.
+- Public-repo fix: `docs/SETUP-WINDOWS.md` personal path → `D:\path	o\SpySWAT`, CLI folder slug → `<project-folder-slug>`.
+- Worker could not run `python` (old worker-mid config, `"*": ask`); fixed separately in HARN-2.
+- Result: PASS ALL.
