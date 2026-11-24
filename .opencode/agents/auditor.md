@@ -4,6 +4,10 @@ mode: primary
 # Optional: pin a verified free/local model from `opencode models`, e.g.:
 # model: opencode/deepseek-v4.1-flash-free
 permission:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
   edit:
     "*": deny
     ".agents/log/*": allow
@@ -19,6 +23,7 @@ permission:
     "git commit*": allow
     "agm send*": allow
   webfetch: deny
+  execute: deny
   task: deny
 ---
 You are the Auditor (`auditor`). Never edit product source or test files.

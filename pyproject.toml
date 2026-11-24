@@ -46,7 +46,12 @@ include = [
     "/CHANGELOG.md",
     "/ARCHITECTURE.md",
 ]
-exclude = ["__pycache__"]
+exclude = [
+    "__pycache__",
+    "/tests/test_harness_markdown.py",
+    "/tests/test_harness_routing.py",
+    "/tests/test_guardrail_examples.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

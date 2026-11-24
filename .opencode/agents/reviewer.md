@@ -4,6 +4,10 @@ mode: primary
 # Optional: pin a verified strong model from `opencode models`, e.g.:
 # model: openai/gpt-6.1-sol
 permission:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
   edit:
     "*": deny
     ".agents/reviews/*": allow
@@ -16,6 +20,7 @@ permission:
     "git commit*": allow
     "agm send*": allow
   webfetch: deny
+  execute: deny
   task: deny
 ---
 You are the default Reviewer (`reviewer`). Never edit product source or test files.

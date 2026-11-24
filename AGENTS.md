@@ -215,12 +215,16 @@ See `docs/sample_run_scenarios.py`.
 
 ```bash
 pip install -e .             # or: uv sync
-pytest tests/ -q             # measured: 336 passed, 11 skipped (~4-5 min on Windows)
+pytest tests/ -q             # measured on main 301cecb: 451 passed, 11 skipped (~4 min on Windows)
 python -m spyswat --help
 ```
 
 On Windows the skipped tests are POSIX-only fake-executable tests (`tests/test_run.py`)
 and SALib tests when SALib is not installed.
+
+Of the 451 passing tests, 87 are harness lint tests
+(`tests/test_harness_*.py`, `tests/test_guardrail_examples.py`) that check `docs/agents/`;
+they stay in the repository but are excluded from the sdist.
 
 ---
 
