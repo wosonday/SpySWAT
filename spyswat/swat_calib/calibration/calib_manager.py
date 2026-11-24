@@ -1,21 +1,69 @@
 # spyswat/calibration/manager.py
 from typing import List
+from collections.abc import Mapping
 import pandas as pd
 import numpy as np
 from contextlib import contextmanager
 import shutil, tempfile
 import logging
+import warnings
+from functools import partial
 from pathlib import Path
 
 from spyswat.swat_calib.core.workingFolder_manager import (
     _copy_over, _stamp_output_rch, _check_fresh_output_rch, _param_exts, _baseline_files,
 )
+from spyswat.swat_calib.core.txinout import TxInOut
+from spyswat.swat_calib.core.output_manager import OutputFileManager
 
 from spyswat.logger import Logger
 from .param_spec import parse_spec, format_params, is_raw, param_columns
 from .run_log import RunLog
+from .scoring import (
+    normalise_observed, check_weights, preflight, score_sites, _resolve_metrics,
+    _normalise_outputs, _validate_config,
+)
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for the deprecated reach_id / output_variable kwargs: lets the manager
+# tell "not passed" (use the old defaults, no warning) from "passed explicitly".
+_SENTINEL = object()
+
+
+def _resolve_deprecated_reach(reach_id, output_variable):
+    """Resolve the deprecated ``reach_id`` / ``output_variable`` sentinels.
+
+    Returns ``(reach_id, output_variable)`` with the old defaults (1 and
+    'FLOW_OUTcms'), emitting a ``DeprecationWarning`` only when either was
+    passed explicitly (never on the new multi-site ``outputs`` path).
+    """
+    explicit = reach_id is not _SENTINEL or output_variable is not _SENTINEL
+    reach_id = 1 if reach_id is _SENTINEL else reach_id
+    output_variable = 'FLOW_OUTcms' if output_variable is _SENTINEL else output_variable
+    if explicit:
+        warnings.warn(
+            "reach_id and output_variable are deprecated; pass "
+            f"outputs={{{output_variable!r}: [{reach_id}]}} instead.",
+            DeprecationWarning, stacklevel=3,
+        )
+    return reach_id, output_variable
+
+
+def _extract_outputs(worker_dir: str, outputs: dict) -> dict:
+    """Module-level picklable extract: read ``{(variable, reach): Series}`` from output.rch.
+
+    Runs inside every worker process; the series are returned undated (file order)
+    and get their model dates in the main process via ``_to_model_dates``.
+    """
+    out = OutputFileManager(TxInOut(worker_dir))
+    sim = {}
+    for var, reaches in outputs.items():
+        for reach in reaches:
+            sim[(var, reach)] = out.read_rch(
+                columns=['RCH', 'MON', var], reach_id=reach
+            )[var]
+    return sim
 
 
 def check_observation_step(obs_index: pd.DatetimeIndex, sim_freq: str) -> None:
@@ -67,6 +115,7 @@ class CalibrationManager:
         self.project = project
         self._backup_dir: Path | None = None
         self._log = RunLog(project)
+        self._store_counter = 0
 
     # Compatibility for callers that set session state to simulate name races.
 
@@ -199,12 +248,19 @@ class CalibrationManager:
 
     # ── Core run methods ─────────────────────────────────────────────
 
-    def run_once(self, params: dict, *, reach_id: int = 1,
-                 output_variable: str = 'FLOW_OUTcms',
-                 methods=None, subbasins=None) -> pd.Series:
+    def run_once(self, params: dict, *, outputs=None,
+                 reach_id=_SENTINEL, output_variable=_SENTINEL,
+                 methods=None, subbasins=None):
         """
-        Apply ``params`` to the project's TxtInOut, run SWAT once and return the raw
-        simulated series of ``output_variable`` at ``reach_id``.
+        Apply ``params`` to the project's TxtInOut, run SWAT once and return the
+        simulated series.
+
+        With ``outputs={variable: [reach, ...]}`` the return is
+        ``{(variable, reach): Series}`` with real model dates (``_to_model_dates``).
+        Without ``outputs`` the deprecated single-site behaviour is kept: a bare
+        ``pd.Series`` of ``output_variable`` at ``reach_id`` (defaults 1 and
+        'FLOW_OUTcms'), with a ``DeprecationWarning`` only when ``reach_id`` /
+        ``output_variable`` are passed explicitly.
 
         The single implementation of the sequential run: every sequential caller
         (run_iteration, sensitivity, GLUE 95PPU, ValidationRunner) goes through it.
@@ -217,15 +273,32 @@ class CalibrationManager:
         """
         formatted = (self._format_params(params, methods, subbasins)
                      if self._is_raw(params) else params)
+        if outputs is not None:
+            outputs = _normalise_outputs(outputs)   # fail before touching TxtInOut
+        self._apply_and_run(formatted)
+        if outputs is not None:
+            freq = self._sim_freq()
+            sim = {}
+            for var, reaches in outputs.items():
+                for reach in reaches:
+                    series = self.project.Output.read_rch(
+                        columns=['RCH', 'MON', var], reach_id=reach
+                    )[var]
+                    sim[(var, reach)] = self._to_model_dates(series, freq)
+            return sim
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
+        return self.project.Output.read_rch(
+            columns=['RCH', 'MON', output_variable], reach_id=reach_id
+        )[output_variable]
+
+    def _apply_and_run(self, formatted: dict) -> None:
+        """Apply ``formatted`` params, run SWAT once, and check output freshness."""
         self.project.HRU.update_params(formatted)
         out_dir = self._txinout_dir()
         before = _stamp_output_rch(out_dir) if out_dir is not None else None
         self.project.run()
         if out_dir is not None:
             _check_fresh_output_rch(out_dir, before)
-        return self.project.Output.read_rch(
-            columns=['RCH', 'MON', output_variable], reach_id=reach_id
-        )[output_variable]
 
     @contextmanager
     def sandbox(self, names=None):
@@ -247,8 +320,21 @@ class CalibrationManager:
             self._restore_state()
 
     def run_iteration(self, param_dict, observed, metric=None,
-                      reach_id=1, output_variable='FLOW_OUTcms',
-                      methods=None, subbasins=None) -> float:
+                      reach_id=_SENTINEL, output_variable=_SENTINEL,
+                      methods=None, subbasins=None,
+                      *, outputs=None, weights=None, metrics=None,
+                      calib_period=None, valid_period=None, step=None, agg=None,
+                      store=None, run_id=None, is_initial=False) -> float:
+        if self._new_path(observed, outputs, weights, calib_period, store,
+                          valid_period=valid_period, step=step, agg=agg,
+                          run_id=run_id, is_initial=is_initial):
+            return self._run_iteration_multi(
+                param_dict, observed, metric, outputs, weights, metrics,
+                calib_period, valid_period, step, agg, store, run_id, is_initial,
+                methods, subbasins,
+            )
+        # ── deprecated single-site path (behaviour unchanged) ──────────────
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
         formatted = self._format_params(param_dict, methods, subbasins) if self._is_raw(param_dict) else param_dict
         # Resolved before the backup: nothing between backup and restore may raise.
         obs_index = observed.index if isinstance(observed, pd.Series) else None
@@ -257,7 +343,7 @@ class CalibrationManager:
         score = None
         sim_dated = None
         try:
-            sim = self.run_once(formatted, reach_id=reach_id, output_variable=output_variable)
+            sim = self._run_once_single(formatted, reach_id, output_variable)
 
             obs_aligned, sim_aligned = self._align_series(observed, sim)
             score = self.project.Statistic.calculate_statistics(
@@ -292,6 +378,114 @@ class CalibrationManager:
                     f"restored: {restore_err}"
                 ) from err
             raise
+        if err is not None:
+            raise RuntimeError(f"Iteration failed: {err}") from err
+        return score
+
+    def _run_once_single(self, formatted, reach_id, output_variable) -> pd.Series:
+        """Apply + run + read one series — ``run_once`` without the deprecation warning."""
+        self._apply_and_run(formatted)
+        return self.project.Output.read_rch(
+            columns=['RCH', 'MON', output_variable], reach_id=reach_id
+        )[output_variable]
+
+    @staticmethod
+    def _new_path(observed, outputs, weights, calib_period, store,
+                  valid_period=None, step=None, agg=None,
+                  metric=None, run_ids=None, run_id=None, is_initial=False) -> bool:
+        """True when the multi-site vocabulary is used.
+
+        Covers the design vocabulary (``outputs``, a dict ``observed``,
+        ``weights``, ``calib_period`` or ``store``) plus every keyword-only
+        argument the old single-site path would silently drop: ``valid_period``,
+        ``step``, ``agg``, ``metric`` / ``run_ids`` (run_batch) and ``run_id`` /
+        ``is_initial`` (run_iteration).
+        """
+        return (outputs is not None
+                or isinstance(observed, Mapping)
+                or weights is not None
+                or calib_period is not None
+                or store is not None
+                or valid_period is not None
+                or step is not None
+                or agg is not None
+                or metric is not None
+                or run_ids is not None
+                or run_id is not None
+                or is_initial)
+
+    def _store_next_id(self) -> int:
+        """Next run id for the session store (continues the manager's counter)."""
+        self._store_counter += 1
+        return self._store_counter
+
+    def _add_run_to_store(self, store, run_id, *, params, status, error, score,
+                          is_initial, series, site_metrics) -> None:
+        """Call ``store.add_run`` without ever breaking the calibration (rule 10)."""
+        try:
+            store.add_run(
+                run_id, params=params, status=status, error=error, score=score,
+                is_initial=is_initial, series=series, site_metrics=site_metrics,
+            )
+        except Exception as exc:  # noqa: BLE001 - the store must never break a run
+            logger.warning(f"store.add_run failed for run {run_id}: {exc}")
+
+    def _run_iteration_multi(self, param_dict, observed, metric, outputs, weights,
+                             metrics, calib_period, valid_period, step, agg, store,
+                             run_id, is_initial, methods, subbasins) -> float:
+        observed_dict, outputs_dict = normalise_observed(observed, outputs)
+        metric = "nse" if metric is None else metric
+        check_weights(weights, list(observed_dict.keys()))
+        preflight(observed_dict, calib_period)
+        _validate_config(valid_period, step, agg)
+        formatted = (self._format_params(param_dict, methods, subbasins)
+                     if self._is_raw(param_dict) else param_dict)
+        freq = self._sim_freq()
+        warmup = self.warmup_end()
+        self._backup_state(names=formatted.keys())
+        err: Exception | None = None
+        score = None
+        site_metrics = None
+        sim_dated = None
+        try:
+            sim = self.run_once(formatted, outputs=outputs_dict)
+            score, site_metrics = score_sites(
+                sim, observed_dict, metric=metric, metrics=metrics, weights=weights,
+                calib_period=calib_period, valid_period=valid_period, freq=freq,
+                step=step, agg=agg, warmup_end=warmup,
+            )
+            sim_dated = sim
+        except Exception as e:
+            err = e
+        except BaseException:
+            try:
+                self._restore_state()
+            except Exception as restore_err:
+                logger.error(f"Restore after interruption failed: {restore_err}")
+            raise
+
+        # Always restore baseline inputs so that relative-change methods ('r', 'a')
+        # start from the original parameter values on the next iteration.
+        try:
+            self._restore_state()
+        except Exception as restore_err:
+            if err is not None:
+                raise RuntimeError(
+                    f"Iteration failed: {err}; additionally the input files could not be "
+                    f"restored: {restore_err}"
+                ) from err
+            raise
+
+        if store is not None:
+            rid = run_id if run_id is not None else self._store_next_id()
+            self._add_run_to_store(
+                store, rid, params=formatted,
+                status="ok" if err is None else "failed",
+                error=str(err) if err is not None else None,
+                score=np.nan if err is not None else score,
+                is_initial=is_initial, series=sim_dated, site_metrics=site_metrics,
+            )
+
         if err is not None:
             raise RuntimeError(f"Iteration failed: {err}") from err
         return score
@@ -391,11 +585,21 @@ class CalibrationManager:
         )
 
     def run_batch(self, param_sets, observed, metrics=None,
-                  reach_id=1, output_variable='FLOW_OUTcms',
-                  methods=None, subbasins=None) -> pd.DataFrame:
+                  reach_id=_SENTINEL, output_variable=_SENTINEL,
+                  methods=None, subbasins=None,
+                  *, metric=None, outputs=None, weights=None,
+                  calib_period=None, valid_period=None, step=None, agg=None,
+                  store=None, run_ids=None, is_initial=False) -> pd.DataFrame:
         """
         Return DataFrame. param_sets can be list of {name: float} (raw) or
         {name: [(val, method, ...)]} (pre-formatted) -- both are accepted.
+
+        Multi-site path (``outputs`` / a dict ``observed`` / ``weights`` /
+        ``calib_period`` / ``store`` given): returns a DataFrame with a ``score``
+        column followed by ``<metric>@<variable>@<reach>`` (calibration period) for
+        every site and reported metric, in submission order. With ``store`` each run
+        is written to the store (the flat RunLog is not used). The deprecated
+        single-site path is unchanged and still logs through the flat RunLog.
 
         Logging
         ───────
@@ -405,6 +609,16 @@ class CalibrationManager:
         Worker log records are routed through a multiprocessing.Queue so
         multiple subprocesses never write to the log file simultaneously.
         """
+        if self._new_path(observed, outputs, weights, calib_period, store,
+                          valid_period=valid_period, step=step, agg=agg,
+                          metric=metric, run_ids=run_ids, is_initial=is_initial):
+            return self._run_batch_multi(
+                param_sets, observed, metric, outputs, weights, metrics,
+                calib_period, valid_period, step, agg, store, run_ids, is_initial,
+                methods, subbasins,
+            )
+        # ── deprecated single-site path (behaviour unchanged) ──────────────
+        reach_id, output_variable = _resolve_deprecated_reach(reach_id, output_variable)
         if metrics is None:
             metrics = ['nse', 'kge', 'r2', 'rmse', 'pbias']
         elif isinstance(metrics, str):
@@ -506,6 +720,155 @@ class CalibrationManager:
 
         logger.info(f"[run_batch] Done — {total} runs complete")
         return pd.DataFrame(all_rows, columns=metrics)
+
+    def _run_batch_multi(self, param_sets, observed, metric, outputs, weights,
+                         metrics, calib_period, valid_period, step, agg, store,
+                         run_ids, is_initial, methods, subbasins) -> pd.DataFrame:
+        observed_dict, outputs_dict = normalise_observed(observed, outputs)
+        metric = "nse" if metric is None else metric
+        check_weights(weights, list(observed_dict.keys()))
+        preflight(observed_dict, calib_period)
+        _validate_config(valid_period, step, agg)
+        reported = _resolve_metrics(metric, metrics)
+
+        formatted_sets = [
+            self._format_params(p, methods, subbasins) if self._is_raw(p) else p
+            for p in param_sets
+        ]
+        total = len(formatted_sets)
+        wf = self.project.WorkingFolder
+        n_workers = wf.n_parallel
+        total_batches = (total + n_workers - 1) // n_workers
+
+        freq = self._sim_freq()
+        warmup = self.warmup_end()
+        extract = partial(_extract_outputs, outputs=outputs_dict)
+
+        if store is not None:
+            if run_ids is None:
+                run_ids = list(range(self._store_counter + 1, self._store_counter + total + 1))
+                self._store_counter += total
+            else:
+                run_ids = list(run_ids)
+                if len(run_ids) != total:
+                    raise ValueError(
+                        f"run_ids has {len(run_ids)} entries, expected {total}."
+                    )
+
+        try:
+            from tqdm import tqdm
+            pbar = tqdm(total=total, desc="SWAT runs", unit="run")
+        except ImportError:
+            pbar = None
+
+        log_queue = Logger.init_queue_listener()
+        logger.info(
+            f"[run_batch] Starting — {total} runs, "
+            f"{n_workers} workers, {total_batches} batches"
+        )
+
+        all_rows = []
+        try:
+            for chunk_start in range(0, total, n_workers):
+                batch_num = chunk_start // n_workers + 1
+                chunk = formatted_sets[chunk_start: chunk_start + n_workers]
+
+                results = wf.run_parallel(
+                    self.project.swat_exe.swat_exe_path,
+                    param_sets=chunk,
+                    log_queue=log_queue,
+                    extract=extract,
+                )
+
+                for j, res in enumerate(results):
+                    idx = chunk_start + j
+                    run_error = None
+                    score = np.nan
+                    site_metrics = None
+                    sim_dated = None
+                    if not res.ok:
+                        run_error = res.error
+                        logger.error(f"[run_batch] Run {idx + 1} failed "
+                                     f"(worker {j + 1}): {res.error}")
+                    else:
+                        try:
+                            sim_dated = {
+                                key: self._to_model_dates(s, freq)
+                                for key, s in res.payload.items()
+                            }
+                            score, site_metrics = score_sites(
+                                sim_dated, observed_dict, metric=metric,
+                                metrics=metrics, weights=weights,
+                                calib_period=calib_period, valid_period=valid_period,
+                                freq=freq, step=step, agg=agg, warmup_end=warmup,
+                            )
+                        except ValueError:
+                            # A misconfigured period / step / metric must surface,
+                            # not be turned into NaN rows after every batch ran.
+                            raise
+                        except Exception as e:
+                            run_error = f"output unreadable: {e}"
+                            score = np.nan
+                            site_metrics = None
+                            sim_dated = None
+                            logger.warning(
+                                f"[run_batch] Run {idx + 1} (worker {j + 1}) "
+                                f"output unreadable: {e}"
+                            )
+                    row = self._build_multisite_row(score, site_metrics, reported,
+                                                    observed_dict)
+                    all_rows.append(row)
+                    if store is not None:
+                        rid = run_ids[idx] if run_ids is not None else self._store_next_id()
+                        self._add_run_to_store(
+                            store, rid, params=chunk[j],
+                            status="ok" if run_error is None else "failed",
+                            error=run_error, score=score, is_initial=is_initial,
+                            series=sim_dated, site_metrics=site_metrics,
+                        )
+
+                done = chunk_start + len(chunk)
+                logger.info(
+                    f"[Batch {batch_num}/{total_batches}] "
+                    f"{done}/{total} runs ({done / total:.0%})"
+                )
+                if pbar is not None:
+                    pbar.update(len(chunk))
+
+        finally:
+            if pbar is not None:
+                pbar.close()
+            Logger.stop_listener()
+            self.flush_log()
+
+        logger.info(f"[run_batch] Done — {total} runs complete")
+        columns = ["score"] + [
+            f"{m}@{var}@{reach}"
+            for (var, reach) in sorted(observed_dict) for m in reported
+        ]
+        return pd.DataFrame(all_rows, columns=columns)
+
+    @staticmethod
+    def _build_multisite_row(score, site_metrics, reported, observed_dict) -> dict:
+        """One row of the multi-site DataFrame: score + per-site calib metrics."""
+        row = {"score": score}
+        for key in sorted(observed_dict):
+            var, reach = key
+            entry = site_metrics.get(key, {}) if site_metrics is not None else {}
+            for m in reported:
+                row[f"{m}@{var}@{reach}"] = entry.get(f"{m}_calib", np.nan)
+        return row
+
+    def warmup_end(self) -> "pd.Timestamp | None":
+        """First day after the warm-up: ``pd.Timestamp(IYR + NYSKIP, 1, 1)`` from file.cio.
+
+        ``None`` when the project's FileCIO does not expose ``year_start`` (test stubs).
+        """
+        cio = self.project.FileCIO
+        year_start = getattr(cio, "year_start", None)
+        if year_start is None:
+            return None
+        return pd.Timestamp(int(year_start), 1, 1)
 
     _FREQ_LEVEL = {'D': 0, 'MS': 1, 'YS': 2}  # IPRINT values accepted from file.cio
 
