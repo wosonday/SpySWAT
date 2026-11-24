@@ -327,7 +327,7 @@ class CalibrationManager:
                       store=None, run_id=None, is_initial=False) -> float:
         if self._new_path(observed, outputs, weights, calib_period, store,
                           valid_period=valid_period, step=step, agg=agg,
-                          run_id=run_id, is_initial=is_initial):
+                          metrics=metrics, run_id=run_id, is_initial=is_initial):
             return self._run_iteration_multi(
                 param_dict, observed, metric, outputs, weights, metrics,
                 calib_period, valid_period, step, agg, store, run_id, is_initial,
@@ -392,14 +392,15 @@ class CalibrationManager:
     @staticmethod
     def _new_path(observed, outputs, weights, calib_period, store,
                   valid_period=None, step=None, agg=None,
-                  metric=None, run_ids=None, run_id=None, is_initial=False) -> bool:
+                  metric=None, metrics=None, run_ids=None, run_id=None,
+                  is_initial=False) -> bool:
         """True when the multi-site vocabulary is used.
 
         Covers the design vocabulary (``outputs``, a dict ``observed``,
         ``weights``, ``calib_period`` or ``store``) plus every keyword-only
         argument the old single-site path would silently drop: ``valid_period``,
-        ``step``, ``agg``, ``metric`` / ``run_ids`` (run_batch) and ``run_id`` /
-        ``is_initial`` (run_iteration).
+        ``step``, ``agg``, ``metric`` / ``metrics`` / ``run_ids`` (run_batch) and
+        ``run_id`` / ``is_initial`` (run_iteration).
         """
         return (outputs is not None
                 or isinstance(observed, Mapping)
@@ -410,6 +411,7 @@ class CalibrationManager:
                 or step is not None
                 or agg is not None
                 or metric is not None
+                or metrics is not None
                 or run_ids is not None
                 or run_id is not None
                 or is_initial)
@@ -438,6 +440,7 @@ class CalibrationManager:
         check_weights(weights, list(observed_dict.keys()))
         preflight(observed_dict, calib_period)
         _validate_config(valid_period, step, agg)
+        _resolve_metrics(metric, metrics)   # unknown metric fails before any SWAT run
         formatted = (self._format_params(param_dict, methods, subbasins)
                      if self._is_raw(param_dict) else param_dict)
         freq = self._sim_freq()
