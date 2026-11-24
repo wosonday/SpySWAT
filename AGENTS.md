@@ -50,7 +50,8 @@ spyswat/
     ├── scenarios/
     │   ├── model.py                ← Scenario, ParamSet, Job, RunResult
     │   ├── batch.py                ← ScenarioBatch, BatchResult
-    │   └── scheduler.py            ← Scheduler, Slot: single-pool job queue & slot state
+    │   ├── scheduler.py            ← Scheduler, Slot: single-pool job queue & slot state
+    │   └── signature.py            ← txinout_fingerprint(): per-scenario TxtInOut input stats
     ├── analysis/
     │   ├── statistics.py           ← SWATAnalysis + metric registry (METRIC_DIRECTIONS, ...)
     │   ├── calibration.py          ← SWATCalibration: facade (optimize, analyze)

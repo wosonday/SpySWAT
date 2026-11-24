@@ -415,7 +415,7 @@ param_sets = [P1, P2]           pairs=None → 6 việc (job_id = "S__P")
      ▼
 _plan()  → kiểm tên trùng, job_id trùng, pairs hợp lệ
 _check_observation_steps()  → chỉ với kịch bản evaluate=True; lệch → ValueError trước khi chạy
-signature (.signature.json)  → resume=True mà cấu hình đổi → ValueError
+signature (.signature.json)  → resume=True mà cấu hình hoặc dấu vân tay TxtInOut từng kịch bản (scenario_inputs) đổi → ValueError
      │
      ▼
 <working_dir>/_scenario_batch/TxInOut1..N   (tối đa n_parallel slot, không đụng worker của project)

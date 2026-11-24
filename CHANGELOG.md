@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `ScenarioBatch.run()` now uses one process pool (`ProcessPoolExecutor`) for the whole
+  batch via `scenarios/scheduler.py` (`Scheduler`, `Slot`): a free slot takes the next
+  pending job (same base TxtInOut first, otherwise re-copied), using at most `n_parallel`
+  worker folders (`TxInOut1`..`TxInOutN`). Results are saved as they arrive (every
+  `n_parallel` results or 10 s) and on any exit; a broken worker pool or an unreadable
+  `weather_dir` fails the affected jobs and `run()` still returns (`resume=True` re-runs
+  them).
+- `ScenarioBatch.run(resume=True)` now also raises `ValueError` when an input file of a
+  scenario's base TxtInOut (`txinout_dir` or the project's default `TxtInOut`) was added,
+  removed, resized, or re-written since the stored run (tracked via `scenario_inputs` in
+  `.signature.json` using file stats, not contents; `output.*`, `watout.dat`, and the worker
+  manifest are ignored). Results written by 0.2.6 (without `scenario_inputs`) still resume
+  with one INFO log line, and an unreadable base directory yields an `unreadable:<Error>`
+  sentinel rather than aborting the batch. New module: `spyswat/swat_calib/scenarios/signature.py`
+  (`txinout_fingerprint()`).
+
 ---
 
 ## [0.2.6] – 2026-11-21
@@ -49,13 +67,6 @@ below); no package was published between 0.2.4 and 0.2.6.
 
 ### Changed
 
-- `ScenarioBatch.run()` now uses one process pool (`ProcessPoolExecutor`) for the whole
-  batch via `scenarios/scheduler.py` (`Scheduler`, `Slot`): a free slot takes the next
-  pending job (same base TxtInOut first, otherwise re-copied), using at most `n_parallel`
-  worker folders (`TxInOut1`..`TxInOutN`). Results are saved as they arrive (every
-  `n_parallel` results or 10 s) and on any exit; a broken worker pool or an unreadable
-  `weather_dir` fails the affected jobs and `run()` still returns (`resume=True` re-runs
-  them).
 - Split shared copy/freshness helpers into `core/run_state.py`, pure parameter helpers
   into `calibration/param_spec.py`, and CSV/session persistence into
   `calibration/run_log.py::RunLog`. Existing private helper aliases and manager
