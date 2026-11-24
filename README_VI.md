@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-0.2.6-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
-> English version: [README.md](README.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md) · Làm việc với AI agent: [AGENTS.md](AGENTS.md), [docs/agents/AGENTS-TUTORIAL.md](docs/agents/AGENTS-TUTORIAL.md)
+> English version: [README.md](README.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md) · Làm việc với AI agent: [AGENTS.md](AGENTS.md), [AGENTS-TUTORIAL.md](AGENTS-TUTORIAL.md)
 
 ---
 

@@ -27,12 +27,12 @@ python -B scripts/lint_harness.py --format json
 | Text/Markdown | `ENC*`, `MD*` | UTF-8, no BOM/NUL/trailing whitespace/conflict markers, final newline, one H1, no heading jumps, closed fences, table column counts |
 | Links | `LINK*` | Existing relative files, root containment, exact case, heading/HTML anchors, URL-encoded paths/fragments, images and defined reference links |
 | Models | `MODEL*` | Verified DeepSeek Go/NVIDIA IDs and snapshot variants; rejects obsolete free IDs and Personal/API substitutions in operational docs |
-| Routing | `POLICY*` | Complete, correct, unique roles; no NVIDIA worker/reviewer assignments; NVIDIA safety contract matches policy A |
+| Routing | `POLICY*` | Complete, correct, unique model roles and phase workflows; no NVIDIA worker/reviewer assignments; NVIDIA safety contract matches policy A; Ponytail cannot replace debug/review/verification workflows |
 | Single language | `POLICY006` | `docs/` is English-only: each policy guide exists once under `docs/`; the root rule documents stay Vietnamese |
 | Secrets | `SEC001` | Selected common NVIDIA/Anthropic/OpenAI key patterns; values are not printed in diagnostics |
 | Input | `IO*` | Valid root, required documents, traversable/readable inputs; symlinks are not silently followed outside the tree |
 
-Scans every `.md` under the root except `.git`, `.wt`, `.agents`, `.venv`, `node_modules`, `__pycache__`. Fenced/inline code examples are not treated as live links/headings. Symlinks outside ignored directories fail without reading their target tree.
+Scans every `.md` under the root except `.git`, `.wt`, `.agents`, `.opencode`, `.ua`, `.venv`, `node_modules`, `__pycache__`. Fenced/inline code examples are not treated as live links/headings. Symlinks outside ignored directories fail without reading their target tree.
 
 Obsolete-model checks exclude history under `docs/superpowers/` so designs can explain old decisions; **Markdown, links and secret patterns are still checked**. Current defaults belong only in operational guides.
 
@@ -40,6 +40,7 @@ Obsolete-model checks exclude history under `docs/superpowers/` so designs can e
 
 - The [OPENCODE-WORKERS-REVIEWER.md](OPENCODE-WORKERS-REVIEWER.md) pair uses `harness:routing`.
 - The [NVIDIA-BACKGROUND.md](NVIDIA-BACKGROUND.md) pair uses `harness:background` and `harness:safety`.
+- [SKILL-ROUTING.md](SKILL-ROUTING.md) uses `harness:skill-routing` for the approved phase workflows, including distinct review request, execution and feedback roles. Removing the guide or weakening a route fails lint.
 - Start/end markers must be standalone, ordered and unique outside fences. Deleting a table, omitting rows, duplicating roles or hiding markers in examples cannot pass.
 - Canonical assignments and variant snapshots live in `scripts/harness_routing.py`. Policy/model changes require an approved harness task updating the canonical contract, the `docs/` guide and tests; do not loosen checks just to make them green.
 - These are document contracts, not installed agents, schedulers or enforced billing limits.
@@ -51,6 +52,8 @@ Tests create independent valid/invalid fixtures covering broken links/anchors, U
 `tests/test_guardrail_examples.py` also extracts the actual Bash/CI examples from both ESLint guides and executes them in temporary Git fixtures: invalid bases must fail; TS/MJS/MTS/CTS bypasses must be rejected; nested lint configs must fail CI; clean diffs and filenames containing bypass keywords must pass. This group needs Git + Bash (Git Bash preferred on Windows), without modifying user Git configuration. Missing tools produce explicit **skips**; report shell coverage as unverified rather than claiming full verification. Document lint itself still needs only Python.
 
 Run lint and tests. Pretty output or positive tests alone do not prove the checker works; negative cases must actually be rejected.
+
+`tests/test_skill_routing.py` rejects deleted/fenced matrices, missing debugging/verification, Ponytail substituted for a workflow and confused review responsibilities. The Bash fixture group also executes the HERDR dispatch example with zero, three and four selected skills, intercepting `agm` so no agent is started. The wrapper must not impose a hard two-skill cap. These tests do not establish actual skill installation or model behavior in any CLI.
 
 ## 5. Explicit Limitations
 

@@ -51,6 +51,7 @@ exclude = [
     "/tests/test_harness_markdown.py",
     "/tests/test_harness_routing.py",
     "/tests/test_guardrail_examples.py",
+    "/tests/test_skill_routing.py",
 ]
 
 [tool.pytest.ini_options]

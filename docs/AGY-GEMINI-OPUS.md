@@ -47,8 +47,23 @@ Antigravity CLI (`agy`) absorbs **architecture offloading, technical advising, h
 
 ---
 
-## 2. Token Tracking in `agm`
+## 2. Shared Context, Memory & Ponytail Policy
+
+- **Phase and role skills:** follow [Skill Routing](SKILL-ROUTING.md). Co-Architect uses `system-design`, adding `architecture` for an ADR; Senior Reviewer uses `code-review`; a developer uses feature/debugging/review-fix workflows; Docs uses `documentation`. Argon uses `writing-skills` when reusable skills change, or `skill-creator` for a new skill, rather than for every harness wording edit.
+- **Availability and verification:** resolve skill IDs/paths in agy before dispatch and record `skill_refs`. Do not assume Codex/Claude plugins are visible here. Default to one workflow plus one relevant domain skill, allow justified phase additions, and retain final `verification-before-completion` or its approved runtime playbook.
+- **Understand-Anything (`.ua/`):** Install via `install.ps1` (Windows) or `install.sh antigravity` (Linux/macOS) and query the committed `.ua/knowledge-graph.json` read-only instead of scanning the entire repository.
+- **Shared Memory permissions (`Propose, review, flag conflicts`):** Read `.agents/memory/published/` and task logs; write proposals and conflict flags to `.agents/memory/inbox/<ID>-agy.md` (with `type: proposal | conflict`) and review notes to `.agents/reviews/`. Never edit `.agents/memory/published/` directly—only Claude CEO publishes. Do not self-review code authored by `agy`.
+- **Ponytail by role (never `ultra` by default):** design/advisory exploration uses `off` / `lite`; implementation and independent review use `full`; short docs use `off` / `lite` only when helpful. Ponytail complements the workflow and does not remove approved requirements or domain checks.
+
+## 3. Token Tracking in `agm`
 
 - **`agm ask` sessions:** usage and summaries are recorded directly in `agm.db` and deduplicated against transcript files.
 - **Interactive `agy` CLI sessions:** `agm` scans `transcript.jsonl` under `~/.gemini/antigravity-cli/brain/` and correlates `antigravity` terminals by working directory.
 - **Note:** Antigravity IDE chats do not write `transcript.jsonl`, so they show step summaries only (no token counts unless invoked via `agm ask`).
+
+## 4. Headless Mode (`agy -p`)
+
+- With `--mode plan --sandbox`, every `command` tool (for example `git diff`) is auto-denied and the run can exit 0 with empty output. Check the output size, and give reviewers a snapshot folder with precomputed diffs and files.
+- Docs updates can run with `--mode accept-edits --sandbox`; commit them from a short worker session after checking the diff.
+- Strip `file:///` links to local paths from review text before committing it to a public repository.
+- Details: [WINDOWS-AGENT-RUNTIME.md](WINDOWS-AGENT-RUNTIME.md#4-agy-in-headless-mode).

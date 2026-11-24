@@ -4,7 +4,7 @@
 
 Orientation for AI agents (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini via `agy`)
 and developers working in the SpySWAT codebase. **Project rules in this file win over the
-general team workflow** (`docs/agents/AGENTS-TUTORIAL.md`). This repository is **public**:
+general team workflow** (`AGENTS-TUTORIAL.md` at the repository root). This repository is **public**:
 see [Public repository rules](#public-repository-rules).
 
 ---
@@ -69,11 +69,16 @@ spyswat/
 docs/
 ├── sample_run_single.py / sample_run_parallel.py / sample_run_scenarios.py
 ├── SYSTEM_DESIGN_EN.md / _VI.md   ← historical design audit (see banner inside)
-└── agents/                         ← team workflow (Vietnamese): AGENTS-TUTORIAL.md (v3.6),
-    │                                  BOT-CEO.md, HERDR-CORE-BOT.md, SETUP-WINDOWS.md
-    ├── models/                     ← per-model guides (English): Claude, Codex, agy, OpenCode
-    │                                  workers/reviewer, NVIDIA background, Copilot, guardrails
-    └── superpowers/                ← routing design + plan history (2026-11-20)
+├── SETUP-WINDOWS.md               ← SpySWAT-only Windows setup and session tracking
+├── README.md, HARNESS-LINT.md     ← harness index and lint guide (English)
+├── OPENCODE-WORKERS-REVIEWER.md, NVIDIA-BACKGROUND.md, SKILL-ROUTING.md
+│                                   ← model roles, background safety, skill routing
+├── CLAUDE-ARCHITECT-CEO.md, CODEX-ENGINEERING.md, AGY-GEMINI-OPUS.md,
+│   COPILOT-GIT.md, AGM-0.4.0-GUIDE.md, WINDOWS-AGENT-RUNTIME.md,
+│   CONTEXT-ROTATION.md, ESLINT-CI-GUARDRAILS.md  ← per-model and runtime guides
+└── superpowers/                   ← routing design + plan history (2026-11-20)
+AGENTS-TUTORIAL.md, BOT-CEO.md,     ← team workflow (Vietnamese, v3.6) at the repository root,
+HERDR-CORE-BOT.md, AGM-UPGRADE-SPEC.md   laid out like the shared harness
 .opencode/agents/                   ← OpenCode role permissions (worker-*, auditor, reviewer,
                                        explore, gitnexus-sync)
 .agents/                            ← per-task notebook & bot.env committed with the code (see below)
@@ -215,30 +220,30 @@ See `docs/sample_run_scenarios.py`.
 
 ```bash
 pip install -e .             # or: uv sync
-pytest tests/ -q             # measured on main 301cecb: 451 passed, 11 skipped (~4 min on Windows)
+pytest tests/ -q             # measured on feat/docs-5 (harness sync): 464 passed, 11 skipped (~4 min on Windows)
 python -m spyswat --help
 ```
 
 On Windows the skipped tests are POSIX-only fake-executable tests (`tests/test_run.py`)
 and SALib tests when SALib is not installed.
 
-Of the 451 passing tests, 87 are harness lint tests
-(`tests/test_harness_*.py`, `tests/test_guardrail_examples.py`) that check `docs/agents/`;
-they stay in the repository but are excluded from the sdist.
+Of the 464 passing tests, 97 are harness lint tests
+(`tests/test_harness_*.py`, `tests/test_guardrail_examples.py`, `tests/test_skill_routing.py`)
+that check the harness documents; they stay in the repository but are excluded from the sdist.
 
 ---
 
 ## Agent team workflow
 
-Full guide (Vietnamese, v3.6): [`docs/agents/AGENTS-TUTORIAL.md`](docs/agents/AGENTS-TUTORIAL.md);
+Full guide (Vietnamese, v3.6): [`AGENTS-TUTORIAL.md`](AGENTS-TUTORIAL.md);
 background orchestration (`agm` + `hc` + GitNexus sync):
-[`docs/agents/HERDR-CORE-BOT.md`](docs/agents/HERDR-CORE-BOT.md);
+[`HERDR-CORE-BOT.md`](HERDR-CORE-BOT.md);
 optional multi-lane scaling (`BOT-CEO` + `BRANCHES.md` if ever split into parallel lanes):
-[`docs/agents/BOT-CEO.md`](docs/agents/BOT-CEO.md);
+[`BOT-CEO.md`](BOT-CEO.md);
 per-model startup, permissions and quota guides:
-[`docs/agents/models/README.md`](docs/agents/models/README.md);
+[`docs/README.md`](docs/README.md);
 Windows setup and session tracking:
-[`docs/agents/SETUP-WINDOWS.md`](docs/agents/SETUP-WINDOWS.md).
+[`docs/SETUP-WINDOWS.md`](docs/SETUP-WINDOWS.md).
 SpySWAT currently uses the **single-lane** workflow below. The rules below are the binding
 summary for this repo.
 
@@ -257,7 +262,7 @@ summary for this repo.
 | Researcher & Log Summarizer | `agy` (`gemini-3.8-flash` / `gemini-4-argon` via `agm ask`) for web; OpenCode `explore` (`opencode-go/deepseek-v4.1-flash`) for repo & long logs | read-only | Locations and evidence (URLs or `file:line`); summarise long test/build logs. Verify web claims (versions, prices) against primary sources |
 | Auditor & Pre-check | Scripts/CI first (`pytest`, `git diff --check`); approved free/local model only to interpret output | run commands, write `log/<ID>.md`, no product source edits | Run `pytest`, lint/build, check `git diff` vs `tasks/<ID>.md` scope & `log/<ID>.md` before Reviewer; `PASS ALL` / `FAIL` |
 | GitNexus Sync | `gitnexus-sync` (script/CI, optional when GitNexus active) | run `gitnexus status` / `analyze --index-only` / `clean` | Refresh graph index after `copilot-git` merge; never run without `--index-only` and never modify `AGENTS.md`/`CLAUDE.md` |
-| Background (optional) | NVIDIA Kimi / Mistral / Nemotron (see `docs/agents/models/NVIDIA-BACKGROUND.md`) | **read-only, writes nothing**, at most 1 task, never a merge gate | Non-urgent synthesis of code/docs/logs and proposals for Argon; CEO re-checks SHA before using the output. Never code, Audit or Review |
+| Background (optional) | NVIDIA Kimi / Mistral / Nemotron (see `docs/NVIDIA-BACKGROUND.md`) | **read-only, writes nothing**, at most 1 task, never a merge gate | Non-urgent synthesis of code/docs/logs and proposals for Argon; CEO re-checks SHA before using the output. Never code, Audit or Review |
 
 If a tool cannot spawn separate sessions, one agent plays the roles one after another, in order.
 Only the Architect and the Manager spawn agents (one level deep). Workers talk only to the

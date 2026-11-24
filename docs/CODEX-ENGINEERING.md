@@ -21,8 +21,8 @@
    Or attach to `worker-strong.md` when escalating a specific worktree (`agm spawn worker-strong --task <ID> --role worker --cwd <worktree>`).
 2. **Interactive Codex CLI (`codex-mgr` in single-lane projects, or strong worker):**
    - Launch in `herdr-core` (named `codex-mgr` or `w-<ID>-<n>`).
-   - For long-lived manual sessions (like `codex-mgr`), enable `agm manage codex-mgr` so `agm` prompts handoff to `.agents/handoff/` at `ctx_rotate = 70%` without killing the old session.
-   - Load 1–3 skills on startup (`writing-plans`, `dispatching-parallel-agents`, `using-git-worktrees`).
+   - For long-lived manual sessions (like `codex-mgr`), the user enables `agm manage codex-mgr` once. Codex High/high-reasoning sessions then proactively request `agm rotate <own-terminal>` at 50% context used, with 50–55% reserved for a safe handoff; long/context-heavy tasks normally use 40% (35–45%) or earlier. Follow [Context Rotation](CONTEXT-ROTATION.md), preserve current work and active task IDs, and never kill the old protected session. This is a session-initiated request; AGM 0.4.0 still has a shared daemon threshold, not a per-role setting.
+   - Select skills for the active role from [Skill Routing](SKILL-ROUTING.md), rather than loading a fixed startup bundle. Managers use `writing-plans`; use `using-git-worktrees` when isolation needs creating or checking, and parallel-dispatch skills only for authorized independent work.
 
 ## 3. Controlling ChatGPT 5h / 7d Quota
 
@@ -34,8 +34,18 @@
 - Fast/mid may share Flash Go; changing templates is not a capability upgrade. Pro Go needs its own coding trial for suitable strong work; use a different Reviewer family when Pro authored code. [Background NVIDIA](NVIDIA-BACKGROUND.md) supplies synthesis/proposals, not workers or review gates.
 - Note in `agm`: quota consumed by OpenCode via `openai/gpt-6.1-sol` does not appear in OpenCode's own DB; it surfaces on the next `rate_limits` entry written by Codex.
 
-## 4. Worktree & Git Discipline
+## 4. Shared Context, Memory & Ponytail Policy
 
-- When acting as an engineering worker in a worktree: edit only files listed in `.agents/tasks/<ID>.md`, log steps in `.agents/log/<ID>.md`, prefix commits with `<ID>:`, never touch `BRANCHES.md`, and never merge/push.
+- **Understand-Anything (`.ua/`):** Query the committed `.ua/knowledge-graph.json` via `$understand-chat` / `$understand-diff` (install with `install.ps1` on Windows or `install.sh codex` on Linux/macOS) before wide file reads. Never overwrite `.ua/` from a worker worktree.
+- **Shared Memory permissions (`Propose, write task findings`):** Read `.agents/memory/published/` as canonical truth. Write task-level findings to `.agents/log/<ID>.md` and cross-task proposals to `.agents/memory/inbox/<ID>-codex.md`—never edit `.agents/memory/published/` directly. Do not forward raw chat history; use standardized short reports.
+- **Workflow by work type:** feature logic uses `test-driven-development`; unresolved bugs use `systematic-debugging`; fixes from review use `receiving-code-review`. Add an appropriate domain skill, such as `rust-best-practices`, and preserve final `verification-before-completion`. One workflow plus one domain is a default, not a hard count limit.
+- **Review responsibilities:** managers arrange the existing independent review with `requesting-code-review`; reviewers use `code-review` and domain knowledge. Resolve actual installed IDs/paths in `skill_refs`; a plugin available to Codex is not automatically available to OpenCode.
+- **Ponytail (`full` for development/review, `off` / `lite` for design/planning; never `ultra` by default):**
+  - **Codex Reviewer:** Ponytail supplements complexity/reuse checks. Invoke `ponytail-review` only when available and useful; it does not replace `code-review` or add another mandatory review stage.
+  - **Codex Developer:** Keep changes complete and targeted; reuse existing helpers without dropping the selected workflow, domain constraints or verification.
+
+## 5. Worktree & Git Discipline
+
+- When acting as an engineering worker in a worktree: edit only files listed in `.agents/tasks/<ID>.md`, log steps in `.agents/log/<ID>.md`, prefix commits with `<ID>:`, never touch `BRANCHES.md`, `.agents/memory/published/`, or `.ua/`, and never merge/push.
 - When acting as manager (single-lane): do not edit worker code directly; check `agm inbox --json`, escalate worker models after 2 failures, verify `git status` / `git diff --stat`, update `BRANCHES.md` via `agm branch set` (when used), and hand off branch + final SHA to `copilot-git` via `agm send copilot-git --type ASSIGN --task <ID> ...`.
 - Like Claude, interactive Codex sessions are **never auto-killed by `agm`**—only the user (TTY + `y`) can stop them.
