@@ -116,10 +116,6 @@ def evaluate(
     metric_names = _check_metrics(metrics)
     _check_step(step, agg)
 
-    sim_min = min(s.index.min() for s in sim_sites.values())
-    sim_max = max(s.index.max() for s in sim_sites.values())
-    warmup = None if warmup_end is None else pd.Timestamp(warmup_end)
-
     print_step = _normalise_freq(freq) if freq is not None else _infer_freq(sim_sites)
 
     obs_sites = _prepare_observations(obs_sites, print_step, step)
@@ -129,7 +125,15 @@ def evaluate(
             for key, series in sim_sites.items()
         }
 
-    period_bounds = _resolve_periods(periods, obs_sites, sim_min, sim_max, warmup)
+    # Bounds come from the simulation as it will actually be scored: after
+    # aggregation, and only for the sites that have observations.
+    sim_min = min(s.index.min() for s in sim_sites.values())
+    sim_max = max(s.index.max() for s in sim_sites.values())
+    warmup = None if warmup_end is None else pd.Timestamp(warmup_end)
+
+    period_bounds = _resolve_periods(
+        periods, obs_sites, sim_sites, sim_min, sim_max, warmup
+    )
 
     analysis = SWATAnalysis(None)
     row_keys: List[Tuple[Optional[str], Optional[int], str]] = []
@@ -183,8 +187,6 @@ def _normalise_sites(sim, observed) -> Tuple[Dict[SiteKey, pd.Series],
 
     if not obs_sites:
         raise ValueError("observed contains no series to evaluate.")
-    for key, series in list(sim_sites.items()):
-        _check_time_series(series, "sim", key)
     for key, series in list(obs_sites.items()):
         _check_time_series(series, "observed", key)
     for key in obs_sites:
@@ -193,6 +195,11 @@ def _normalise_sites(sim, observed) -> Tuple[Dict[SiteKey, pd.Series],
                 f"observed site {key!r} has no simulated series; add it to sim "
                 f"or drop it from observed."
             )
+    # Simulated sites without observations are ignored: they do not affect the
+    # print step, the simulation bounds or the periods.
+    sim_sites = {key: sim_sites[key] for key in obs_sites}
+    for key, series in list(sim_sites.items()):
+        _check_time_series(series, "sim", key)
     return sim_sites, obs_sites
 
 
@@ -219,6 +226,8 @@ def _check_time_series(series, label: str, key: SiteKey) -> None:
         )
     if not isinstance(series.index, pd.DatetimeIndex):
         raise ValueError(f"{label}[{key!r}] must have a DatetimeIndex, got {type(series.index).__name__}.")
+    if len(series) == 0:
+        raise ValueError(f"{label}[{key!r}] is empty; nothing to evaluate.")
     if series.index.has_duplicates:
         raise ValueError(f"{label}[{key!r}] has duplicate dates.")
 
@@ -229,6 +238,8 @@ def _sorted_keys(sites: Mapping[SiteKey, pd.Series]) -> List[SiteKey]:
 
 def _check_metrics(metrics) -> Tuple[str, ...]:
     names = (metrics,) if isinstance(metrics, str) else tuple(metrics)
+    # Duplicate names would append twice per row; collapse them, keeping order.
+    names = tuple(dict.fromkeys(names))
     if not names:
         raise ValueError("metrics must contain at least one registry metric.")
     for name in names:
@@ -247,6 +258,11 @@ def _check_step(step, agg) -> None:
     if agg is not None:
         if step != "M":
             raise ValueError("agg is only used with step='M'.")
+        if not isinstance(agg, Mapping):
+            raise ValueError(
+                f"agg must be a mapping {{variable: 'mean' | 'sum'}}, got "
+                f"{type(agg).__name__}."
+            )
         for variable, how in agg.items():
             if how not in ("mean", "sum"):
                 raise ValueError(
@@ -306,39 +322,54 @@ def _aggregation_method(variable: Optional[str], agg) -> str:
 
 def _aggregate_to_months(series: pd.Series, how: str) -> pd.Series:
     with np.errstate(all="ignore"):
-        return series.resample("MS").agg(how)
+        if how == "sum":
+            # min_count=1 keeps an empty or all-NaN month NaN instead of 0.0.
+            return series.resample("MS").sum(min_count=1)
+        return series.resample("MS").mean()
 
 
 # ── periods ──────────────────────────────────────────────────────────────────
 
 def _resolve_periods(periods, obs_sites: Mapping[SiteKey, pd.Series],
+                     sim_sites: Mapping[SiteKey, pd.Series],
                      sim_min: pd.Timestamp, sim_max: pd.Timestamp,
                      warmup: Optional[pd.Timestamp]) -> Dict[str, Tuple[pd.Timestamp, pd.Timestamp]]:
     if periods is None:
-        start = sim_min if warmup is None or sim_min >= warmup else warmup
-        last_common = [
-            max(series.index.min(), min(series.index.max(), sim_max))
-            for series in obs_sites.values()
-            if len(series)
-        ]
-        end = max(last_common) if last_common else sim_max
-        resolved = {"all": (start, end)}
-    else:
-        if not isinstance(periods, Mapping) or not periods:
-            raise ValueError("periods must be a non-empty dict {name: (start, end)}.")
-        resolved = {}
-        for name, bounds in periods.items():
-            try:
-                start_raw, end_raw = bounds
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"Period {name!r} must be a (start, end) pair, got {bounds!r}."
-                ) from None
-            resolved[name] = (pd.Timestamp(start_raw), pd.Timestamp(end_raw))
+        start = sim_min if warmup is None or warmup <= sim_min else warmup
+        common = _common_dates(obs_sites, sim_sites, start, sim_max)
+        if len(common) == 0:
+            # Non-overlapping records or a warm-up past the record: no pairs to
+            # score, but not an error (metrics NaN, n = 0).
+            return {"all": (start, start)}
+        return {"all": (common.min(), common.max())}
+
+    if not isinstance(periods, Mapping) or not periods:
+        raise ValueError("periods must be a non-empty dict {name: (start, end)}.")
+    resolved = {}
+    for name, bounds in periods.items():
+        try:
+            start_raw, end_raw = bounds
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Period {name!r} must be a (start, end) pair, got {bounds!r}."
+            ) from None
+        resolved[name] = (pd.Timestamp(start_raw), pd.Timestamp(end_raw))
 
     for name, (start, end) in resolved.items():
         _validate_period(name, start, end, sim_min, sim_max, warmup)
     return resolved
+
+
+def _common_dates(obs_sites: Mapping[SiteKey, pd.Series],
+                  sim_sites: Mapping[SiteKey, pd.Series],
+                  start: pd.Timestamp, end: pd.Timestamp) -> pd.DatetimeIndex:
+    """Dates each site actually scores, unioned across sites, within [start, end]."""
+    common: Optional[pd.DatetimeIndex] = None
+    for key, obs in obs_sites.items():
+        site = obs.index.intersection(sim_sites[key].index)
+        site = site[(site >= start) & (site <= end)]
+        common = site if common is None else common.union(site)
+    return pd.DatetimeIndex([]) if common is None else common
 
 
 def _validate_period(name: str, start: pd.Timestamp, end: pd.Timestamp,

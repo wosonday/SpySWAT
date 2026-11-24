@@ -48,3 +48,37 @@ Append-only. Correct a mistake by adding a new entry below it.
     site's last common date. A site with a shorter observation record simply gets fewer
     pairs (`n`), never an exception.
   - `agg` without `step="M"` raises instead of being silently ignored.
+
+## 2026-11-25 · deepseek-v4.1-flash (worker-mid) · rework round 1
+
+Fix all five findings of `.agents/reviews/API-1-1.md`, test-first (8 new regression
+tests added before any code change).
+
+- RED: `python -m pytest tests/test_evaluate.py -q` → **8 failed, 26 passed**; every
+  failure matched its finding (mid-month `step="M"` start dropped the first month;
+  unobserved daily sim site forced `print_step="D"` and raised on monthly observations;
+  no-overlap and warm-up-past-record defaults raised `after the simulation end` /
+  `reversed`; duplicate `metrics` → DataFrame length mismatch; all-NaN January summed to
+  `0.0` (n=2 instead of 1); non-mapping `agg` → `AttributeError`; empty sim → no raise).
+- Major 1 (bounds/freq from unobserved, pre-aggregation sim): `_normalise_sites` now
+  drops unobserved sim keys before validating/inferring, so `_infer_freq` and the
+  `sim_min`/`sim_max` bounds only see scored sites; `evaluate()` aggregates `step="M"`
+  before computing the bounds.
+- Major 2 (`periods=None` crash): default period = `max(sim_min, warmup_end)` to
+  `sim_max`; `_resolve_periods` now receives `sim_sites`, finds the scored dates in that
+  window (`_common_dates`, union across sites) and returns `(start, start)` when empty so
+  the result is NaN metrics with `n=0` instead of `ValueError`. Default periods are not
+  re-validated; explicit periods keep every guard and message.
+- Minor 3: `_check_metrics` collapses duplicates in order (`dict.fromkeys`).
+- Minor 4: `_aggregate_to_months` uses `sum(min_count=1)` (mean stays `.mean()`), so an
+  empty/all-NaN month stays NaN.
+- Minor 5: `_check_step` rejects a non-`Mapping` `agg` with a `ValueError`; `_check_time_series`
+  rejects an empty series.
+- Files changed: `spyswat/swat_calib/analysis/evaluate.py`, `tests/test_evaluate.py`,
+  `.agents/log/API-1.md`.
+- Checks:
+  - `python -m pytest tests/test_evaluate.py -q` → **34 passed** in 2.74 s;
+  - `python -m pytest tests/ -q` → **498 passed / 11 skipped / 0 failed**, 5 warnings,
+    229.12 s (baseline 490 after the first round + 8 regressions);
+  - `git diff --check` → exit 0 (only Git LF→CRLF warnings).
+- Open questions: none; the log entries above still describe the accepted choices.

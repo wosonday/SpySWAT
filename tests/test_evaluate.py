@@ -254,6 +254,103 @@ def test_step_m_rejects_unknown_aggregation():
         evaluate(sim, obs, step="M", agg={None: "median"})
 
 
+# ── rework regressions (review round 1) ──────────────────────────────────────
+
+def test_step_m_aggregates_before_deriving_the_simulation_bounds():
+    # The daily simulation starts mid-January: after aggregation it covers
+    # 2000-01-01, so the first month must be scored and a January period is valid.
+    idx = list(pd.date_range("2000-01-15", periods=4, freq="D")) + \
+          list(pd.date_range("2000-02-01", periods=4, freq="D"))
+    sim = pd.Series([2.0, 4.0, 6.0, 8.0, 6.0, 8.0, 10.0, 12.0], index=idx)
+    obs = monthly("2000-01-01", [5, 9])
+
+    res = evaluate(sim, obs, metrics=("nse",), step="M")
+    assert res.table.loc[(None, None, "all"), "n"] == 2
+    assert res.table.loc[(None, None, "all"), "nse"] == pytest.approx(1.0)
+
+    jan = evaluate(sim, obs, metrics=("pbias",), step="M",
+                   periods={"jan": ("2000-01-01", "2000-01-31")})
+    assert jan.table.loc[(None, None, "jan"), "n"] == 1
+    assert jan.table.loc[(None, None, "jan"), "pbias"] == pytest.approx(0.0)
+
+
+def test_unobserved_simulation_site_is_ignored_for_frequency_and_bounds():
+    # The unobserved daily site would make the inferred print step daily and
+    # would drag the simulation start back to 1999; both must be ignored.
+    sim = {
+        ("FLOW_OUTcms", 1): monthly("2000-01-01", [1, 2, 3]),
+        ("SED_OUTtons", 2): series("1999-06-01", [9] * 10),
+    }
+    obs = {("FLOW_OUTcms", 1): monthly("2000-01-01", [1, 2, 3])}
+
+    res = evaluate(sim, obs, metrics=("nse",))
+
+    assert len(res.table) == 1
+    row = res.table.loc[("FLOW_OUTcms", 1, "all")]
+    assert row["n"] == 3
+    assert row["nse"] == pytest.approx(1.0)
+
+
+def test_default_period_without_overlap_gives_nan_and_zero_pairs():
+    sim = series("2000-01-01", [1, 2, 3, 4])
+    obs = series("2000-06-01", [1, 2, 3, 4])
+
+    res = evaluate(sim, obs, metrics=("nse", "kge"))
+
+    row = res.table.loc[(None, None, "all")]
+    assert row["n"] == 0
+    assert np.isnan(row["nse"]) and np.isnan(row["kge"])
+
+
+def test_default_period_with_warmup_beyond_the_record_gives_nan_and_zero_pairs():
+    sim = series("2000-01-01", [1, 2, 3, 4])
+    obs = series("2000-01-01", [1, 2, 3, 4])
+
+    res = evaluate(sim, obs, metrics=("nse",), warmup_end="2000-01-20")
+
+    row = res.table.loc[(None, None, "all")]
+    assert row["n"] == 0
+    assert np.isnan(row["nse"])
+
+
+def test_duplicate_metric_names_are_collapsed(pair):
+    sim, obs = pair
+
+    res = evaluate(sim, obs, metrics=("nse", "nse", "kge"))
+
+    assert list(res.table.columns) == ["nse", "kge", "n"]
+    assert res.table.loc[(None, None, "all"), "nse"] == pytest.approx(0.8)
+
+
+def test_step_m_sum_keeps_an_all_nan_month_nan():
+    idx = list(pd.date_range("2000-01-01", periods=3, freq="D")) + \
+          list(pd.date_range("2000-02-01", periods=3, freq="D"))
+    sim = pd.Series([np.nan] * 3 + [2.0, 4.0, 6.0], index=idx)
+    obs = monthly("2000-01-01", [6, 12])
+
+    res = evaluate(sim, obs, metrics=("pbias",), step="M", agg={None: "sum"})
+
+    # January summed to 0.0 before the fix; it must stay NaN and drop out.
+    assert res.table.loc[(None, None, "all"), "n"] == 1
+    assert res.table.loc[(None, None, "all"), "pbias"] == pytest.approx(0.0)
+
+
+def test_agg_must_be_a_mapping():
+    sim = _daily_two_months()
+    obs = monthly("2000-01-01", [5, 25])
+
+    with pytest.raises(ValueError, match="agg"):
+        evaluate(sim, obs, step="M", agg=["mean", "sum"])
+
+
+def test_empty_simulation_series_raises():
+    empty = pd.Series([], index=pd.DatetimeIndex([]), dtype=float)
+    obs = series("2000-01-01", [1, 2, 3])
+
+    with pytest.raises(ValueError, match="empty"):
+        evaluate(empty, obs)
+
+
 # ── export ───────────────────────────────────────────────────────────────────
 
 def test_to_csv_writes_the_table(pair, tmp_path):
