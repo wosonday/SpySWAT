@@ -239,8 +239,7 @@ def test_run_batch_multisite_fake_store_receives_runs_in_order(proj):
     assert [r["status"] for r in store.runs] == ["ok", "ok", "ok"]
     assert all(r["is_initial"] for r in store.runs)
     assert [r["params"] for r in store.runs] == [
-        {"CN2.mgt": [(50.0, "v")]}, {"CN2.mgt": [(60.0, "v")]},
-        {"CN2.mgt": [(70.0, "v")]},
+        {"CN2.mgt": 50.0}, {"CN2.mgt": 60.0}, {"CN2.mgt": 70.0},
     ]
     assert [r["score"] for r in store.runs] == pytest.approx(df["score"].tolist())
     # the store is the log: no flat RunLog files were written

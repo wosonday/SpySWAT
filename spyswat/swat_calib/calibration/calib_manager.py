@@ -50,6 +50,23 @@ def _resolve_deprecated_reach(reach_id, output_variable):
     return reach_id, output_variable
 
 
+def _raw_param_values(params: dict) -> dict:
+    """Formatted ``{name: [(value, method[, subs])]}`` -> raw ``{name: value}``.
+
+    The session store writes one float column per parameter, so it must receive the
+    raw value (the first group's value), never the formatted tuples. A raw
+    ``{name: value}`` dict passes through unchanged.
+    """
+    out = {}
+    for name, spec in (params or {}).items():
+        if isinstance(spec, (list, tuple)):
+            first = spec[0] if spec else None
+            out[name] = first[0] if isinstance(first, (list, tuple)) else first
+        else:
+            out[name] = spec
+    return out
+
+
 def _extract_outputs(worker_dir: str, outputs: dict) -> dict:
     """Module-level picklable extract: read ``{(variable, reach): Series}`` from output.rch.
 
@@ -426,8 +443,9 @@ class CalibrationManager:
         """Call ``store.add_run`` without ever breaking the calibration (rule 10)."""
         try:
             store.add_run(
-                run_id, params=params, status=status, error=error, score=score,
-                is_initial=is_initial, series=series, site_metrics=site_metrics,
+                run_id, params=_raw_param_values(params), status=status, error=error,
+                score=score, is_initial=is_initial, series=series,
+                site_metrics=site_metrics,
             )
         except Exception as exc:  # noqa: BLE001 - the store must never break a run
             logger.warning(f"store.add_run failed for run {run_id}: {exc}")
