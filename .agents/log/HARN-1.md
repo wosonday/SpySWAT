@@ -8,3 +8,10 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Checks: `git status --porcelain` before commit → only these six untracked files (no product code touched)
 - Decision: content committed verbatim; no edits to coordination files (one writer per file).
 - Previous commit: 301cecb
+
+## 2026-11-24 · worker-fast · step 2/4
+- Done: excluded the harness-only lint tests from the sdist (change 1); `__pycache__` still excluded, includes untouched.
+- Files changed: `pyproject.toml` (sdist `exclude` list only), `.agents/log/HARN-1.md`
+- Checks: not run yet in this step; full suite run before the final entry (task forbids `uv build`/`python -m build` here — the Architect verifies the sdist).
+- Decision: keep `exclude` a multi-line list so every pattern is on its own line.
+- Previous commit: c0498a8
