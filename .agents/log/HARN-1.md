@@ -46,3 +46,11 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Decision: task-file items 1 (`pyproject.toml` sdist exclude) untouched and still in place from step 2; no `uv build`/`python -m build` here (not permitted) — the Architect verifies the sdist.
 - Blocked / question: none. Nothing merged or pushed.
 - Previous commit: a80f5ea
+
+## 2026-11-24 · worker-fast · rework 3/3 — done
+- Done: rework complete exactly as instructed: decision file committed unchanged (`a80f5ea`), then the corrected permissions + docs bullet + `AGENTS.md` paragraph in `788b00d`. No source code, tests, `pyproject.toml` or coordination files touched in the rework.
+- Files changed (whole branch): unchanged from step 4, i.e. the six coordination files, `pyproject.toml`, `AGENTS.md`, `.opencode/agents/{explore,reviewer,auditor}.md`, `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md`, `.agents/log/HARN-1.md`.
+- Checks: `python -m pytest tests/ -q` → 451 passed / 11 skipped / 0 failed (5 warnings, 24 subtests) in 222.45s; `git status --porcelain` → clean after the log commit.
+- Decision: `"*": deny` with `read`/`glob`/`grep` allows kept the auditors' allowed `bash` commands and `execute: deny`; workers are HARN-2 scope.
+- Blocked / question: none.
+- Previous commit: 788b00d
