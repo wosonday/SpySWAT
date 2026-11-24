@@ -110,4 +110,3 @@ tests added before any code change).
     28 subtests passed, 235.03 s (baseline 498 + 6 new regressions);
   - `git diff --check` → exit 0 (only Git LF→CRLF warnings).
 - Open questions: none.
-
