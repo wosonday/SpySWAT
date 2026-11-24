@@ -152,6 +152,85 @@ def regression_for_store(store, param_ranges) -> pd.DataFrame:
     return regression_sensitivity(runs, param_ranges, score_col="score")
 
 
+def constant_parameters(store, param_ranges, param_names) -> list:
+    """Parameter names constant or collinear across the ``is_initial`` runs.
+
+    These are the cases ``regression_sensitivity`` either raises
+    ``ValueError`` for (constant) or cannot identify uniquely (collinear);
+    ``calibration`` filters them out and reinserts them with ``coef=0,
+    t=0, p=NaN`` (decision 11). Any error here degrades to an empty list —
+    the regression then decides, and the facade folds its error into a
+    status.
+    """
+    from spyswat.swat_calib.calibration.param_spec import parse_spec
+
+    try:
+        bounds, _, _ = parse_spec(param_ranges)
+        runs = store.runs()
+        if "is_initial" in runs.columns:
+            runs = runs[runs["is_initial"].astype(bool)]
+        if runs.empty:
+            return []
+        present = [n for n in param_names if n in bounds and n in runs.columns]
+        if not present:
+            return []
+        score_cols = ["score"] if "score" in runs.columns else []
+        data = runs[present + score_cols].apply(pd.to_numeric, errors="coerce").dropna()
+        if data.empty:
+            return []
+
+        n = len(data)
+        dropped = []
+        kept_cols = []
+        for name in present:
+            lo, hi = bounds[name]
+            if hi == lo:
+                dropped.append(name)
+                continue
+            col = (data[name].to_numpy(dtype=float) - lo) / (hi - lo)
+            if np.all(col == col[0]):
+                dropped.append(name)
+                continue
+            # Only test collinearity when the intercept + kept columns do not
+            # already span R^n (so n <= k + 1 still surfaces as insufficient runs).
+            if n > len(kept_cols) + 1:
+                basis = np.column_stack([np.ones(n), *kept_cols])
+                coef, *_ = np.linalg.lstsq(basis, col, rcond=None)
+                resid = col - basis @ coef
+                tol = 1e-10 * max(float(np.linalg.norm(col)), 1.0)
+                if float(np.linalg.norm(resid)) <= tol:
+                    dropped.append(name)
+                    continue
+            kept_cols.append(col)
+        return dropped
+    except Exception:  # noqa: BLE001 - detection must never break calibration
+        return []
+
+
+def reinsert_constant(sens: pd.DataFrame, constant_params: list) -> pd.DataFrame:
+    """Reinsert constant/collinear parameters with ``coef=0, t=0, p=NaN``.
+
+    They rank last (least sensitive); the returned frame is re-sorted by rank,
+    preserving ``sens.attrs`` (``n_used``, ``r2``, ...).
+    """
+    if not constant_params:
+        return sens
+    attrs = dict(sens.attrs)
+    base = len(sens)
+    rows = [{
+        "parameter": name,
+        "coef": 0.0,
+        "t_stat": 0.0,
+        "p_value": np.nan,
+        "rank": base + i + 1,
+    } for i, name in enumerate(constant_params)]
+    extra = pd.DataFrame(rows)
+    out = extra if sens.empty else pd.concat([sens, extra], ignore_index=True)
+    out = out.sort_values("rank", ignore_index=True)
+    out.attrs.update(attrs)
+    return out
+
+
 class CalibrationResult:
     """The result of a ``SWATProject.calibration(...)`` call.
 
@@ -306,11 +385,15 @@ class CalibrationResult:
                 for i, rid in enumerate(runs["run_id"].tolist()):
                     if rid in by_id:
                         values[i] = by_id[rid]
-        # Runs carry the calibration-period per-site columns as a fallback.
-        fallback = f"{name}@{site[0]}@{site[1]}"
-        if fallback in runs.columns:
-            vals = runs[fallback].to_numpy(dtype=float)
-            values[~np.isnan(vals)] = vals[~np.isnan(vals)]
+        # Runs carry the calibration-period per-site columns as a fallback (calib
+        # only: never overwrite the store's valid-period metrics). Fill only the
+        # still-missing (NaN) values.
+        if period == "calib":
+            fallback = f"{name}@{site[0]}@{site[1]}"
+            if fallback in runs.columns:
+                vals = runs[fallback].to_numpy(dtype=float)
+                missing = np.isnan(values) & ~np.isnan(vals)
+                values[missing] = vals[missing]
         return values
 
     # ── load ────────────────────────────────────────────────────────────────

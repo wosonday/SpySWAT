@@ -6,6 +6,7 @@ path replaces ``WorkingFolderManager.run_parallel`` and the sequential path
 replaces ``swat_exe.run`` + output reading. The session layout, best-run metrics,
 regression sensitivity and TxtInOut restore are all exercised for real.
 """
+import json
 import pickle
 import warnings
 from pathlib import Path
@@ -80,7 +81,8 @@ def proj(tmp_path, monkeypatch):
                 results.append(WorkerResult(False, "RuntimeError: boom", 0.0,
                                             str(wdir), None))
                 continue
-            (wdir / "output.rch").write_text("\n".join([repr(cn2)] * 10) + "\n")
+            n_vals = len(p.get_date_range("D"))
+            (wdir / "output.rch").write_text("\n".join([repr(cn2)] * n_vals) + "\n")
             extractor = pickle.loads(pickle.dumps(extract))
             payload = extractor(str(wdir))
             results.append(WorkerResult(True, None, 0.0, str(wdir), payload))
@@ -90,8 +92,9 @@ def proj(tmp_path, monkeypatch):
 
     def fake_swat_run(directory):
         cn2 = read_cn2(directory)
+        n_vals = len(p.get_date_range("D"))
         (Path(directory) / "output.rch").write_text(
-            "\n".join([repr(cn2)] * 10) + "\n")
+            "\n".join([repr(cn2)] * n_vals) + "\n")
 
     p.swat_exe.run = fake_swat_run
     p._output_manager = FakeOutputManager(base)
@@ -138,6 +141,7 @@ def test_calibration_glue_end_to_end(proj):
 
 @pytest.mark.parametrize("algorithm,kwargs", [
     ("pso", dict(n_particles=4, max_iterations=1)),
+    ("de", dict(pop_size=4, max_generations=1)),
     ("dds", dict(n_iterations=5)),
 ])
 def test_calibration_other_algorithms(proj, algorithm, kwargs):
@@ -150,6 +154,109 @@ def test_calibration_other_algorithms(proj, algorithm, kwargs):
     # sensitivity is a DataFrame or a status (small populations may be insufficient)
     assert res.sensitivity is not None or res.sensitivity_status
     assert snapshot(proj.txinout.directory) == before
+
+
+def test_calibration_param_methods_and_subbasins(proj):
+    wf = proj.WorkingFolder
+    orig_run_parallel = wf.run_parallel
+    seen_param_sets = []
+
+    def spy_run_parallel(swat_exe, param_sets=None, **kwargs):
+        seen_param_sets.extend(param_sets)
+        return orig_run_parallel(swat_exe, param_sets=param_sets, **kwargs)
+
+    wf.run_parallel = spy_run_parallel
+    res = proj.calibration(
+        PARAM_RANGES, _obs(), CALIB,
+        algorithm="glue", n_samples=4, seed=1, sensitivity=False,
+        param_methods={"CN2.mgt": "r"},
+        param_subbasins={"CN2.mgt": [1]},
+    )
+
+    assert len(seen_param_sets) == 4
+    assert all(ps["CN2.mgt"][0][1:] == ("r", [1]) for ps in seen_param_sets)
+    assert res.methods == {"CN2.mgt": "r"}
+    assert res.subbasins == {"CN2.mgt": [1]}
+    assert res.best_params["CN2.mgt"][0][1:] == ("r", [1])
+    sig = json.loads((res.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]
+    assert sig["methods"] == {"CN2.mgt": "r"}
+    assert sig["subbasins"] == {"CN2.mgt": [1]}
+
+
+def test_calibration_monthly_step_and_bare_series_observed(proj):
+    daily_dates = pd.date_range("2000-01-01", periods=91, freq="D")   # Jan-Mar 2000
+    proj.get_date_range = lambda freq="D": daily_dates
+    obs_monthly = pd.Series(
+        [40.0, 50.0, 60.0],
+        index=pd.date_range("2000-01-01", periods=3, freq="MS"),
+    )
+    res = proj.calibration(
+        PARAM_RANGES, obs_monthly, ("2000-01-01", "2000-03-31"),
+        algorithm="glue", n_samples=4, step="M", seed=1, sensitivity=False,
+    )
+    assert np.isfinite(res.best_score)
+    assert res.metrics.loc[("FLOW_OUTcms", 1, "calib"), "n"] == 3
+
+
+def test_calibration_timestamp_periods_and_on_failure_signature(proj):
+    res = proj.calibration(
+        PARAM_RANGES, _obs(),
+        (pd.Timestamp("2000-01-01"), pd.Timestamp("2000-01-10")),
+        (pd.Timestamp("2000-01-06"), pd.Timestamp("2000-01-10")),
+        algorithm="dds", n_iterations=3, seed=1, sensitivity=False,
+        on_failure="penalize",
+    )
+    sig = json.loads((res.session_dir / "session.json").read_text(encoding="utf-8"))["signature"]
+    assert sig["calib_period"] == ["2000-01-01T00:00:00", "2000-01-10T00:00:00"]
+    assert sig["valid_period"] == ["2000-01-06T00:00:00", "2000-01-10T00:00:00"]
+    assert sig["on_failure"] == "penalize"
+
+
+def test_calibration_constant_and_collinear_parameter_sensitivity(proj, tmp_path):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = proj.calibration(
+            {"CN2.mgt": (35.0, 98.0), "ALPHA_BF.gw": (0.5, 0.5)},
+            _obs(), CALIB, algorithm="glue", n_samples=6, seed=1,
+        )
+    assert res.sensitivity_status == "ok"
+    row = res.sensitivity[res.sensitivity["parameter"] == "ALPHA_BF.gw"].iloc[0]
+    assert row["coef"] == 0.0
+    assert row["t_stat"] == 0.0
+    assert np.isnan(row["p_value"])
+    assert res.sensitivity.attrs.get("n_used") == 6
+
+    from spyswat.swat_calib.calibration.session_store import SessionStore
+    store = SessionStore(
+        tmp_path / "collinear_session",
+        signature={}, param_names=["K1.mgt", "K2.mgt"], sites=[],
+    )
+    try:
+        noise = [0.01, -0.02, 0.01, -0.01, 0.02, -0.01, 0.0, 0.0]
+        for i, eps in enumerate(noise, start=1):
+            k1 = i * 0.1
+            store.add_run(
+                i, params={"K1.mgt": k1, "K2.mgt": 2.0 * k1 + 1.0},
+                status="ok", error=None, score=3.0 * k1 + eps,
+                is_initial=True, series={}, site_metrics={},
+            )
+        store.flush()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sens, status = SWATProject._regression_sensitivity(
+                store,
+                {"K1.mgt": (0.0, 1.0), "K2.mgt": (1.0, 3.0)},
+                ["K1.mgt", "K2.mgt"],
+                True,
+            )
+    finally:
+        store.close()
+    assert status == "ok"
+    k2_row = sens[sens["parameter"] == "K2.mgt"].iloc[0]
+    assert k2_row["coef"] == 0.0
+    assert k2_row["t_stat"] == 0.0
+    assert np.isnan(k2_row["p_value"])
+    assert sens.attrs.get("n_used") == 8
 
 
 def test_calibration_load_roundtrip(proj):
@@ -258,3 +365,15 @@ def test_apply_param_set_and_result(proj, caplog):
 
     proj.apply(ParamSet("p1", {"CN2.mgt": [(60.0, "v")]}))
     assert read_cn2(str(proj.txinout.directory)) == 60.0
+
+
+def test_apply_formatted_dict_with_methods_and_subbasins(proj):
+    updates = proj.apply(
+        {"CN2.mgt": [(0.1, "v")]},
+        methods={"CN2.mgt": "r"},
+        subbasins={"CN2.mgt": [1]},
+    )
+    assert updates == {"CN2.mgt": [(0.1, "r", [1])]}
+    assert read_cn2(str(proj.txinout.directory)) == pytest.approx(35.0 * 1.1)
+    sub2_cn2 = float((proj.txinout.directory / "000020001.mgt").read_text().splitlines()[10][:16])
+    assert sub2_cn2 == pytest.approx(35.0)

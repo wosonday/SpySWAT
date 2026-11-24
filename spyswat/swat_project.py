@@ -224,6 +224,28 @@ class SWATProject:
             return None
         return pd.Timestamp(int(year_start), 1, 1)
 
+    @staticmethod
+    def _serialize_period(period):
+        """Return ``period`` with Timestamp/date bounds as ISO strings (JSON-safe).
+
+        ``calib_period``/``valid_period`` may be ``(start, end)`` pairs of strings,
+        ``pd.Timestamp``, ``datetime`` or ``date`` (the vocabulary). ``session.json``
+        is written with ``json.dumps``, so any Timestamp/date bound must be
+        stringified first.
+        """
+        if period is None:
+            return None
+        from datetime import date, datetime
+        import numpy as np
+
+        def _iso(v):
+            if isinstance(v, (datetime, date)):   # includes pd.Timestamp
+                return v.isoformat()
+            if isinstance(v, np.datetime64):
+                return str(v)
+            return v
+        return [_iso(period[0]), _iso(period[1])]
+
     def calibration(self, param_ranges, observed, calib_period, valid_period=None, *,
                     algorithm="glue", metric="nse",
                     metrics=("nse", "kge", "pbias", "r2"), weights=None, outputs=None,
@@ -240,9 +262,6 @@ class SWATProject:
         ``<working_dir>/calibration_results``) and the best run's series is
         evaluated back into ``res.metrics``.
         """
-        import warnings
-        from datetime import datetime
-
         from spyswat.swat_calib.analysis.algorithms import (
             GLUE, ParallelDE, PSOCalibration, DDSCalibration,
         )
@@ -302,15 +321,15 @@ class SWATProject:
             "param_ranges": param_ranges,
             "methods": methods,
             "subbasins": subbasins,
-            "calib_period": calib_period,
-            "valid_period": valid_period,
+            "calib_period": self._serialize_period(calib_period),
+            "valid_period": self._serialize_period(valid_period),
             "weights": {f"{v}@{r}": w for (v, r), w in weights_norm.items()},
             "step": step,
             "agg": agg,
             "n_parallel": n_parallel,
             "outputs": {v: list(rs) for v, rs in outputs_dict.items()},
             "observed_sites": [[v, r] for (v, r) in observed_sites],
-            "on_failure": "raise",
+            "on_failure": algorithm_options.get("on_failure", "raise"),
         }
         store = SessionStore(session_dir, signature=signature,
                              param_names=param_names, sites=sites)
@@ -325,7 +344,9 @@ class SWATProject:
                 param_ranges, observed,
                 metric=metric, metrics=metrics, weights=weights, outputs=outputs,
                 calib_period=calib_period, valid_period=valid_period,
-                step=step, agg=agg, store=wrapped, seed=seed, **algorithm_options,
+                step=step, agg=agg, store=wrapped, seed=seed,
+                param_methods=param_methods, param_subbasins=param_subbasins,
+                **algorithm_options,
             )
             store.flush()
             runs = store.runs()
@@ -360,14 +381,27 @@ class SWATProject:
 
     @staticmethod
     def _regression_sensitivity(store, param_ranges, param_names, sensitivity):
-        """Regression sensitivity on ``is_initial`` rows; errors become a status."""
+        """Regression sensitivity on ``is_initial`` rows; errors become a status.
+
+        Constant/collinear parameters are filtered out before the regression and
+        reinserted with ``coef=0.0, t_stat=0.0, p_value=NaN`` (decision 11) instead
+        of raising.
+        """
         import warnings
-        from spyswat.swat_calib.calibration.result import regression_for_store
+        from spyswat.swat_calib.calibration.result import (
+            regression_for_store, constant_parameters, reinsert_constant,
+        )
 
         if not sensitivity:
             return None, ""
+
+        constant = constant_parameters(store, param_ranges, param_names)
+        usable = [n for n in param_names if n not in constant]
         try:
-            sens = regression_for_store(store, param_ranges)
+            sens = regression_for_store(
+                store, {name: param_ranges[name] for name in usable})
+            if constant:
+                sens = reinsert_constant(sens, constant)
             n_used = sens.attrs.get("n_used", len(sens))
             r2 = sens.attrs.get("r2")
             k = len(param_names)
@@ -490,7 +524,7 @@ class SWATProject:
         logged: the change is not restored automatically.
         """
         from spyswat.swat_calib.calibration.param_spec import format_params, is_raw
-        from spyswat.swat_calib.calibration.result import CalibrationResult
+        from spyswat.swat_calib.calibration.result import CalibrationResult, raw_params
         from spyswat.swat_calib.scenarios.model import ParamSet
 
         if isinstance(x, ParamSet):
@@ -500,15 +534,17 @@ class SWATProject:
         elif isinstance(x, dict):
             if is_raw(x):
                 updates = format_params(x, methods, subbasins)
+            elif methods is not None or subbasins is not None:
+                # Reformatted with the explicit methods/subbasins (decision 4).
+                updates = format_params(raw_params(x), methods, subbasins)
             else:
-                if methods is None:
-                    non_v = _non_v_methods(x)
-                    if non_v:
-                        raise ValueError(
-                            "apply() got a dict with non-'v' methods "
-                            f"({sorted(non_v)}) but no methods=; pass methods= or a "
-                            "ParamSet / CalibrationResult."
-                        )
+                non_v = _non_v_methods(x)
+                if non_v:
+                    raise ValueError(
+                        "apply() got a dict with non-'v' methods "
+                        f"({sorted(non_v)}) but no methods=; pass methods= or a "
+                        "ParamSet / CalibrationResult."
+                    )
                 updates = x
         else:
             raise TypeError(

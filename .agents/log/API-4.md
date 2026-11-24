@@ -80,3 +80,38 @@
   `load` to also rebuild `metrics`, that needs the observed series, which are not stored in the
   session (only their hash) — deferred to API-5 (resume by replay) where `session.json` matching
   is implemented.
+
+## Rework round 1 (worker-strong, review `API-4-1.md`)
+
+### Changes per finding
+- **Major (`spyswat/swat_project.py` — `param_methods` / `param_subbasins`):** Verified
+  `param_methods=param_methods, param_subbasins=param_subbasins` is forwarded to `algo.run(...)`.
+  Added `test_calibration_param_methods_and_subbasins` in `tests/test_project_facade.py`
+  confirming worker updates passed to `run_parallel` carry method `"r"` and subbasins `[1]`,
+  and `res.best_params` / `res.methods` / `res.subbasins` / `session.json` record them.
+- **Minor 1 (`spyswat/swat_calib/calibration/result.py` — `_site_metric_values` fallback):**
+  Verified `if period == "calib":` guard and NaN-only fill (`np.isnan(values) & ~np.isnan(vals)`)
+  are in place so `valid`-period metrics are never overwritten.
+- **Minor 2 (`spyswat/swat_project.py` & `spyswat/swat_calib/calibration/result.py` —
+  constant/collinear sensitivity):** Extended `constant_parameters()` in `result.py` to filter
+  collinear columns (when `n > len(kept_cols) + 1`) in addition to constant columns, updated
+  `reinsert_constant()` to preserve `sens.attrs` (`n_used`, `r2`) and handle empty frames, and
+  added `test_calibration_constant_and_collinear_parameter_sensitivity` in
+  `tests/test_project_facade.py`.
+- **Minor 3 (`spyswat/swat_project.py` — `signature` serialization & `on_failure`):**
+  Verified `_serialize_period()` ISO-stringifies `calib_period`/`valid_period` (extended to
+  also handle `datetime.date`) and `"on_failure": algorithm_options.get("on_failure", "raise")`.
+  Added `test_calibration_timestamp_periods_and_on_failure_signature` in
+  `tests/test_project_facade.py`.
+- **Minor 4 (`spyswat/swat_project.py` — `apply()` formatted dict + `methods`/`subbasins`):**
+  Verified `apply()` reformats formatted dicts via `format_params(raw_params(x), methods, subbasins)`
+  when `methods` or `subbasins` is passed. Added
+  `test_apply_formatted_dict_with_methods_and_subbasins` in `tests/test_project_facade.py`.
+- **Minor 5 (`tests/test_project_facade.py` — coverage gaps):** Added `de` to
+  `test_calibration_other_algorithms` and added `test_calibration_param_methods_and_subbasins`
+  and `test_calibration_monthly_step_and_bare_series_observed` (covering `step="M"` and bare
+  `pd.Series` `observed`).
+
+### Checks
+- Tests were **not** run by me (no shell commands allowed in this rework step).
+- CEO: Go 5h quota ran out mid-rework (worker-strong stopped with uncommitted edits); agy gemini-4-hydrogen-high finished the edits (no shell). CEO ran `pytest tests/test_project_facade.py tests/test_calibration_result.py` → 33 passed.
