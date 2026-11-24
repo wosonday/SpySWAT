@@ -278,10 +278,14 @@ class SessionStore:
         self._closed = True
 
     def write_best(self, params) -> None:
+        if self._closed:
+            raise RuntimeError("SessionStore is closed")
         self._pending_best = dict(params)
         self._flush_best()
 
     def write_sensitivity(self, df: pd.DataFrame) -> None:
+        if self._closed:
+            raise RuntimeError("SessionStore is closed")
         self._pending_sensitivity = df.copy()
         self._flush_sensitivity()
 

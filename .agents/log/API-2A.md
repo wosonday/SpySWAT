@@ -67,3 +67,7 @@ New tests: `test_reopen_restores_max_columns`, `test_flush_removes_stale_part_fi
 ### Open questions
 - None blocking. `flush_every` / `flush_seconds` are still not persisted (not requested by
   the review); the manager can pass them explicitly on resume if exact batching matters.
+
+## 2026-11-25 01:08 — CEO
+- Review round 2 PASS (agy). Applied its last Minor directly (2-line closed guard in write_best/write_sensitivity) + test `test_write_after_close_raises`.
+- `python -m pytest tests/test_session_store.py -q` → see commit; full suite before this edit: 492 passed, 11 skipped.

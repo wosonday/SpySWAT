@@ -343,3 +343,15 @@ def test_close_is_idempotent_and_signature_property(tmp_path):
     add_simple_run(store, 1)
     store.close()
     store.close()                      # safe to call twice
+
+
+def test_write_after_close_raises(tmp_path):
+    from spyswat.swat_calib.calibration.session_store import SessionStore
+    store = SessionStore(tmp_path / "s", signature={"a": 1}, param_names=["CN2.mgt"],
+                         sites=[("FLOW_OUTcms", 1)])
+    store.close()
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError):
+        store.write_best({"CN2.mgt": 1.0})
+    with _pytest.raises(RuntimeError):
+        store.write_sensitivity(__import__("pandas").DataFrame())
