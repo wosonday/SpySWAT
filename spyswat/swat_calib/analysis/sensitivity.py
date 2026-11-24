@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple, Optional
 import logging
 
 from spyswat.swat_calib.analysis.algorithms.dds import (
-    _MISSING, _resolve_observed,
+    _MISSING, _reported, _resolve_observed,
 )
 
 
@@ -20,7 +20,7 @@ def _resolve_sens_observed(observed, observed_series, reach_id, output_variable,
     ``observed`` is present, ``single_site`` is ``None``.
     """
     observed, outputs = _resolve_observed(
-        observed, observed_series, reach_id, output_variable, outputs
+        observed, observed_series, reach_id, output_variable, outputs, stacklevel=4
     )
     if observed is _MISSING:
         observed = None
@@ -95,7 +95,7 @@ class SWATSensitivity:
                       agg=None, store=None) -> np.ndarray:
         """Run a batch and return the ``score`` column as a float array (NaN = failed run)."""
         res = self._manager.run_batch(
-            param_sets, observed, [metric] if metrics is None else list(metrics),
+            param_sets, observed, _reported(metric, metrics),
             metric=metric, outputs=outputs, weights=weights,
             calib_period=calib_period, valid_period=valid_period,
             step=step, agg=agg, store=store,

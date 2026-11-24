@@ -7,6 +7,7 @@ deprecated mapping (``observed_series`` / ``reach_id``+``output_variable``),
 without running a single model.
 """
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ from spyswat.swat_calib.analysis.algorithms.dds import DDSCalibration
 from spyswat.swat_calib.analysis.algorithms.glue import GLUE
 from spyswat.swat_calib.analysis.algorithms.parallel_de import ParallelDE
 from spyswat.swat_calib.analysis.algorithms.pso import PSOCalibration
+from spyswat.swat_calib.analysis.sensitivity import SWATSensitivity
 
 
 DATES = pd.date_range("2000-01-01", periods=30, freq="D")
@@ -314,11 +316,20 @@ def test_old_and_new_outputs_raise_typeerror(algo):
 
 def test_optimize_passes_new_vocabulary_through():
     calib = make_calib()
-    seen = {}
-    calib.manager.run_iteration = MagicMock(side_effect=lambda raw, *a, **kw: 40.0)
-    calib.optimize({"CN2.mgt": (35.0, 98.0)}, two_site_obs(), weights=WEIGHTS,
+    seen = []
+
+    def run_iteration(raw, observed, *a, **kw):
+        seen.append((raw, observed, kw))
+        return 40.0
+
+    calib.manager.run_iteration = run_iteration
+    obs = two_site_obs()
+    calib.optimize({"CN2.mgt": (35.0, 98.0)}, obs, weights=WEIGHTS,
                    metric="rmse", max_iter=2, method="minimize")
-    assert calib.manager.run_iteration.call_count >= 1
+    assert len(seen) >= 1
+    assert all(s[1] is obs for s in seen)                       # the observed dict
+    assert all(s[2]["weights"] == WEIGHTS for s in seen)
+    assert all(s[2]["metric"] == "rmse" for s in seen)
 
 
 def test_optimize_old_observed_series_warns():
@@ -358,3 +369,106 @@ def test_standalone_constructors_accept_new_names():
     manager.run_iteration = MagicMock(return_value=0.5)
     DDSCalibration(manager).run(PARAM_RANGES, observed=single, metric="nse",
                                 n_iterations=3, seed=0)
+
+
+# ── SWATSensitivity adopts the vocabulary (mocked run_batch, no SWAT) ────────
+
+METHOD_KWARGS = {
+    "one_at_a_time":  dict(n_steps=4),
+    "morris_method":  dict(n_trajectories=4),
+    "morris_salib":   dict(n_trajectories=4, num_resamples=20),
+    "sobol_method":   dict(N=8, num_resamples=20),
+}
+SALIB_METHODS = {"morris_salib", "sobol_method"}
+
+
+def make_sensitivity():
+    project = MagicMock()
+    project.WorkingFolder.n_parallel = 4
+    sens = SWATSensitivity(project)
+    sens._manager.setup_parallel = MagicMock()
+    sens._manager.record_run = MagicMock()
+    return sens
+
+
+def sens_batch(captures):
+    """Mock ``run_batch``: score = CN2 + 2*ALPHA_BF, plus per-site columns."""
+    def run_batch(param_sets, observed, metrics, *a, **kw):
+        captures.append(dict(observed=observed, metrics=metrics, **kw))
+        m = kw.get("metric", "nse")
+        scores = [ps["CN2.mgt"][0][0] + 2.0 * ps["ALPHA_BF.gw"][0][0]
+                  for ps in param_sets]
+        df = pd.DataFrame({"score": scores})
+        if isinstance(observed, dict):
+            for (var, reach) in sorted(observed):
+                df[f"{m}@{var}@{reach}"] = [s + 1.0 for s in scores]
+        return df
+    return run_batch
+
+
+@pytest.mark.parametrize("method", list(METHOD_KWARGS))
+@pytest.mark.parametrize("metrics,reported", [
+    (None, ["rmse"]),          # the metric alone
+    ("kge", ["rmse", "kge"]),  # a bare string is one name, never split into chars
+])
+def test_sensitivity_passes_new_vocabulary_through(method, metrics, reported):
+    if method in SALIB_METHODS:
+        pytest.importorskip("SALib")
+    captures = []
+    sens = make_sensitivity()
+    sens._manager.run_batch = sens_batch(captures)
+    obs = two_site_obs()
+    getattr(sens, method)(PARAM_RANGES, observed=obs, weights=WEIGHTS, metric="rmse",
+                          metrics=metrics, **METHOD_KWARGS[method])
+    assert len(captures) == 1
+    assert captures[0]["observed"] is obs
+    assert set(captures[0]["observed"]) == {("FLOW_OUTcms", 1), ("SED_OUTtons", 51)}
+    assert captures[0]["weights"] == WEIGHTS
+    assert captures[0]["metric"] == "rmse"
+    assert captures[0]["metrics"] == reported
+
+
+@pytest.mark.parametrize("method", list(METHOD_KWARGS))
+def test_sensitivity_old_and_new_names_raise_typeerror(method):
+    # Resolved before SALib is imported: works without SALib too.
+    sens = make_sensitivity()
+    obs = two_site_obs()
+    with pytest.raises(TypeError, match="both"):
+        getattr(sens, method)(PARAM_RANGES, observed=obs, observed_series=obs)
+    with pytest.raises(TypeError, match="both"):
+        getattr(sens, method)(PARAM_RANGES, observed=obs, reach_id=1,
+                              output_variable="FLOW_OUTcms",
+                              outputs={"FLOW_OUTcms": [1]})
+
+
+def test_sensitivity_deprecation_warning_points_at_caller():
+    sens = make_sensitivity()
+    sens._manager.run_batch = sens_batch([])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sens.one_at_a_time(PARAM_RANGES, n_steps=2, observed_series=two_site_obs(),
+                           metric="rmse")
+    dep = [w for w in caught
+           if issubclass(w.category, DeprecationWarning)
+           and "observed_series" in str(w.message)]
+    assert len(dep) == 1
+    assert Path(dep[0].filename).resolve() == Path(__file__).resolve()
+
+
+# ── GLUE draws its Latin Hypercube from an explicit Generator ────────────────
+
+def test_glue_passes_a_generator_to_lhs(monkeypatch):
+    calib = make_calib()
+    calib.manager.run_batch = capturing_batch(cn2_score, [], metric="rmse")
+    seen = {}
+    original = calib.analysis._generate_samples
+
+    def spy(bounds, n_samples, method="lhs", seed=None):
+        seen["seed"] = seed
+        return original(bounds, n_samples, method=method, seed=seed)
+
+    monkeypatch.setattr(calib.analysis, "_generate_samples", spy)
+    result = calib.glue.run(PARAM_RANGES, two_site_obs(), n_samples=8,
+                            metric="rmse", seed=42)
+    assert isinstance(seen["seed"], np.random.Generator)
+    assert result["seed"] == 42
