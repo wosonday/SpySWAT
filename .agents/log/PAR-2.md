@@ -184,3 +184,15 @@ review file created from the Reviewer's copy, byte-for-byte unchanged). Working 
 `git diff --check main...HEAD` empty. No merge, no push; nothing sent via `agm`/`hc`.
 
 Files changed: `.agents/log/PAR-2.md` (this entry) only.
+
+## 2026-11-24 — docs update
+
+Updated user and agent docs for PAR-2 (`scenario_inputs` / `txinout_fingerprint` in `resume=True`):
+- `CHANGELOG.md` (`[Unreleased]` → `### Changed`)
+- `README.md` (`resume=True` table row)
+- `README_VI.md` (`resume=True` table row)
+- `ARCHITECTURE.md` (§3.7 signature line)
+- `AGENTS.md` (quick-orientation tree)
+
+Files changed: `CHANGELOG.md`, `README.md`, `README_VI.md`, `ARCHITECTURE.md`, `AGENTS.md`, `.agents/log/PAR-2.md`.
+- Also moved the PAR-1 CHANGELOG bullet from [0.2.6] to [Unreleased] (it had been placed in the released section).
