@@ -906,7 +906,7 @@ scores = manager.run_batch(
     metrics  = ("nse",),
     outputs  = {"FLOW_OUTcms": [1]},
 )
-print(scores)   # list of floats (NaN for a failed run)
+print(scores)   # DataFrame (one row per parameter set; `score` column) (NaN for a failed run)
 ```
 
 Guarantees of every parallel run:
