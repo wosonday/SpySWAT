@@ -7,6 +7,7 @@ at evaluation k+1), then resumes the same ``session=`` and checks the result is
 identical to the reference and that only the uncommitted tail re-runs.
 """
 import hashlib
+import json
 import pickle
 from pathlib import Path
 
@@ -182,23 +183,63 @@ def test_facade_resume_completed_session_zero_runner_calls(proj):
 
 
 def test_facade_resume_seed_none_uses_stored_seed(proj):
+    """A seed=None resume of an *interrupted* run reuses the stored seed."""
     obs = _obs()
-    _install(proj, counter={"n": 0})
-    ref = proj.calibration(PARAM_RANGES, obs, CALIB, algorithm="glue",
-                           n_samples=8, seed=None, sensitivity=False,
-                           session="s", resume=False)
-    assert isinstance(ref.seed, int)
 
+    # interrupted seed=None run: the drawn seed is persisted in session.json
+    _install(proj, counter={"n": 0}, interrupt_at=4)
+    with pytest.raises(KeyboardInterrupt):
+        proj.calibration(PARAM_RANGES, obs, CALIB, VALID, algorithm="glue",
+                         n_samples=8, seed=None, sensitivity=True,
+                         session="s", resume=False)
+    committed = _committed_count(proj, "s")
+    assert committed == 4
+
+    opened = SessionStore.open(proj.working_folder / "calibration_results" / "s")
+    stored_seed = opened.signature["seed"]
+    opened.close()
+    assert isinstance(stored_seed, int)
+
+    # uninterrupted reference run using the stored seed
+    _install(proj, counter={"n": 0})
+    ref = proj.calibration(PARAM_RANGES, obs, CALIB, VALID, algorithm="glue",
+                           n_samples=8, seed=stored_seed, sensitivity=True,
+                           session="ref", resume=False)
+    assert ref.seed == stored_seed
+
+    # resume with seed=None: the stored seed is reused, not re-drawn
     resume_counter = {"n": 0}
     _install(proj, counter=resume_counter)
-    res = proj.calibration(PARAM_RANGES, obs, CALIB, algorithm="glue",
-                           n_samples=8, seed=None, sensitivity=False,
+    res = proj.calibration(PARAM_RANGES, obs, CALIB, VALID, algorithm="glue",
+                           n_samples=8, seed=None, sensitivity=True,
                            session="s", resume=True)
 
-    assert resume_counter["n"] == 0          # completed session: nothing re-runs
-    assert res.seed == ref.seed
+    assert res.seed == stored_seed
+    assert resume_counter["n"] == len(ref.runs) - committed
     assert res.best_score == pytest.approx(ref.best_score)
+    assert res.best_params == ref.best_params
     pd.testing.assert_frame_equal(_runs_without_time(res), _runs_without_time(ref))
+    # the resumed finish still writes/loads the regression sensitivity table
+    assert isinstance(res.sensitivity, pd.DataFrame)
+    assert "parameter" in res.sensitivity.columns
+    assert "sensitivity.csv" in _dir_hash(res.session_dir)
+
+
+def test_facade_resume_seed_none_without_stored_seed_raises(proj):
+    """A session whose signature has ``seed: null`` cannot be resumed."""
+    _make_session(proj, "s")
+    session_dir = proj.working_folder / "calibration_results" / "s"
+    meta_path = session_dir / "session.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["signature"]["seed"] = None
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    before = _dir_hash(session_dir)
+    with pytest.raises(ValueError, match="session.json has no seed"):
+        proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
+                         n_samples=4, seed=None, sensitivity=False,
+                         session="s", resume=True)
+    assert _dir_hash(session_dir) == before
 
 
 # ── resume refuses a changed configuration, leaving the session untouched ────

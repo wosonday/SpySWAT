@@ -485,6 +485,67 @@ def test_run_batch_replay_without_store_routes_multisite(proj, tmp_path):
     assert not np.isnan(df["score"].iloc[0])
 
 
+def test_run_batch_run_ids_sliced_for_live_tail(proj, tmp_path):
+    """A partial-replay batch takes one id per submitted set and keeps the tail."""
+    obs = _two_site_obs()
+    store = _store(tmp_path, "s")
+    _install_fake("glue", proj, counter={"n": 0})
+    CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=store)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "s")
+    cursor = ReplayCursor(opened)
+    counter = {"n": 0}
+    _install_fake("glue", proj, counter=counter)
+    df = CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2},
+         {"CN2.mgt": 70.0, "ALPHA_BF.gw": 0.3}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=opened, replay=cursor,
+        run_ids=[1, 2, 3])
+    opened.close()
+
+    assert counter["n"] == 1                       # only the live tail ran
+    assert len(df) == 3
+    # the live run took run_ids[n_replayed] == 3, not run_ids[0] == 1
+    assert _run_ids(tmp_path / "s") == [1, 2, 3]
+
+
+def test_run_batch_run_ids_length_checked_against_total(proj, tmp_path):
+    """run_ids must cover replay + live runs; a mismatch commits nothing."""
+    obs = _two_site_obs()
+    store = _store(tmp_path, "s")
+    _install_fake("glue", proj, counter={"n": 0})
+    CalibrationManager(proj).run_batch(
+        [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+         {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2}],
+        obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+        calib_period=CALIB_PERIOD, store=store)
+    store.close()
+
+    opened = SessionStore.open(tmp_path / "s")
+    cursor = ReplayCursor(opened)
+    counter = {"n": 0}
+    _install_fake("glue", proj, counter=counter)
+    with pytest.raises(ValueError, match=r"run_ids has 2 entries, expected 3"):
+        CalibrationManager(proj).run_batch(
+            [{"CN2.mgt": 50.0, "ALPHA_BF.gw": 0.1},
+             {"CN2.mgt": 60.0, "ALPHA_BF.gw": 0.2},
+             {"CN2.mgt": 70.0, "ALPHA_BF.gw": 0.3}],
+            obs, metrics=("nse",), metric="nse", outputs=OUTPUTS,
+            calib_period=CALIB_PERIOD, store=opened, replay=cursor,
+            run_ids=[1, 2])
+    opened.close()
+
+    assert counter["n"] == 0                       # rejected before any worker
+    assert _run_ids(tmp_path / "s") == [1, 2]
+
+
 def test_replay_cursor_minus_zero_matches_zero(tmp_path):
     store = _store(tmp_path, "s", sites=[("FLOW_OUTcms", 1)])
     _add_run(store, 1, cn2=0.0, alpha=-0.0)

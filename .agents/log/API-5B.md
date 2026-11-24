@@ -46,3 +46,33 @@ resume=True)`), the API-4-3 Minors, and the API-5A-1 Minors; finalises the resum
 
 ## Open questions
 - None.
+
+## Rework round (API-5B-1 Minors)
+
+All four review Minors fixed exactly as proposed, test-first.
+
+### Files changed
+- `spyswat/swat_project.py` — the missing-stored-seed error is now
+  `"cannot resume: stored session.json has no seed"` (no misleading "pass seed= explicitly").
+- `spyswat/swat_calib/calibration/result.py` — `select()` status mask is
+  `runs["status"].eq("ok").fillna(False).to_numpy(dtype=bool)`, so a pandas nullable
+  string `status` with `pd.NA` no longer raises `TypeError: boolean value of NA is ambiguous`.
+- `tests/test_project_facade.py` — `test_select_handles_nullable_status_with_missing_values`
+  (nullable `status` with a missing value).
+- `tests/test_resume_replay.py` — `test_run_batch_run_ids_sliced_for_live_tail` (partial
+  replay: one id per submitted set, live tail takes `run_ids[n_replayed]` → stored ids
+  `[1, 2, 3]`) and `test_run_batch_run_ids_length_checked_against_total` (length mismatch →
+  `ValueError`, no worker calls, nothing committed).
+- `tests/test_facade_resume.py` — `test_facade_resume_seed_none_uses_stored_seed` rewritten:
+  interrupt a `seed=None` run after 4 committed runs, read the stored seed, run an
+  uninterrupted reference with that seed, resume with `seed=None`, compare
+  `best_params`/`best_score`/`runs` and the live-call count; `sensitivity=True` on both runs
+  verifies `res.sensitivity` and `sensitivity.csv` after resume. New
+  `test_facade_resume_seed_none_without_stored_seed_raises` (session.json `seed: null` →
+  `ValueError` matching the new message, session files unchanged).
+
+### Commands + results (rework round)
+- `python -m pytest tests/test_facade_resume.py tests/test_resume_replay.py -q` → 37 passed
+- `python -m pytest tests/ -q -p no:cacheprovider` → 721 passed, 15 skipped, 28 subtests
+  (+4 tests over the 717 baseline)
+- `git diff --check` → clean

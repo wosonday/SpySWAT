@@ -349,6 +349,26 @@ def test_select_drops_failed_even_with_finite_score():
     assert [p.name for p in picked] == ["run_1"]
 
 
+def test_select_handles_nullable_status_with_missing_values():
+    # A pandas nullable string dtype with missing values must not turn the
+    # status mask into an object array holding pd.NA (TypeError on ``keep & ...``).
+    runs = pd.DataFrame({
+        "run_id": [1, 2, 3],
+        "time": ["t", "t", "t"],
+        "status": pd.array(["ok", None, "ok"], dtype="string"),
+        "error": ["", "", ""],
+        "is_initial": [True, True, True],
+        "CN2.mgt": [50.0, 60.0, 70.0],
+        "ALPHA_BF.gw": [0.5, 0.6, 0.7],
+        "score": [0.8, 0.95, 0.7],
+    })
+    res = CalibrationResult(
+        best_params={}, best_score=0.8, best_run_id=1, metric="nse", runs=runs,
+        session_dir=Path("s"),
+    )
+    assert [p.name for p in res.select(score__gt=0.5)] == ["run_1", "run_3"]
+
+
 def test_calibration_existing_session_resume_false_raises(proj):
     res = proj.calibration(PARAM_RANGES, _obs(), CALIB, algorithm="glue",
                            n_samples=3, seed=1, sensitivity=False)

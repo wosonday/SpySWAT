@@ -352,8 +352,7 @@ class SWATProject:
             if seed is None:
                 if stored_seed is None:
                     raise ValueError(
-                        "cannot resume: the stored session has no seed; pass "
-                        "seed= explicitly to continue."
+                        "cannot resume: stored session.json has no seed"
                     )
                 seed = stored_seed
             else:
