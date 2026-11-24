@@ -65,3 +65,18 @@ Allowed edits in `batch.py`: the import block, `_signature_diff`, the `new_sig` 
 
 ## Report format
 `agm send t81 --type "BÁO CÁO" --task par-2 "see .agents/log/PAR-2.md"` (1-3 lines), then stop.
+
+## Docs step (Architect, 2026-11-24, after review PAR-2-2 PASS and rebase onto main 10203f2)
+
+Docs Updater: `gemini-4-hydrogen-medium` (agy, edits only); a short Flash session commits
+(`par-2: docs: ...`). Describe only behaviour present in the code. Edit only:
+- `CHANGELOG.md` `[Unreleased]` → `### Changed` (keep the PAR-1 entry): `resume=True` also raises when
+  an input file of a scenario's base TxtInOut was added, removed, resized or re-written (file
+  stats, not contents; outputs ignored); results written by 0.2.6 still resume (one INFO line);
+  an unreadable base does not abort the batch. New module `scenarios/signature.py`.
+- `README.md` / `README_VI.md`: the `resume=True` table row (~line 566 / 543): add "or a scenario's
+  TxtInOut input files changed" (Vietnamese equivalent).
+- `ARCHITECTURE.md` §3.7 (Vietnamese): the signature line (~418) mentions the per-scenario
+  TxtInOut fingerprint (`scenario_inputs`).
+- `AGENTS.md` quick-orientation tree: add `scenarios/signature.py`. Do not touch test counts.
+- `.agents/log/PAR-2.md`: append one docs entry.
