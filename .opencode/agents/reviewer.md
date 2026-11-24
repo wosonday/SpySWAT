@@ -16,6 +16,7 @@ permission:
     "git commit*": allow
     "agm send*": allow
   webfetch: deny
+  execute: deny
   task: deny
 ---
 You are the default Reviewer (`reviewer`). Never edit product source or test files.

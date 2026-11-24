@@ -19,6 +19,7 @@ permission:
     "git commit*": allow
     "agm send*": allow
   webfetch: deny
+  execute: deny
   task: deny
 ---
 You are the Auditor (`auditor`). Never edit product source or test files.

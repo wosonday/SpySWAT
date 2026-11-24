@@ -15,3 +15,11 @@ Append-only. Correct a mistake by adding a new entry below it.
 - Checks: not run yet in this step; full suite run before the final entry (task forbids `uv build`/`python -m build` here — the Architect verifies the sdist).
 - Decision: keep `exclude` a multi-line list so every pattern is on its own line.
 - Previous commit: c0498a8
+
+## 2026-11-24 · worker-fast · step 3/4
+- Done: changes 2-4 — `AGENTS.md` Commands line now `measured on main 301cecb: 451 passed, 11 skipped (~4 min on Windows)` plus the sentence about the 87 harness lint tests left in the repo but excluded from the sdist; `execute: deny` added under `permission:` in `.opencode/agents/explore.md`, `reviewer.md`, `auditor.md` (auditor keeps its allowed bash commands); one bullet in `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md` §3 that `bash: deny` does not cover the `execute` tool.
+- Files changed: `AGENTS.md`, `.opencode/agents/explore.md`, `.opencode/agents/reviewer.md`, `.opencode/agents/auditor.md`, `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md`, `.agents/log/HARN-1.md`
+- Checks: `python -m pytest tests/ -q` → 451 passed / 11 skipped / 0 failed (5 warnings, 24 subtests) in 188.86s — unchanged from baseline.
+- Decision: counts re-measured after the docs edits; no source code touched, so the suite is unaffected.
+- Blocked / question: none. The sdist itself is not built here (not permitted); the Architect verifies the exclusion.
+- Previous commit: af9ee53

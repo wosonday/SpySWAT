@@ -75,6 +75,7 @@ The `worker-fast`/`reviewer` agents must already exist with scoped permissions. 
 - **Strict per-role permissions:**
   - `worker-*`: use v2 `permissions` to restrict `edit` and `shell`. Allow only approved writes; block out-of-role Git operations and deny access to secrets through both file and shell tools.
   - `auditor` / `reviewer` / `gitnexus-sync`: forbidden from editing product source code.
+  - `bash: deny` does not cover OpenCode's `execute` tool (JavaScript with file access); read-only agents must also set `execute: deny` (SpySWAT BG-1, 2026-11-23).
 - **Automatic rotation via `agm daemon`:**
   - When an OpenCode worker (`agm spawn ... --role worker`) hits **`ctx_rotate` (default 70%)**, `agm` prompts it to write a handoff entry to `.agents/log/<ID>.md` + commit, verifies a clean worktree, then kills the old session and spawns a fresh successor in the same worktree.
 - **Concurrency:** hard-capped by `[policy].max_workers` in `~/.agmag/providers.toml` (keep within your Ollama Cloud plan's concurrent limit if applicable).

@@ -11,6 +11,7 @@ permission:
     "git diff*": allow
     "git log*": allow
   webfetch: deny
+  execute: deny
   task: deny
 ---
 You are a strictly read-only Researcher & Log Summarizer (`explore`).
