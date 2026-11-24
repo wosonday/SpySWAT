@@ -21,6 +21,9 @@ from spyswat.swat_calib.core.run_state import StaleOutputError
 from spyswat.swat_calib.analysis.statistics import (
     best_index, is_maximize, to_objective,
 )
+from spyswat.swat_calib.analysis.algorithms.dds import (
+    _MISSING, _batch_scores, _reported, _resolve_observed, _resolve_seed, _runs_frame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +55,26 @@ class GLUE:
     def run(
         self,
         param_ranges: Dict[str, Tuple],
-        observed_series: pd.Series,
+        observed=_MISSING,
         n_samples: int = 1000,
         threshold: float = 0.5,
         metric: str = "nse",
-        output_variable: str = "FLOW_OUTcms",
-        reach_id: int = 1,
+        output_variable=_MISSING,
+        reach_id=_MISSING,
         seed: Optional[int] = None,
         compute_uncertainty: bool = False,
         param_methods: Optional[Dict[str, str]] = None,
         param_subbasins: Optional[Dict[str, list]] = None,
+        observed_series=_MISSING,
+        *,
+        outputs=None,
+        weights=None,
+        metrics=None,
+        calib_period=None,
+        valid_period=None,
+        step=None,
+        agg=None,
+        store=None,
     ) -> Dict:
         """
         Run GLUE sampling and return results dict.
@@ -78,8 +91,19 @@ class GLUE:
             behavioral_ratio    : float
             parameter_ranges    : dict (bounds only)
             threshold           : float
+            seed                : int   concrete seed (resolved from None)
+            runs                : pd.DataFrame  (params + score + per-site columns)
             [uncertainty_band, p_factor, r_factor  -- if compute_uncertainty=True]
         """
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
+        seed = _resolve_seed(seed)
         to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
         logger.info("GLUE: starting with " + str(n_samples) + " samples")
 
@@ -101,22 +125,22 @@ class GLUE:
         ]
 
         batch_df = self._manager.run_batch(
-            param_sets, observed_series, [metric], reach_id, output_variable
+            param_sets, observed, _reported(metric, metrics),
+            metric=metric, outputs=outputs, weights=weights,
+            calib_period=calib_period, valid_period=valid_period,
+            step=step, agg=agg, store=store,
+            methods=methods, subbasins=subbasins, is_initial=True,
         )
-        scores = (
-            batch_df[metric].tolist()
-            if hasattr(batch_df, "columns")
-            else list(batch_df)
-        )
+        scores = _batch_scores(batch_df, metric)
 
         results_df            = samples_df.copy()
         results_df[metric]    = scores
         # NaN (failed run) compares False in both branches -> never behavioural
         if is_maximize(metric):
-            behavioral_mask   = results_df[metric] >= threshold
+            behavioral_mask   = scores >= threshold
         else:
-            behavioral_mask   = to_objective(metric, results_df[metric].to_numpy(dtype=float)) <= threshold
-            behavioral_mask   = pd.Series(behavioral_mask, index=results_df.index)
+            behavioral_mask   = to_objective(metric, scores) <= threshold
+        behavioral_mask       = pd.Series(behavioral_mask, index=results_df.index)
         behavioral_df         = results_df[behavioral_mask]
         n_behavioral          = len(behavioral_df)
 
@@ -140,13 +164,14 @@ class GLUE:
             "behavioral_ratio":   n_behavioral / n_samples,
             "parameter_ranges":   bounds,
             "threshold":          threshold,
+            "seed":               seed,
+            "runs":               _runs_frame(samples_df, batch_df, metric),
         }
 
         if compute_uncertainty and n_behavioral > 0:
             unc = self.uncertainty_band(
-                behavioral_df, observed_series,
-                metric=metric, output_variable=output_variable,
-                reach_id=reach_id,
+                behavioral_df, observed,
+                metric=metric, outputs=outputs,
                 param_methods=methods, param_subbasins=subbasins,
             )
             result.update(unc)
@@ -156,12 +181,22 @@ class GLUE:
     def uncertainty_band(
         self,
         behavioral_df: pd.DataFrame,
-        observed_series: pd.Series,
+        observed=_MISSING,
         metric: str = "nse",
-        output_variable: str = "FLOW_OUTcms",
-        reach_id: int = 1,
+        output_variable=_MISSING,
+        reach_id=_MISSING,
         param_methods: Optional[Dict[str, str]] = None,
         param_subbasins: Optional[Dict[str, list]] = None,
+        observed_series=_MISSING,
+        *,
+        outputs=None,
+        weights=None,
+        metrics=None,
+        calib_period=None,
+        valid_period=None,
+        step=None,
+        agg=None,
+        store=None,
     ) -> Dict:
         """
         Compute 95PPU, p-factor, r-factor from behavioral parameter sets.
@@ -184,6 +219,40 @@ class GLUE:
             p_factor         : float  (target >= 0.70)
             r_factor         : float  (target <= 1.50)
         """
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
+        # The 95PPU band is a single-site quantity: resolve the one observed site.
+        if isinstance(observed, pd.Series):
+            if outputs is None:
+                outputs = {"FLOW_OUTcms": [1]}
+            sites = [(v, r) for v in sorted(outputs) for r in outputs[v]]
+            if len(sites) != 1:
+                raise ValueError(
+                    "uncertainty_band needs exactly one site in outputs for a bare "
+                    f"observed Series; got {len(sites)} sites from {outputs!r}."
+                )
+            site_key = sites[0]
+            obs_series = observed
+        else:
+            site_key = next(iter(observed))
+            obs_series = observed[site_key]
+            var, reach = site_key
+            if outputs is None:
+                outputs = {var: [reach]}
+            elif var not in outputs:
+                outputs = dict(outputs)
+                outputs[var] = [reach]
+            elif reach not in outputs[var]:
+                outputs = dict(outputs)
+                outputs[var] = list(outputs[var]) + [reach]
+        var, reach = site_key
+
         param_names = [c for c in behavioral_df.columns if c != metric]
         if is_maximize(metric):
             weights = np.array(behavioral_df[metric].clip(lower=0).tolist(), dtype=float)
@@ -203,28 +272,28 @@ class GLUE:
             formatted = self._manager._format_params(raw, param_methods, param_subbasins)
             try:
                 with self._manager.sandbox():
-                    sim_raw = self._manager.run_once(formatted, reach_id=reach_id,
-                                                     output_variable=output_variable)
+                    sim_dict = self._manager.run_once(formatted, outputs=outputs)
+                    sim_raw = sim_dict[site_key]
             except StaleOutputError as exc:          # no result: leave it out of the band
                 n_stale += 1
                 self._manager.record_run(
                     formatted, None, status="failed", error=str(exc), sim=None,
-                    mode="uncertainty_band", reach_id=reach_id,
-                    output_variable=output_variable,
+                    mode="uncertainty_band", reach_id=reach,
+                    output_variable=var,
                 )
                 logger.warning("GLUE 95PPU: behavioural run %d excluded (%s)", pos, exc)
                 continue
             except Exception as exc:
                 self._manager.record_run(
                     formatted, None, status="failed", error=str(exc), sim=None,
-                    mode="uncertainty_band", reach_id=reach_id,
-                    output_variable=output_variable,
+                    mode="uncertainty_band", reach_id=reach,
+                    output_variable=var,
                 )
                 raise
-            obs_a, sim_a = self._manager._align_series(observed_series, sim_raw)
+            obs_a, sim_a = self._manager._align_series(obs_series, sim_raw)
             self._manager.record_run(
                 formatted, None, status="ok", sim=sim_a, mode="uncertainty_band",
-                reach_id=reach_id, output_variable=output_variable,
+                reach_id=reach, output_variable=var,
             )
             obs_aligned = obs_a
             sims.append(sim_a)

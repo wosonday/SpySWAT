@@ -21,6 +21,10 @@ from typing import Dict, List, Optional, Tuple
 from spyswat.swat_calib.analysis.statistics import (
     best_index, finite_stats, sanitize_scores, to_objective,
 )
+from spyswat.swat_calib.analysis.algorithms.dds import (
+    _MISSING, _batch_scores, _params_frame, _reported, _resolve_observed,
+    _resolve_seed, _runs_frame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +70,10 @@ class ParallelDE:
     def run(
         self,
         param_ranges: Dict[str, Tuple],
-        observed_series: pd.Series,
+        observed=_MISSING,
         metric: str = "nse",
-        output_variable: str = "FLOW_OUTcms",
-        reach_id: int = 1,
+        output_variable=_MISSING,
+        reach_id=_MISSING,
         pop_size: Optional[int] = None,
         max_generations: int = 20,
         F: float = 0.8,
@@ -80,6 +84,16 @@ class ParallelDE:
         param_subbasins: Optional[Dict[str, list]] = None,
         tol: float = 1e-6,
         patience: int = 5,
+        observed_series=_MISSING,
+        *,
+        outputs=None,
+        weights=None,
+        metrics=None,
+        calib_period=None,
+        valid_period=None,
+        step=None,
+        agg=None,
+        store=None,
     ) -> Dict:
         """
         Run Parallel DE and return results dict.
@@ -90,6 +104,7 @@ class ParallelDE:
                             "CN2.mgt": (60, 98)                       # bounds only
                             "CN2.mgt": ((60, 98), "r")                # + method
                             "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
+        observed        : pd.Series or {(variable, reach): pd.Series}
         param_methods   : optional override for method per param (v/r/a)
         param_subbasins : optional override for subbasin list per param
         pop_size        : population size NP; default max(10, 5*d)
@@ -101,6 +116,8 @@ class ParallelDE:
         tol             : early stop when the spread of the population objective < tol
                           (objective = metric mapped so that smaller is better)
         patience        : early stop after N generations without improvement
+        outputs, weights, metrics, calib_period, valid_period, step, agg, store :
+                          the multi-site vocabulary passed through to run_batch.
 
         Returns
         -------
@@ -110,6 +127,8 @@ class ParallelDE:
                                (for pbias: the one closest to 0)
             history          : pd.DataFrame  (generation, best_score, mean_score, std_score)
             all_evaluations  : pd.DataFrame  (all params + score + generation)
+            seed             : int
+            runs             : pd.DataFrame  (params + score + per-site columns)
         """
         if strategy not in self.VALID_STRATEGIES:
             raise ValueError(
@@ -121,6 +140,16 @@ class ParallelDE:
             raise ValueError("F must be in (0, 2].")
         if not (0 <= CR <= 1):
             raise ValueError("CR must be in [0, 1].")
+
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
+        seed = _resolve_seed(seed)
 
         # Parse unified spec; explicit kwargs override spec values
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
@@ -142,14 +171,16 @@ class ParallelDE:
                 for row in population
             ]
 
-        def evaluate(pop: np.ndarray) -> np.ndarray:
+        def evaluate(pop: np.ndarray, is_initial: bool):
             """Raw metric scores (NaN = failed run), one per row of ``pop``."""
             batch_df = self._manager.run_batch(
-                to_param_sets(pop), observed_series, [metric], reach_id, output_variable
+                to_param_sets(pop), observed, _reported(metric, metrics),
+                metric=metric, outputs=outputs, weights=weights,
+                calib_period=calib_period, valid_period=valid_period,
+                step=step, agg=agg, store=store,
+                methods=methods, subbasins=subbasins, is_initial=is_initial,
             )
-            if hasattr(batch_df, "columns"):
-                return np.array(batch_df[metric].tolist(), dtype=float)
-            return np.array(list(batch_df), dtype=float)
+            return _batch_scores(batch_df, metric), batch_df
 
         def objective_of(raw: np.ndarray) -> np.ndarray:
             """Smaller-is-better objective; failed runs get the worst value."""
@@ -157,12 +188,13 @@ class ParallelDE:
 
         # ── Initialisation ──────────────────────────────────────────────
         population = lower + rng.random((NP, d)) * (upper - lower)
-        scores     = evaluate(population)            # raw metric values (may hold NaN)
+        scores, batch_df = evaluate(population, is_initial=True)  # raw metric values
         best_idx   = best_index(scores, metric)      # RuntimeError if every run failed
         obj        = objective_of(scores)            # smaller is better
 
         gen_history: List[Dict] = []
         all_rows:    List[Dict] = []
+        runs_parts   = [_runs_frame(_params_frame(names, population), batch_df, metric)]
 
         for k in range(NP):
             row = dict(zip(names, population[k].tolist()))
@@ -207,7 +239,8 @@ class ParallelDE:
                 cross_mask[j_rand] = True
                 trials[i]  = np.where(cross_mask, mutant, population[i])
 
-            trial_scores = evaluate(trials)
+            trial_scores, batch_df = evaluate(trials, is_initial=False)
+            runs_parts.append(_runs_frame(_params_frame(names, trials), batch_df, metric))
             for k in range(NP):
                 row = dict(zip(names, trials[k].tolist()))
                 row.update({"score": trial_scores[k], "generation": gen})
@@ -261,4 +294,6 @@ class ParallelDE:
             "best_score":      float(scores[best_idx]),
             "history":         pd.DataFrame(gen_history),
             "all_evaluations": pd.DataFrame(all_rows),
+            "seed":            seed,
+            "runs":            pd.concat(runs_parts, ignore_index=True),
         }

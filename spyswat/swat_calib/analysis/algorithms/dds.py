@@ -19,6 +19,7 @@ models when the evaluation budget N is small (100-1000 runs). Key properties:
 from __future__ import annotations
 
 import logging
+import warnings
 import numpy as np
 import pandas as pd
 from typing import Callable, Dict, List, Optional, Tuple
@@ -26,6 +27,130 @@ from typing import Callable, Dict, List, Optional, Tuple
 from spyswat.swat_calib.analysis.statistics import is_maximize, to_objective
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared vocabulary helpers (imported by the other algorithms, SWATCalibration
+# and SWATSensitivity).  Kept here because ``dds`` is the leaf module of the
+# algorithms package (no sibling imports), so importing from it cannot create a
+# cycle.
+# ---------------------------------------------------------------------------
+
+#: Sentinel for "this deprecated keyword was not passed".
+_MISSING = object()
+
+
+def _resolve_seed(seed):
+    """Resolve ``seed=None`` to a concrete int before the first draw.
+
+    The concrete integer is ``int(np.random.SeedSequence().entropy % 2**63)`` so
+    a resumed run (API-5) can pass it back and replay the exact same sequence.
+    """
+    if seed is None:
+        return int(np.random.SeedSequence().entropy % 2 ** 63)
+    return int(seed)
+
+
+def _resolve_observed(observed, observed_series, reach_id, output_variable, outputs,
+                      stacklevel=3):
+    """Map the deprecated ``observed_series`` / ``reach_id``+``output_variable`` args.
+
+    Returns ``(observed, outputs)``.  Emits one ``DeprecationWarning`` per
+    deprecated input and raises ``TypeError`` when an old name and its new
+    counterpart are both given.
+    """
+    if observed_series is not _MISSING:
+        if observed is not _MISSING and observed is not None:
+            raise TypeError(
+                "pass either 'observed' or the deprecated 'observed_series', not both"
+            )
+        warnings.warn(
+            "'observed_series' is deprecated; use 'observed' instead.",
+            DeprecationWarning, stacklevel=stacklevel,
+        )
+        observed = observed_series
+    if reach_id is not _MISSING or output_variable is not _MISSING:
+        if outputs is not None:
+            raise TypeError(
+                "pass either 'outputs' or the deprecated 'reach_id'/'output_variable', "
+                "not both"
+            )
+        var = "FLOW_OUTcms" if output_variable is _MISSING else output_variable
+        rid = 1 if reach_id is _MISSING else reach_id
+        warnings.warn(
+            f"'reach_id' and 'output_variable' are deprecated; pass "
+            f"outputs={{{var!r}: [{rid}]}} instead.",
+            DeprecationWarning, stacklevel=stacklevel,
+        )
+        outputs = {var: [rid]}
+    return observed, outputs
+
+
+def _reported(metric, metrics):
+    """Reported metric names as a list, ``metric`` always first and included."""
+    if metrics is None:
+        return [metric]
+    if isinstance(metrics, str):
+        names = [metrics]
+    else:
+        names = list(metrics)
+    return [metric] + [n for n in names if n != metric]
+
+
+def _batch_scores(batch_df, metric):
+    """Per-run score as a float ndarray from a ``run_batch`` result.
+
+    The multi-site path returns a ``score`` column; legacy single-site callers
+    (and old-style mocks) may return the bare ``metric`` column or a plain list.
+    """
+    if hasattr(batch_df, "columns"):
+        col = "score" if "score" in batch_df.columns else metric
+        return np.asarray(batch_df[col].tolist(), dtype=float)
+    return np.asarray(list(batch_df), dtype=float)
+
+
+def _params_frame(names, population):
+    """Raw parameter columns for one batch (population ndarray of shape (n, d))."""
+    return pd.DataFrame({name: population[:, j] for j, name in enumerate(names)})
+
+
+def _runs_frame(param_df, batch_df, metric):
+    """One batch as ``runs`` rows: params + ``score`` + per-site columns."""
+    runs = param_df.reset_index(drop=True).copy()
+    if hasattr(batch_df, "columns"):
+        src = batch_df.reset_index(drop=True)
+        if "score" in src.columns:
+            runs["score"] = src["score"]
+        elif metric in src.columns:
+            runs["score"] = src[metric]
+        else:
+            runs["score"] = np.nan
+        for col in src.columns:
+            if col in ("score", metric):
+                continue
+            runs[col] = src[col].tolist()
+    else:
+        runs["score"] = list(batch_df)
+    return runs
+
+
+def _single_site(observed, outputs):
+    """The single ``(variable, reach)`` implied by ``observed``/``outputs``.
+
+    Used for the scalar "performance" read in ``analyze``.  ``outputs`` defaults
+    to ``{"FLOW_OUTcms": [1]}`` for a bare ``observed`` Series; a dict ``observed``
+    contributes its first site.
+    """
+    if isinstance(observed, pd.Series):
+        if outputs is None:
+            return "FLOW_OUTcms", 1
+        sites = [(v, r) for v in sorted(outputs) for r in outputs[v]]
+        if len(sites) != 1:
+            raise ValueError(
+                f"a bare observed Series needs exactly one output site; got "
+                f"{len(sites)} from {outputs!r}."
+            )
+        return sites[0]
+    return next(iter(observed))
 
 
 class DDS:
@@ -234,17 +359,27 @@ class DDSCalibration:
     def run(
         self,
         param_ranges: Dict[str, Tuple],
-        observed_series,
+        observed=_MISSING,
         n_iterations: int = 200,
         r: float = 0.2,
         seed: Optional[int] = None,
         metric: str = "nse",
-        output_variable: str = "FLOW_OUTcms",
-        reach_id: int = 1,
+        output_variable=_MISSING,
+        reach_id=_MISSING,
         maximize: Optional[bool] = None,
         param_methods: Optional[Dict[str, str]] = None,
         param_subbasins: Optional[Dict[str, list]] = None,
         on_failure: str = "raise",
+        observed_series=_MISSING,
+        *,
+        outputs=None,
+        weights=None,
+        metrics=None,
+        calib_period=None,
+        valid_period=None,
+        step=None,
+        agg=None,
+        store=None,
     ) -> dict:
         """
         Run DDS calibration.
@@ -260,7 +395,7 @@ class DDSCalibration:
                             "CN2.mgt": (60, 98)                       # bounds only
                             "CN2.mgt": ((60, 98), "r")                # + method
                             "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
-        observed_series : pd.Series  observed discharge with DatetimeIndex
+        observed        : pd.Series or {(variable, reach): pd.Series}  observed
         n_iterations    : int   total evaluation budget (recommended >= 200)
         r               : float perturbation size as fraction of range (0, 1]
         seed            : int | None  random seed for reproducibility
@@ -272,35 +407,54 @@ class DDSCalibration:
                                 = derive from ``metric``
         param_methods   : optional override for method per param (v/r/a)
         param_subbasins : optional override for subbasin list per param
+        outputs, weights, metrics, calib_period, valid_period, step, agg, store :
+                                the multi-site vocabulary passed through to
+                                ``run_iteration`` (see CalibrationManager).
 
         Returns
         -------
-        dict with keys: best_params, best_score, history (pd.DataFrame)
+        dict with keys: best_params, best_score, history (pd.DataFrame),
+                        seed (int), runs (pd.DataFrame)
         """
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
+        seed = _resolve_seed(seed)
+
         # Parse unified spec; explicit kwargs override spec values
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
         methods   = {**_m, **(param_methods   or {})}
         subbasins = {**_s, **(param_subbasins or {})}
+        names     = list(bounds.keys())
 
         if on_failure not in ("raise", "penalize"):
             raise ValueError(f"on_failure must be 'raise' or 'penalize', got {on_failure!r}")
         to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
 
+        first = [True]
+
         # DDS passes {name: float}; manager.run_iteration auto-formats it
         def objective(params: dict) -> float:
+            is_initial = first[0]
+            first[0] = False
+            common = dict(
+                metric=metric, outputs=outputs, weights=weights, metrics=metrics,
+                calib_period=calib_period, valid_period=valid_period, step=step,
+                agg=agg, store=store, methods=methods, subbasins=subbasins,
+                is_initial=is_initial,
+            )
             if on_failure == "penalize":
                 try:
-                    return float(self._manager.run_iteration(
-                        params, observed_series, metric, reach_id, output_variable,
-                        methods=methods, subbasins=subbasins
-                    ))
+                    return float(self._manager.run_iteration(params, observed, **common))
                 except Exception as exc:  # failed run -> NaN -> ranked worst
                     logger.warning("DDS: run failed (%s)", exc)
                     return float("nan")
-            score = float(self._manager.run_iteration(
-                params, observed_series, metric, reach_id, output_variable,
-                methods=methods, subbasins=subbasins
-            ))
+            score = float(self._manager.run_iteration(params, observed, **common))
             if not np.isfinite(score):
                 raise RuntimeError(
                     f"run produced no valid score ({metric}={score}); "
@@ -332,4 +486,6 @@ class DDSCalibration:
         result["best_params"] = self._manager._format_params(
             result["best_params"], methods, subbasins
         )
+        result["seed"] = seed
+        result["runs"] = result["history"][names + ["score"]].copy()
         return result

@@ -4,8 +4,39 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import logging
 
+from spyswat.swat_calib.analysis.algorithms.dds import (
+    _MISSING, _resolve_observed,
+)
+
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_sens_observed(observed, observed_series, reach_id, output_variable, outputs):
+    """Resolve sensitivity args to ``(observed, outputs, single_site)``.
+
+    ``observed`` may be absent/None for the sequential (mean output) path, in which
+    case ``single_site`` is the one ``(variable, reach)`` to evaluate.  When
+    ``observed`` is present, ``single_site`` is ``None``.
+    """
+    observed, outputs = _resolve_observed(
+        observed, observed_series, reach_id, output_variable, outputs
+    )
+    if observed is _MISSING:
+        observed = None
+    if observed is None:
+        if outputs is None:
+            single = ("FLOW_OUTcms", 1)
+        else:
+            sites = [(v, r) for v in sorted(outputs) for r in outputs[v]]
+            if len(sites) != 1:
+                raise ValueError(
+                    "sequential sensitivity (no observations) needs exactly one output "
+                    f"site, got {len(sites)} from {outputs!r}."
+                )
+            single = sites[0]
+        return None, outputs, single
+    return observed, outputs, None
 
 
 class SWATSensitivity:
@@ -42,8 +73,10 @@ class SWATSensitivity:
         key = f"mean_{output_variable}"
         try:
             with self._manager.sandbox():               # stale output.rch = failed run
-                sim = self._manager.run_once(params, reach_id=reach_id,
-                                             output_variable=output_variable)
+                self._manager._apply_and_run(params)
+                sim = self.project.Output.read_rch(
+                    columns=['RCH', 'MON', output_variable], reach_id=reach_id
+                )[output_variable]
             value = float(sim.mean())
         except Exception as exc:
             self._manager.record_run(
@@ -57,13 +90,18 @@ class SWATSensitivity:
         )
         return value
 
-    def _batch_scores(self, param_sets, observed_series, metric, reach_id, output_variable) -> np.ndarray:
-        """Run a batch and return the ``metric`` column as a float array (NaN = failed run)."""
+    def _batch_scores(self, param_sets, observed, metric, outputs, weights=None,
+                      metrics=None, calib_period=None, valid_period=None, step=None,
+                      agg=None, store=None) -> np.ndarray:
+        """Run a batch and return the ``score`` column as a float array (NaN = failed run)."""
         res = self._manager.run_batch(
-            param_sets, observed_series, [metric], reach_id, output_variable
+            param_sets, observed, [metric] if metrics is None else list(metrics),
+            metric=metric, outputs=outputs, weights=weights,
+            calib_period=calib_period, valid_period=valid_period,
+            step=step, agg=agg, store=store,
         )
         if hasattr(res, 'columns'):
-            res = res[metric]
+            res = res['score'] if 'score' in res.columns else res[metric]
         return np.asarray(list(res), dtype=float)
 
     # ==================== One-At-A-Time (OAT) ====================
@@ -72,15 +110,27 @@ class SWATSensitivity:
             param_ranges: Dict[str, Tuple[float, float]],
             n_steps: int = 10,
             baseline_params: Optional[Dict] = None,
-            observed_series: Optional[pd.Series] = None,
-            output_variable: str = 'FLOW_OUTcms',
-            reach_id: int = 1,
-            metric: str = 'nse'
+            observed=_MISSING,
+            output_variable=_MISSING,
+            reach_id=_MISSING,
+            metric: str = 'nse',
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         One-At-a-Time sensitivity analysis (parallel).
         Tất cả (param, value) combinations được chạy song song qua run_batch.
         """
+        observed, outputs, seq_site = _resolve_sens_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
         if baseline_params is None:
             baseline_params = {
                 name: (vmin + vmax) / 2
@@ -101,19 +151,22 @@ class SWATSensitivity:
             f"{self.project.WorkingFolder.n_parallel} workers"
         )
 
-        if observed_series is not None:
+        if observed is not None:
             # Parallel: chạy tất cả qua run_batch
             self._manager.setup_parallel(overwrite=False)
             param_sets = [cfg[2] for cfg in all_configs]
             scores = self._batch_scores(
-                param_sets, observed_series, metric, reach_id, output_variable
+                param_sets, observed, metric, outputs, weights=weights,
+                metrics=metrics, calib_period=calib_period, valid_period=valid_period,
+                step=step, agg=agg,
             )
         else:
             # Không có quan trắc: chạy tuần tự, dùng mean output
+            var, reach = seq_site
             scores = []
             for param_name, value, params in all_configs:
                 try:
-                    scores.append(self._sequential_mean(params, output_variable, reach_id))
+                    scores.append(self._sequential_mean(params, var, reach))
                 except Exception as e:
                     logger.error(f"OAT {param_name}={value}: {e}")
                     scores.append(float('nan'))
@@ -180,16 +233,28 @@ class SWATSensitivity:
             param_ranges: Dict[str, Tuple[float, float]],
             n_trajectories: int = 10,
             n_levels: int = 4,
-            observed_series: Optional[pd.Series] = None,
-            output_variable: str = 'FLOW_OUTcms',
-            reach_id: int = 1,
+            observed=_MISSING,
+            output_variable=_MISSING,
+            reach_id=_MISSING,
             metric: str = 'nse',
             seed: Optional[int] = None,
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
     ) -> Dict:
         """
         Morris sensitivity analysis (Elementary Effects).
         Các trajectory được đánh giá song song qua run_batch.
         """
+        observed, outputs, seq_site = _resolve_sens_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
         param_names = list(param_ranges.keys())
         trajectories = self._generate_morris_trajectories(
             param_ranges, n_trajectories, n_levels, seed=seed
@@ -211,16 +276,19 @@ class SWATSensitivity:
         )
 
         # Chạy song song
-        if observed_series is not None:
+        if observed is not None:
             self._manager.setup_parallel(overwrite=False)
             all_scores = self._batch_scores(
-                all_steps, observed_series, metric, reach_id, output_variable
+                all_steps, observed, metric, outputs, weights=weights,
+                metrics=metrics, calib_period=calib_period, valid_period=valid_period,
+                step=step, agg=agg,
             )
         else:
+            var, reach = seq_site
             all_scores = []
             for ps in all_steps:
                 try:
-                    all_scores.append(self._sequential_mean(ps, output_variable, reach_id))
+                    all_scores.append(self._sequential_mean(ps, var, reach))
                 except Exception as e:
                     logger.error(f"Morris step error: {e}")
                     all_scores.append(float('nan'))
@@ -346,15 +414,24 @@ class SWATSensitivity:
     def morris_salib(
             self,
             param_ranges: Dict[str, Tuple[float, float]],
-            observed_series: 'pd.Series',
+            observed=_MISSING,
             n_trajectories: int = 10,
             num_levels: int = 4,
             optimal_trajectories: 'Optional[int]' = None,
             num_resamples: int = 1000,
             conf_level: float = 0.95,
-            output_variable: str = 'FLOW_OUTcms',
-            reach_id: int = 1,
+            output_variable=_MISSING,
+            reach_id=_MISSING,
             metric: str = 'nse',
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
     ) -> 'pd.DataFrame':
         """
         Morris Elementary Effects sensitivity analysis qua SALib.
@@ -382,6 +459,14 @@ class SWATSensitivity:
         Returns:
             DataFrame: param | mu | mu_star | sigma | ci_95
         """
+        observed, outputs, _ = _resolve_sens_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is None:
+            raise TypeError(
+                "observed is required for morris_salib: pass a Series or a dict "
+                "keyed (variable, reach)."
+            )
         try:
             from SALib.sample import morris as morris_sample
             from SALib.analyze import morris as morris_analyze
@@ -411,7 +496,9 @@ class SWATSensitivity:
         self._manager.setup_parallel(overwrite=False)
         param_sets = self._X_to_param_sets(X, param_names)
         Y = self._batch_scores(
-            param_sets, observed_series, metric, reach_id, output_variable
+            param_sets, observed, metric, outputs, weights=weights,
+            metrics=metrics, calib_period=calib_period, valid_period=valid_period,
+            step=step, agg=agg,
         )
 
         self.last_samples, self.last_scores = X, Y.copy()
@@ -464,14 +551,23 @@ class SWATSensitivity:
     def sobol_method(
             self,
             param_ranges: Dict[str, Tuple[float, float]],
-            observed_series: 'pd.Series',
+            observed=_MISSING,
             N: int = 1000,
             calc_second_order: bool = False,
             num_resamples: int = 1000,
             conf_level: float = 0.95,
-            output_variable: str = 'FLOW_OUTcms',
-            reach_id: int = 1,
+            output_variable=_MISSING,
+            reach_id=_MISSING,
             metric: str = 'nse',
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
     ) -> 'pd.DataFrame':
         """
         Sobol variance-based sensitivity analysis qua SALib.
@@ -496,6 +592,14 @@ class SWATSensitivity:
         Returns:
             DataFrame: param | S1 | S1_conf | ST | ST_conf | interaction
         """
+        observed, outputs, _ = _resolve_sens_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is None:
+            raise TypeError(
+                "observed is required for sobol_method: pass a Series or a dict "
+                "keyed (variable, reach)."
+            )
         try:
             try:
                 from SALib.sample import sobol as saltelli  # SALib >= 1.4
@@ -523,7 +627,9 @@ class SWATSensitivity:
         self._manager.setup_parallel(overwrite=False)
         param_sets = self._X_to_param_sets(X, param_names)
         Y = self._batch_scores(
-            param_sets, observed_series, metric, reach_id, output_variable
+            param_sets, observed, metric, outputs, weights=weights,
+            metrics=metrics, calib_period=calib_period, valid_period=valid_period,
+            step=step, agg=agg,
         )
 
         self.last_samples, self.last_scores = X, Y.copy()

@@ -24,6 +24,9 @@ from spyswat.swat_calib.analysis.algorithms.glue import GLUE
 from spyswat.swat_calib.analysis.algorithms.parallel_de import ParallelDE
 from spyswat.swat_calib.analysis.algorithms.dds import DDSCalibration
 from spyswat.swat_calib.analysis.algorithms.pso import PSOCalibration
+from spyswat.swat_calib.analysis.algorithms.dds import (
+    _MISSING, _resolve_observed, _single_site,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +73,25 @@ class SWATCalibration:
     def optimize(
             self,
             param_ranges: Dict[str, Tuple],
-            observed_series: pd.Series,
+            observed=_MISSING,
             method: str = "differential_evolution",
             metric: str = "nse",
             max_iter: int = 100,
-            reach_id: int = 1,
-            output_variable: str = "FLOW_OUTcms",
+            reach_id=_MISSING,
+            output_variable=_MISSING,
             param_methods: Optional[Dict[str, str]] = None,
             param_subbasins: Optional[Dict[str, list]] = None,
             on_failure: str = "raise",
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
+            store=None,
     ) -> Dict:
         """
         Single-threaded scipy optimisation.
@@ -98,6 +111,14 @@ class SWATCalibration:
         RuntimeError "all runs failed"). Use differential_evolution when parts of the
         parameter space crash SWAT.
         """
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
         if on_failure not in ("raise", "penalize"):
             raise ValueError(f"on_failure must be 'raise' or 'penalize', got {on_failure!r}")
         to_objective(metric, 0.0)  # validates the metric name (ValueError if unknown)
@@ -111,28 +132,27 @@ class SWATCalibration:
 
         def objective(x):
             raw   = dict(zip(names, x))
+            common = dict(
+                metric=metric, outputs=outputs, weights=weights, metrics=metrics,
+                calib_period=calib_period, valid_period=valid_period, step=step,
+                agg=agg, store=store, methods=methods, subbasins=subbasins,
+            )
             if on_failure == "penalize":
                 try:
-                    score = float(self.manager.run_iteration(
-                        raw, observed_series, metric, reach_id, output_variable,
-                        methods=methods, subbasins=subbasins
-                    ))
+                    score = float(self.manager.run_iteration(raw, observed, **common))
                 except Exception as exc:
                     logger.warning("optimize: run failed (%s)", exc)
                     score = float("nan")
             else:
-                score = float(self.manager.run_iteration(
-                    raw, observed_series, metric, reach_id, output_variable,
-                    methods=methods, subbasins=subbasins
-                ))
+                score = float(self.manager.run_iteration(raw, observed, **common))
                 if not np.isfinite(score):
                     raise RuntimeError(
                         f"run produced no valid score ({metric}={score}); "
                         "use on_failure='penalize' to continue past failed runs"
                     )
-            step = len(self.optimization_history) + 1
+            step_i = len(self.optimization_history) + 1
             self.optimization_history.append({
-                "step":  step,
+                "step":  step_i,
                 **dict(zip(names, x)),
                 "score": score,
             })
@@ -172,16 +192,26 @@ class SWATCalibration:
     def analyze(
             self,
             param_ranges: Dict[str, Tuple],
-            observed_series: pd.Series,
+            observed=_MISSING,
             n_samples: int = 1000,
             threshold: float = 0.5,
             metric: str = "nse",
-            output_variable: str = "FLOW_OUTcms",
-            reach_id: int = 1,
+            output_variable=_MISSING,
+            reach_id=_MISSING,
             sensitivity_method: str = "spearman",
             seed: Optional[int] = None,
             param_methods: Optional[Dict[str, str]] = None,
             param_subbasins: Optional[Dict[str, list]] = None,
+            observed_series=_MISSING,
+            *,
+            outputs=None,
+            weights=None,
+            metrics=None,
+            calib_period=None,
+            valid_period=None,
+            step=None,
+            agg=None,
+            store=None,
     ) -> Dict:
         """
         GLUE (parallel) -> best params -> sensitivity -> performance.
@@ -189,18 +219,32 @@ class SWATCalibration:
 
         param_ranges supports unified format — see class docstring.
         """
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
         _, _m, _s  = CalibrationManager._parse_spec(param_ranges)
         methods    = {**_m, **(param_methods   or {})}
         subbasins  = {**_s, **(param_subbasins or {})}
 
         glue_result = self.glue.run(
             param_ranges    = param_ranges,
-            observed_series = observed_series,
+            observed        = observed,
             n_samples       = n_samples,
             threshold       = threshold,
             metric          = metric,
-            output_variable = output_variable,
-            reach_id        = reach_id,
+            outputs         = outputs,
+            weights         = weights,
+            metrics         = metrics,
+            calib_period    = calib_period,
+            valid_period    = valid_period,
+            step            = step,
+            agg             = agg,
+            store           = store,
             seed            = seed,
             param_methods   = param_methods,
             param_subbasins = param_subbasins,
@@ -219,12 +263,17 @@ class SWATCalibration:
             method=sensitivity_method,
         )
 
-        self.manager.run_iteration(best_raw, observed_series, metric, reach_id, output_variable,
-                                   methods=methods, subbasins=subbasins)
+        self.manager.run_iteration(
+            best_raw, observed, metric=metric, outputs=outputs, weights=weights,
+            metrics=metrics, calib_period=calib_period, valid_period=valid_period,
+            step=step, agg=agg, store=store, methods=methods, subbasins=subbasins,
+        )
+        var, reach = _single_site(observed, outputs)
+        obs_series = observed if isinstance(observed, pd.Series) else observed[(var, reach)]
         sim = self.project.Output.read_rch(
-            columns=["RCH", "MON", output_variable], reach_id=reach_id
-        )[output_variable]
-        obs_aligned, sim_aligned = self.manager._align_series(observed_series, sim)
+            columns=["RCH", "MON", var], reach_id=reach
+        )[var]
+        obs_aligned, sim_aligned = self.manager._align_series(obs_series, sim)
         performance = self.analysis.evaluate_performance(obs_aligned, sim_aligned)
 
         return {
