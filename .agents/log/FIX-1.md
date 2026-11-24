@@ -76,3 +76,9 @@ work_dir"` → 3 passed.
 - `ScenarioBatch.run()` records metrics for the batch; it does not call
   `Logger.stop_listener()` either — the caller keeps owning the listener lifetime, matching
   `CalibrationManager.run_batch()`.
+
+## 2026-11-24 20:31 — Docs Updater (agy gemini-4-hydrogen-medium, accept-edits)
+
+- CHANGELOG.md: two bullets under [Unreleased] / Changed (log_queue, per-results_dir work dir).
+- No other doc mentions `_scenario_batch` or `ScenarioBatch(` log setup; nothing else changed.
+- Review round 1: PASS (agy Hydrogen High), see `.agents/reviews/FIX-1-1.md`.
