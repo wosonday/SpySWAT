@@ -49,6 +49,13 @@ below); no package was published between 0.2.4 and 0.2.6.
 
 ### Changed
 
+- `ScenarioBatch.run()` now uses one process pool (`ProcessPoolExecutor`) for the whole
+  batch via `scenarios/scheduler.py` (`Scheduler`, `Slot`): a free slot takes the next
+  pending job (same base TxtInOut first, otherwise re-copied), using at most `n_parallel`
+  worker folders (`TxInOut1`..`TxInOutN`). Results are saved as they arrive (every
+  `n_parallel` results or 10 s) and on any exit; a broken worker pool or an unreadable
+  `weather_dir` fails the affected jobs and `run()` still returns (`resume=True` re-runs
+  them).
 - Split shared copy/freshness helpers into `core/run_state.py`, pure parameter helpers
   into `calibration/param_spec.py`, and CSV/session persistence into
   `calibration/run_log.py::RunLog`. Existing private helper aliases and manager
