@@ -77,3 +77,17 @@ in the log. Import private helpers from `workingFolder_manager.py` instead of ed
 ## Report format
 `agm send` to the CEO terminal: 1-3 lines pointing to `.agents/log/PAR-1.md` (files changed,
 commands with counts, open questions). Then stop.
+
+## Docs step (Architect, 2026-11-24, after review PAR-1-4 PASS and Audit 355 passed / 11 skipped)
+
+Docs Updater: `gemini-4-hydrogen-medium` (agy, edits only); a short Flash session commits
+(`par-1: docs: ...`). Describe only behaviour that exists at 8dfeac0. Edit only:
+- `CHANGELOG.md` `[Unreleased]` → `### Changed`: `ScenarioBatch.run` uses one process pool for the
+  whole batch; a free slot takes the next job (same base first, otherwise re-copied); at most
+  `n_parallel` worker folders; results saved as they arrive and on any exit; a broken worker pool
+  or an unreadable `weather_dir` fails the affected jobs and `run()` still returns (`resume=True`
+  re-runs them). New module `scenarios/scheduler.py`.
+- `ARCHITECTURE.md` §3.7 (Vietnamese): replace the chunk description with the queue/slot model.
+- `README.md` and `README_VI.md`, scenario section: 2-4 sentences on scheduling and failures.
+- `AGENTS.md` quick-orientation tree: add `scenarios/scheduler.py`. Do not touch test counts.
+- `.agents/log/PAR-1.md`: append one docs entry.
