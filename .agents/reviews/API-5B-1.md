@@ -23,3 +23,5 @@ None.
 
 ## CEO triage → rework (worker-mid)
 PASS, but fix all four Minors exactly as proposed before the final merge (resume must be proven on an interrupted seed=None run, with sensitivity=True on one resumed case). Auditor: full suite on def096c = 717 passed, 15 skipped; lint 0 errors.
+
+## CEO: rework done. Auditor on 2bc58b6: 721 passed, 15 skipped (-W error::DeprecationWarning:spyswat), lint 0 errors. Minor-only rework: no further review round.
