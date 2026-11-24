@@ -164,3 +164,46 @@ silent re-run.
 
 Internal helper names, exact module split inside the files listed per task, test layout, the CSV
 float formatting used to make replay exact (must be `repr`-round-trippable).
+
+## Decisions after the builder check (Neon, 2026-11-24; CEO calls, within what the user agreed)
+
+1. **Per-variable metric files:** `reach_<id>/<variable>_metrics.csv` (one row per run) next to
+   `reach_<id>/<variable>.csv`; no shared `metrics.csv` per reach.
+2. **One metric implementation:** `CalibrationManager` computes every per-site/period metric by calling
+   `analysis.evaluate.evaluate()`; API-2 therefore depends on API-1.
+3. **Primitive return types:** `run_iteration` → `float` (`score`), `run_batch` → `list[float]`;
+   per-site results go to the session store. `run_once(outputs=...)` → `{(variable, reach): Series}`;
+   the deprecated `reach_id`/`output_variable` path keeps returning a `Series`.
+4. **`apply`:** `project.apply(x, methods=None, subbasins=None)` takes a `ParamSet`, a
+   `CalibrationResult` (its best) or a dict. Methods and subbasins are stored in `session.json` and in
+   `ParamSet`s from `top/select`; a dict whose calibration used non-`"v"` methods without `methods=` raises.
+5. **Warm-up and months:** warm-up end = `Timestamp(IYR + NYSKIP, 1, 1)`. `step="M"` resamples the
+   simulation with `"MS"`; default `agg` by `fnmatch` (`SED_*`, `*tons`, `*kg` → sum, else mean);
+   user `agg` wins.
+6. **`select`/`top`:** `select(score__gt=0.5)` or `select(nse__gt=0.5, site=(var, reach), period="calib",
+   how="all"|"any")` with operators `gt/gte/lt/lte`; default `how="all"` over calibrated sites, period
+   `calib`. `top(n)` drops failed/NaN runs, best first.
+7. **Sessions:** `results_dir` default `<working_dir>/calibration_results`; `session=None` creates a new
+   timestamped folder; an existing session with `resume=False` raises `FileExistsError`. `outputs` may be a
+   superset of `observed` (ungauged sites stored without metrics); observed keys missing from `outputs` are
+   added. `project.sensitivity(from_session=...)` needs no `param_ranges`/`observed`.
+8. **Hashing / loading:** observed hash = SHA-256 over sorted `(variable, reach)` + ISO index + float64
+   bytes. `CalibrationResult.load` reads metadata eagerly, series lazily.
+9. **Replay (API-5):** `seed=None` is resolved to a concrete integer before run 1 and stored. Replay uses an
+   **ordered cursor** (run k of the new execution must equal stored row k exactly, else
+   `ResumeMismatchError`), not a dict lookup. Floats written with `repr`, read with stdlib `csv` +
+   `float()`; `-0.0` normalised to `0.0`. Batch results are collected in submission order; series and
+   metric files are committed before the batch's rows are appended to `runs.csv` (temp + `os.replace`);
+   an uncommitted tail is discarded on resume. Failed runs are replayed as failed (never silently retried).
+   `session.json` stores seed, `on_failure`, `n_parallel`, parameter order, numpy version.
+10. **Score:** per-site metric files keep **signed** pbias; `|pbias|` only inside `score`. `score` uses the
+    calib period and sites with weight > 0 only. Weights must be positive, known sites, normalised to sum 1.
+    Warn when `rmse`/`mae` are aggregated across different variables without explicit weights. Before any
+    SWAT run, each observed site must overlap `calib_period` and have non-zero variance (fail fast).
+11. **Regression sensitivity:** `runs.csv` has `is_initial` (True for GLUE/LHS rows and the initial random
+    population of PSO/DE/DDS). The result also reports `r2`, `n_used`, `n_dropped`; collinear or constant
+    parameters get `t=0, p=NaN` instead of an error inside `calibration()`; when `n_used < k + 2` the
+    facade stores a status "insufficient runs" instead of failing; warn when `n_used < max(20, 3k)` or
+    `r2 < 0.3`. (API-3a raises on these cases; API-4 turns the error into the status.)
+12. **Exports:** `analysis/__init__.py` re-exports are allowed in API-1/API-3a (one line each); a trivial
+    merge conflict there is resolved at merge time.
