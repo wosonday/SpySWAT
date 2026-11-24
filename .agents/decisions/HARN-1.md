@@ -31,3 +31,29 @@ commands), and a one-line note in `docs/agents/models/OPENCODE-WORKERS-REVIEWER.
 `.opencode/agents/{explore,reviewer,auditor}.md`, `docs/agents/models/OPENCODE-WORKERS-REVIEWER.md`,
 `.agents/log/HARN-1.md`. Check: `python -m pytest tests/ -q` unchanged counts; build the sdist
 (`uv build --sdist` or `python -m build --sdist`) and list it to prove the exclusion.
+
+## Correction after Architect probes (2026-11-24) — item 3 was insufficient
+
+Tool lists printed by `opencode run` (OpenCode 2.4, same result with Flash and Nemotron):
+
+| Agent config | Tools exposed |
+|---|---|
+| BG-1 `background` (`bash: "*": deny`), no `execute` rule | `... read, websearch, execute` |
+| same + `execute: deny` | `execute` gone, but ~30 plugin tools appear: `browse_*` (incl. `browse_eval`, `browse_upload`), `opencode_worktree_create/remove`, `opencode_session_move`, ... |
+| `reviewer` after HARN-1 (`execute: deny`) | the same plugin tools + `edit`, `write`, `shell` |
+| `reviewer` + `"*": deny`, `read/glob/grep: allow` | `edit, glob, grep, opencode_worktree_remove, read, shell, skill, write` |
+
+`execute` is a code-mode wrapper around plugin/MCP tools: denying it alone exposes them.
+`opencode_worktree_remove` cannot be denied by name, but calling it on `.wt/<x>` is rejected with
+`Permission denied: edit` (verified in a scratch repo; the worktree survived), so the `edit`
+patterns guard it. `browse_*` are not file edits and only `"*": deny` removes them.
+
+**Corrected item 3:** in `explore.md`, `reviewer.md`, `auditor.md` add, as the first keys under
+`permission:`, `"*": deny`, `read: allow`, `glob: allow`, `grep: allow`; keep every existing key
+(incl. `execute: deny`). Docs bullet: say that read-only agents need a default `"*": deny` with
+explicit allows, because `execute` wraps plugin tools (`browse_*`, worktree tools) that appear
+when it alone is denied. Worker agents are out of scope (follow-up HARN-2).
+
+**AGENTS.md wording fix:** the "Of these, 87 ..." sentence follows the skipped-tests note and reads
+as if 87 tests were skipped. Make it its own paragraph: "Of the 451 passing tests, 87 are harness
+lint tests (...)".
