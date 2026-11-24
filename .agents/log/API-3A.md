@@ -21,3 +21,23 @@
 
 ### Open questions
 - None. Behaviour of `sensitivity=True` wiring in `project.calibration` is out of scope (API-3b / facade task).
+
+## 2026-11-25 — Worker (fast), rework round for review 1 (items 1-4, TDD)
+
+### Tests first (`tests/test_regression_sensitivity.py`, 5 added)
+- `test_negative_dominant_coefficient_ranks_first_by_abs_t`: `score = -4*x1 + 0.3*x2 + noise`
+  ranks `K1.mgt` first with a negative coefficient by |t|.
+- `test_missing_score_column_raises`: a renamed score column raises `ValueError`
+  (message names `score`).
+- `test_exact_fit_reports_infinite_t_without_warning`: exact linear fit
+  (`score = 1 + 2*x1`, x1 = 0..3) → `coef ≈ 2`, `t_stat = +inf`, `p_value = 0.0`, no
+  `RuntimeWarning`.
+- `test_zero_residual_zero_coefficient_is_not_significant`: constant zero score →
+  `t_stat = 0`, `p_value = NaN`, no `RuntimeWarning`.
+- `test_attrs_report_fit_quality_and_run_counts`: 120 rows, 1 NaN score + 2 NaN parameters →
+  `n_used = 117`, `n_runs = n_used`, `n_dropped = 3`, `0.9 < r2 < 1.0`.
+
+Red run before the implementation change:
+- `python -m pytest tests/test_regression_sensitivity.py -q` → `3 failed, 8 passed in 2.67s`
+  (exact-fit warning, zero-coefficient case, missing `n_used` attr).
+

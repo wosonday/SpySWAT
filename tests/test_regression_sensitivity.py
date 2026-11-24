@@ -1,4 +1,6 @@
 """Regression-based (SWAT-CUP global) sensitivity from calibration runs."""
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -74,6 +76,79 @@ def test_constant_parameter_raises():
             runs,
             {"K1.mgt": (0.0, 1.0), "K2.mgt": (0.0, 1.0), "K3.mgt": (0.0, 1.0)},
         )
+
+
+def test_negative_dominant_coefficient_ranks_first_by_abs_t():
+    rng = np.random.default_rng(11)
+    n = 200
+    k1, k2 = rng.random(n), rng.random(n)
+    runs = pd.DataFrame({
+        "K1.mgt": k1,
+        "K2.mgt": k2,
+        "score": -4.0 * k1 + 0.3 * k2 + rng.normal(0.0, 0.05, n),
+    })
+
+    result = regression_sensitivity(
+        runs, {"K1.mgt": (0.0, 1.0), "K2.mgt": (0.0, 1.0)}
+    )
+
+    assert result.iloc[0]["parameter"] == "K1.mgt"
+    assert result.iloc[0]["coef"] < 0
+    assert abs(result.iloc[0]["t_stat"]) > abs(result.iloc[1]["t_stat"])
+
+
+def test_missing_score_column_raises():
+    runs = synthetic_runs(n=50).rename(columns={"score": "nse"})
+    with pytest.raises(ValueError, match="score"):
+        regression_sensitivity(
+            runs,
+            {"K1.mgt": (0.0, 1.0), "K2.mgt": (0.0, 1.0), "K3.mgt": (0.0, 1.0)},
+        )
+
+
+def test_exact_fit_reports_infinite_t_without_warning():
+    x1 = np.array([0.0, 1.0, 2.0, 3.0])
+    runs = pd.DataFrame({"K1.mgt": x1, "score": 1.0 + 2.0 * x1})
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = regression_sensitivity(runs, {"K1.mgt": (0.0, 1.0)})
+
+    assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
+    row = result.iloc[0]
+    assert row["coef"] == pytest.approx(2.0)
+    assert np.isposinf(row["t_stat"])
+    assert row["p_value"] == 0.0
+
+
+def test_zero_residual_zero_coefficient_is_not_significant():
+    runs = pd.DataFrame({"K1.mgt": np.linspace(0.0, 1.0, 10), "score": 0.0})
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = regression_sensitivity(runs, {"K1.mgt": (0.0, 1.0)})
+
+    assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
+    row = result.iloc[0]
+    assert row["t_stat"] == 0.0
+    assert np.isnan(row["p_value"])
+
+
+def test_attrs_report_fit_quality_and_run_counts():
+    runs = synthetic_runs(n=120)
+    runs.loc[0, "score"] = np.nan
+    runs.loc[1, "K2.mgt"] = np.nan
+    runs.loc[2, "K3.mgt"] = np.nan
+
+    result = regression_sensitivity(
+        runs,
+        {"K1.mgt": (0.0, 1.0), "K2.mgt": (0.0, 1.0), "K3.mgt": (0.0, 1.0)},
+    )
+
+    assert result.attrs["n_used"] == 117
+    assert result.attrs["n_runs"] == result.attrs["n_used"]
+    assert result.attrs["n_dropped"] == 3
+    assert 0.9 < result.attrs["r2"] < 1.0
 
 
 def test_method_decorated_specs_use_inner_bounds():
