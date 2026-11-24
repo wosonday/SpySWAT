@@ -384,7 +384,8 @@ class TestUncertaintyBand:
     def test_record_run_once_per_run_with_sim(self, obs):
         calib, _ = self._setup(obs)
         df = pd.DataFrame({"CN2.mgt": [50.0, 60.0, 70.0], "nse": [0.6, 0.7, 0.8]})
-        calib.glue.uncertainty_band(df, obs, reach_id=2, output_variable="FLOW_OUTcms")
+        with pytest.warns(DeprecationWarning, match="deprecated"):
+            calib.glue.uncertainty_band(df, obs, reach_id=2, output_variable="FLOW_OUTcms")
         calls = calib.manager.record_run.call_args_list
         assert len(calls) == 3
         for c in calls:

@@ -3,6 +3,7 @@
 import logging
 from contextlib import nullcontext
 from dataclasses import dataclass
+import warnings
 import numpy as np
 import pandas as pd
 
@@ -28,6 +29,10 @@ class ValidationRunner:
 
     def __init__(self, project, param_ranges: dict, observed: pd.Series,
                  period: PeriodConfig):
+        warnings.warn(
+            "ValidationRunner is deprecated; use project.calibration(...) instead.",
+            DeprecationWarning, stacklevel=2,
+        )
         self.project      = project
         self.param_ranges = param_ranges
         self.observed     = observed
@@ -67,8 +72,9 @@ class ValidationRunner:
         sim_dated = None
         with manager.sandbox() if restore else nullcontext():
             try:
-                sim = manager.run_once(formatted, reach_id=reach_id,
-                                       output_variable=output_variable)
+                sim = manager.run_once(
+                    formatted, outputs={output_variable: [reach_id]}
+                )[(output_variable, reach_id)]
 
                 # 3. Kiem dinh (validation period)
                 obs_valid = self.observed.loc[self.period.valid_start:self.period.valid_end]

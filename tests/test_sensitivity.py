@@ -48,7 +48,8 @@ class TestOAT:
         s = make_sens()
         s._manager.run_batch = batch_fn(fail_idx=(1,))
         with caplog.at_level(logging.WARNING):
-            df, idx = s.one_at_a_time(RANGES, n_steps=4, observed_series=obs)
+            with pytest.warns(DeprecationWarning, match="deprecated"):
+                df, idx = s.one_at_a_time(RANGES, n_steps=4, observed_series=obs)
         assert df["metric"].isna().sum() == 1
         assert "failed 1 of 8 runs" in caplog.text
         assert np.isfinite(idx["sensitivity_index"]).all()
@@ -105,7 +106,8 @@ class TestMorrisBuiltin:
         s = make_sens()
         s._manager.run_batch = batch_fn(fail_idx=(1,))        # inside trajectory 0
         with caplog.at_level(logging.WARNING):
-            r = s.morris_method(RANGES, n_trajectories=4, observed_series=obs, seed=0)
+            with pytest.warns(DeprecationWarning, match="deprecated"):
+                r = s.morris_method(RANGES, n_trajectories=4, observed_series=obs, seed=0)
         assert "failed 1 of 12 runs" in caplog.text
         assert "dropped 1 of 4 trajectories" in caplog.text
         mu_star = r["morris_indices"]["mu_star"]
@@ -115,7 +117,8 @@ class TestMorrisBuiltin:
         s = make_sens()
         s._manager.run_batch = batch_fn(fail_all=True)
         with pytest.raises(RuntimeError, match="0 of 4"):
-            s.morris_method(RANGES, n_trajectories=4, observed_series=obs, seed=0)
+            with pytest.warns(DeprecationWarning, match="deprecated"):
+                s.morris_method(RANGES, n_trajectories=4, observed_series=obs, seed=0)
 
 
 # ── SALib based (skipped when SALib is not installed) ───────────────────────
@@ -181,8 +184,9 @@ class TestOATIndex:
                         for i, (k, v) in enumerate(zip(["x1"] * 4 + ["x2"] * 4 + ["x3"] * 4, vals))]
             return pd.DataFrame({metrics[0]: vals})
         s._manager.run_batch = fn
-        return s.one_at_a_time(self.RANGES3, n_steps=4, observed_series=obs,
-                               baseline_params={"x1": 0.5, "x2": 0.5, "x3": 0.5})[1]
+        with pytest.warns(DeprecationWarning, match="deprecated"):
+            return s.one_at_a_time(self.RANGES3, n_steps=4, observed_series=obs,
+                                   baseline_params={"x1": 0.5, "x2": 0.5, "x3": 0.5})[1]
 
     def test_ranking_follows_effect_size(self, obs):
         idx = self._run(obs)

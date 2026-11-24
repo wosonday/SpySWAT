@@ -43,6 +43,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 from spyswat.swat_calib.analysis.statistics import (
     best_index, finite_stats, sanitize_scores, to_objective,
 )
+from spyswat.swat_calib.analysis.algorithms.dds import (
+    _MISSING, _batch_scores, _params_frame, _reported, _resolve_observed,
+    _resolve_seed, _runs_frame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,10 +316,10 @@ class PSOCalibration:
     def run(
         self,
         param_ranges: Dict[str, Tuple],
-        observed_series: pd.Series,
+        observed=_MISSING,
         metric: str = "nse",
-        output_variable: str = "FLOW_OUTcms",
-        reach_id: int = 1,
+        output_variable=_MISSING,
+        reach_id=_MISSING,
         n_particles: Optional[int] = None,
         max_iterations: int = 50,
         w_max: float = 0.9,
@@ -328,6 +332,16 @@ class PSOCalibration:
         param_subbasins: Optional[Dict[str, list]] = None,
         tol: float = 1e-6,
         patience: int = 10,
+        observed_series=_MISSING,
+        *,
+        outputs=None,
+        weights=None,
+        metrics=None,
+        calib_period=None,
+        valid_period=None,
+        step=None,
+        agg=None,
+        store=None,
     ) -> Dict:
         """
         Run PSO calibration with full swarm evaluated in parallel each iteration.
@@ -338,7 +352,7 @@ class PSOCalibration:
                             "CN2.mgt": (60, 98)                       # bounds only
                             "CN2.mgt": ((60, 98), "r")                # + method
                             "CN2.mgt": ((60, 98), "r", [71, 45, 70]) # + subbasins
-        observed_series : pd.Series  Observed discharge with DatetimeIndex.
+        observed        : pd.Series or {(variable, reach): pd.Series}
         metric          : str    Objective metric; direction comes from the metric
                                  registry (nse/r2/kge maximised, rmse/mae/rsr minimised,
                                  pbias -> |pbias| minimised). Failed runs (NaN) rank worst.
@@ -353,6 +367,8 @@ class PSOCalibration:
         param_subbasins : optional override for subbasin list per param.
         tol             : float  Early-stop tolerance on best score improvement.
         patience        : int    Iterations without improvement before early stop.
+        outputs, weights, metrics, calib_period, valid_period, step, agg, store :
+                                 the multi-site vocabulary passed through to run_batch.
 
         Returns
         -------
@@ -361,6 +377,8 @@ class PSOCalibration:
             best_score       : float
             history          : pd.DataFrame  (iteration, best_score, mean_score, std_score)
             all_evaluations  : pd.DataFrame  (all params + score + iteration)
+            seed             : int
+            runs             : pd.DataFrame  (params + score + per-site columns)
         """
         if not (0.0 <= w_min <= w_max <= 1.5):
             raise ValueError("Must satisfy 0 <= w_min <= w_max <= 1.5.")
@@ -368,6 +386,16 @@ class PSOCalibration:
             raise ValueError("c1 and c2 must be positive.")
         if not (0.0 < v_max_ratio <= 1.0):
             raise ValueError("v_max_ratio must be in (0, 1].")
+
+        observed, outputs = _resolve_observed(
+            observed, observed_series, reach_id, output_variable, outputs
+        )
+        if observed is _MISSING:
+            raise TypeError(
+                "observed is required: pass a pandas Series or a dict keyed "
+                "(variable, reach)."
+            )
+        seed = _resolve_seed(seed)
 
         # ── Parse unified spec ──────────────────────────────────────────
         bounds, _m, _s = self._manager._parse_spec(param_ranges)
@@ -396,19 +424,21 @@ class PSOCalibration:
                 for i in range(len(pop))
             ]
 
-        def evaluate_swarm(pop: np.ndarray) -> np.ndarray:
+        def evaluate_swarm(pop: np.ndarray, is_initial: bool):
             batch_df = self._manager.run_batch(
-                to_param_sets(pop), observed_series, [metric], reach_id, output_variable
+                to_param_sets(pop), observed, _reported(metric, metrics),
+                metric=metric, outputs=outputs, weights=weights,
+                calib_period=calib_period, valid_period=valid_period,
+                step=step, agg=agg, store=store,
+                methods=methods, subbasins=subbasins, is_initial=is_initial,
             )
-            if hasattr(batch_df, "columns"):
-                return np.array(batch_df[metric].tolist(), dtype=float)
-            return np.array(list(batch_df), dtype=float)
+            return _batch_scores(batch_df, metric), batch_df
 
         # ── Initialisation ──────────────────────────────────────────────
         positions  = lower + rng.random((NP, d)) * (upper - lower)
         velocities = rng.uniform(-v_max, v_max, (NP, d))
 
-        scores    = evaluate_swarm(positions)               # raw metric values (may hold NaN)
+        scores, batch_df = evaluate_swarm(positions, is_initial=True)
         gidx0     = best_index(scores, metric)              # RuntimeError if every run failed
         obj       = to_objective(metric, sanitize_scores(scores, metric))
         pbest_x   = positions.copy()
@@ -431,6 +461,7 @@ class PSOCalibration:
             row = {names[j]: float(positions[i, j]) for j in range(d)}
             row.update({"score": scores[i], "iteration": 0})
             all_rows.append(row)
+        runs_parts = [_runs_frame(_params_frame(names, positions), batch_df, metric)]
 
         logger.info(
             "PSO iter 0 | best=%.4f mean=%.4f NP=%d d=%d metric=%s",
@@ -461,7 +492,8 @@ class PSOCalibration:
             velocities = np.clip(velocities, -v_max, v_max)
             positions  = np.clip(positions + velocities, lower, upper)
 
-            scores = evaluate_swarm(positions)
+            scores, batch_df = evaluate_swarm(positions, is_initial=False)
+            runs_parts.append(_runs_frame(_params_frame(names, positions), batch_df, metric))
 
             for i in range(NP):
                 row = {names[j]: float(positions[i, j]) for j in range(d)}
@@ -518,4 +550,6 @@ class PSOCalibration:
             "best_score":      gbest_f,
             "history":         pd.DataFrame(history),
             "all_evaluations": pd.DataFrame(all_rows),
+            "seed":            seed,
+            "runs":            pd.concat(runs_parts, ignore_index=True),
         }
