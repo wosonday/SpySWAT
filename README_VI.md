@@ -215,7 +215,15 @@ res = project.calibration(
 
 Mỗi lần đánh giá chạy toàn bộ giai đoạn mô phỏng trong `file.cio` một lần; `calib_period` dùng cho hàm mục tiêu (`score`), đồng thời cả hai giai đoạn `calib_period` và `valid_period` đều được tính và lưu cho mọi lần chạy. Thư mục `TxtInOut` gốc không bao giờ bị sửa trong quá trình hiệu chỉnh.
 
-> **Chạy tiếp bằng replay (`resume=True`):** dự kiến trong 0.3.0 (API-5).
+> **Chạy tiếp bằng replay (`resume=True`):** để tiếp tục một lần hiệu chỉnh bị gián
+> đoạn hoặc đã xong, gọi lại `project.calibration(...)` với cùng tên `session=` và
+> `resume=True` (mặc định). Các lần chạy đã ghi nhận được phát lại từ thư mục phiên —
+> SWAT không bao giờ chạy lại chúng — và chỉ những lần đánh giá còn lại mới chạy.
+> Cấu hình phải khớp với phiên đã lưu: cùng `param_ranges` (khóa, thứ tự và cận),
+> `observed`, `metric`/`metrics`, tùy chọn thuật toán và `seed` (truyền `seed=None`
+> để dùng lại seed đã lưu); nếu không sẽ ném `ValueError` và phiên được giữ nguyên.
+> Phiên không tồn tại ném `FileNotFoundError`; `resume=False` trên phiên đã tồn tại
+> ném `FileExistsError`.
 
 `project.calibration(...)` trả về `CalibrationResult`:
 
