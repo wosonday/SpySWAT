@@ -65,6 +65,10 @@ Full suite:
   -> `97 passed, 28 subtests passed in 8.61s` (was 87 harness tests).
 - `git diff --check` -> no output.
 - `git status --short` before the commit -> only the ten modified files above.
+- `pytest tests/test_harness_routing.py -q -k "complete_fixture_passes or cli_json_and_exit_codes"`
+  -> `2 passed, 35 deselected in 0.29s`: the lint functions and the `lint_harness.py` CLI
+  (exit codes + JSON) used by the copied docs are proven on the harness fixture; the
+  repository-level run is the only part left to the Auditor.
 
 `AGENTS.md` Commands now read `# measured on feat/docs-5 (harness sync): 464 passed, 11 skipped
 (~4 min on Windows)` and the paragraph below it now says `Of the 464 passing tests, 97 are
