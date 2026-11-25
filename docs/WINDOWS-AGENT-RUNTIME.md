@@ -1,4 +1,4 @@
-# Windows Agent Runtime — Verified Lessons (2026-11-24)
+# Windows Agent Runtime — Verified Lessons (2026-11-24, updated 2026-11-25)
 
 Field notes from one full single-lane batch (two parallel DeepSeek workers, one NVIDIA background task, `agy` reviews and docs, `copilot-git` merges) on Windows 11 with OpenCode 2.4, `agm` 0.4.1, `hc`, `agy` and GitHub Copilot CLI 1.0. Every rule below was reproduced at least once; the evidence lives in the project notebook of the batch (`.agents/decisions/`, `.agents/reviews/`). It complements [AGENTS-TUTORIAL.md](../AGENTS-TUTORIAL.md), [HERDR-CORE-BOT.md](../HERDR-CORE-BOT.md) and the per-tool guides in this directory.
 
@@ -64,3 +64,15 @@ Verified by asking each agent, without calling any tool, for its exact tool list
 - `nvidia-nemotron/nvidia/nemotron-3-ultra-550b-a55b` qualified for read-only log synthesis: 5 of 5 planted expected findings, 161 s against a 15-minute deadline, snapshot hashes unchanged.
 - It reported already fixed issues as open. Background briefs ask for `status: open | resolved | unknown` per finding, with evidence for `resolved`.
 - Run the background agent in a snapshot folder outside the repository with the default-deny configuration of section 3; never send real model data or run logs to a cloud model.
+
+## 9. Second Batch (2026-11-25): Twelve Task Branches, `agy`-First Reviews
+
+Lessons from a larger single-lane batch (twelve task branches, up to three parallel DeepSeek workers, `agy` reviews, `copilot-git` merges, one NVIDIA log summary per wave).
+
+- **Know which worker finished before auditing.** With several workers running, a wait loop returns as soon as any terminal finishes. Read the terminal address in the result (`hc get <t>` shows `"state":"finished"`) and audit that worktree only. One branch was audited while its worker was still writing, because the wrong terminal was assumed.
+- **Workers cannot merge.** OpenCode workers have `python` and plain `git` commands but no `git merge`. When a task branch falls behind `main`, the CEO merges `main` into the task branch and resolves the conflict (in this batch almost always one-line exports in a package `__init__`). `copilot-git` stays on `main` and never resolves feature conflicts. The merge changes the branch `head` SHA, so Audit and Review must cover the new SHA before the branch is handed off.
+- **Trial every merge first.** `git merge-tree --write-tree main feat/<x>` shows conflicts without touching any checkout. Give `copilot-git` a short merge task file (branch, exact SHA, expected conflicts, the files it may stage, the files it must never stage) and keep the allow/deny pattern of section 5.
+- **Unexpected dirty files in the main checkout.** Files changed by the user (or another tool) outside the batch make the main checkout dirty, and `copilot-git` rejects a dirty checkout ([gate](COPILOT-GIT.md#2-handoff-prerequisites-before-merging)). Never stage, restore or stash them: stop and ask the user. Only with the user's explicit approval may a merge task file name those exact files as "leave as is", and only when `git merge-tree` shows the merge does not touch them.
+- **Long log summaries:** `nvidia-mistral/mistralai/mistral-large-4-1t-a52b` returned usable summaries of long test and review logs when the log text was inlined in the prompt. Nemotron and Kimi timed out on the same long prompts. Keep the default-deny agent of section 3 and the `status: open | resolved | unknown` rule of section 8.
+- **Quota exhaustion mid-task:** the Go 5 h window ran out once with a worker half way; the worker stopped with uncommitted edits. Continue with `agy` Hydrogen in `accept-edits` mode ([agy guide](AGY-GEMINI-OPUS.md#16-hydrogen-as-a-fallback-editor)) after checking `git status` in the worktree.
+- **Auto-mode guards in Claude Code** block `git push`, branch deletion, some `git worktree remove` forms and `agy --dangerously-skip-permissions`. Do not work around them: ask the user, who can run the command with the `!` prefix.

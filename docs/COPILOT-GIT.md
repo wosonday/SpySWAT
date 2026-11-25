@@ -22,7 +22,7 @@ Depending on project mode, `copilot-git` receives work from:
 - **Single-lane (`AGENTS-TUTORIAL.md`):** receive a handoff packet from `codex-mgr` / Architect (branch name, full `head` SHA, test commands + real counts, Audit + Review reports, and Hydrogen Medium docs confirmation).
 
 **Immediately reject and return `needs-rebase` / `failed` if:**
-1. The main checkout is dirty (`git status --short` has uncommitted files).
+1. The main checkout is dirty (`git status --short` has uncommitted files). Only exception: the user explicitly approved leaving named files as they are, the merge task file lists them, and `git merge-tree` shows the merge does not touch them; those files are never staged, restored or stashed.
 2. The branch's `head` SHA does not match the approved SHA from Review/Docs (extra commits added after `ready`).
 3. Audit/Review results or required doc updates are missing.
 4. Any branch in `depends_on` has not been merged into `main`.
@@ -56,4 +56,6 @@ Depending on project mode, `copilot-git` receives work from:
 - Permission rules match only the first subcommand: use `shell(git:*)` or `shell(git merge)`, and `shell(python:*)` for pytest. Add explicit deny rules (they win over every allow) for `push`, `reset`, `rebase`, `tag`, `worktree` and file writes unless the brief needs them.
 - `shell(python:*)` permits any Python: confirm that the real test step ran instead of trusting a re-printed summary line.
 - Tell the session that `LF will be replaced by CRLF` warnings are expected on Windows.
+- Trial the merge with `git merge-tree --write-tree main <branch>` and give Copilot a short merge task file: branch, exact SHA, expected conflicts, files it may stage and files it must never stage.
+- Cleanup runs (removing merged worktrees and branches) need their own brief and the user's approval. Permission rules cannot tell `git branch -d` from `-D`, or `worktree remove` from `worktree add`, so these limits live in the brief: `git worktree remove <path>` without `--force` and `git branch -d` only, after checking that each branch is listed by `git branch --merged main` and each worktree is clean. `-d` itself refuses an unmerged branch, which backs up the brief.
 - Details and a working rebase pattern: [WINDOWS-AGENT-RUNTIME.md](WINDOWS-AGENT-RUNTIME.md#5-copilot-cli-copilot--p-as-copilot-git).

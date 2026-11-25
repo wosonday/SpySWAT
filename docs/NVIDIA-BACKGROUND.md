@@ -82,7 +82,7 @@ Expired or mismatched SHA/snapshot output is reference material only: revalidate
 - Pass only when permissions are respected, evidence is accurate, no facts/test runs are invented, planted defects are found and the brief deadline is met. Failure leaves that role unqualified.
 - Record elapsed time, timeouts/retries/errors, actual model, measurable tokens, comparison with expected answers and input SHA/snapshot. Tokens are not invoices; one trial does not establish p95 latency.
 - After several tasks, adjust roles/limits using measurements and budget. Do not autonomously promote NVIDIA to worker/reviewer under policy A.
-- First measured result (2026-11-24): `background-nemotron` passed log synthesis (5 of 5 planted findings, 161 s, no writes) but reported fixed issues as open; briefs now ask for `status: open | resolved | unknown` per finding. Use a default-deny agent configuration ([details](WINDOWS-AGENT-RUNTIME.md#8-nvidia-background-qualification)). Kimi and Mistral remain unqualified.
+- First measured result (2026-11-24): `background-nemotron` passed log synthesis (5 of 5 planted findings, 161 s, no writes) but reported fixed issues as open; briefs now ask for `status: open | resolved | unknown` per finding. Use a default-deny agent configuration ([details](WINDOWS-AGENT-RUNTIME.md#8-nvidia-background-qualification)). Second batch (2026-11-25): `background-mistral` gave usable summaries of long inlined test/review logs, while Nemotron and Kimi timed out on the same long prompts; this is practical evidence, not a formal section-6 qualification ([details](WINDOWS-AGENT-RUNTIME.md#9-second-batch-2026-11-25-twelve-task-branches-agy-first-reviews)).
 
 ## 7. Verification Limits
 

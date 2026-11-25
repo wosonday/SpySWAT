@@ -45,6 +45,20 @@ Antigravity CLI (`agy`) absorbs **architecture offloading, technical advising, h
 - **Role:** **first-choice default** for `agm ask` web research (`search_web`) and quick summaries (~7s observed). Escalate to `gemini-4-argon-low/medium` only when multi-source synthesis is needed.
 - **Verification rule:** Gemini research output is **advisory only** (it once misreported an npm package version despite citing the right URL). Always verify versions, prices, and CLI flags with source commands (`npm view`, `--help`, official docs) before writing `.agents/tasks/<ID>.md`.
 
+### 1.5. Reviewer Routing: Hydrogen High → Neon High → Claude
+- **User decision (2026-11-24):** `agy` does the reviews and keeps progress moving, to save Claude Opus quota.
+  1. **Default Reviewer:** `gemini-4-hydrogen-high`, `--mode plan --sandbox`, input given as a file (section 4).
+  2. **Hard analysis and high-risk changes:** `gemini-4-neon-high` (`-xhigh` if needed). Also use Neon whenever Hydrogen wrote the code, so the reviewer is never the author. Hydrogen and Neon are both Gemini 4: the user accepts this cross-tier pair as the reviewer for routine code, but code that Gemini wrote for a high-risk change also gets a different-family review (OpenCode Pro, or Claude).
+  3. **Claude Opus:** only for problems Neon also fails on, or for the high-risk escalations named in the project `AGENTS.md`.
+  4. **Fallback:** OpenCode `reviewer` (`opencode-go/deepseek-v4-pro`) when `agy` quota is unavailable.
+- **Neon pre-review of high-risk specs:** before dispatching a rework specification that touches concurrency, exit paths or data formats, give Neon the specification **plus the real source files** it changes. Workers follow a specification literally, including its mistakes.
+- **Docs reviews:** add a dump of the real public signatures (for Python, an `ast` listing of public functions and parameters) so the reviewer can check every documented name and argument against the code.
+- **Splitting Minor findings:** when a `PASS` review leaves several independent Minor findings, dispatch them as small parallel follow-up tasks (one worktree each) instead of one long rework round.
+
+### 1.6. Hydrogen as a Fallback Editor
+- When the Go 5 h quota runs out, `agy --model gemini-4-hydrogen-high|medium --mode accept-edits --sandbox -p="..."` inside the task worktree can carry on: it reads and edits files only. The CEO runs the tests and commits; a different model (Neon) reviews the result.
+- A worker that stops because its quota ran out leaves uncommitted edits. Check `git status` in the worktree and decide to keep or discard them before dispatching the next editor.
+
 ---
 
 ## 2. Shared Context, Memory & Ponytail Policy
@@ -64,6 +78,7 @@ Antigravity CLI (`agy`) absorbs **architecture offloading, technical advising, h
 ## 4. Headless Mode (`agy -p`)
 
 - With `--mode plan --sandbox`, every `command` tool (for example `git diff`) is auto-denied and the run can exit 0 with empty output. Check the output size, and give reviewers a snapshot folder with precomputed diffs and files.
+- **Pass long prompts as a file.** Windows caps one command line at about 32 KB, so an inline `-p` with a diff breaks. Write `REVIEW-INPUT.md` (task, design decisions, `git diff main...HEAD`, instructions) into a scratch folder, `cd` there and run `agy --model gemini-4-hydrogen-high --mode plan --sandbox -p="Use only your file-read tool (never run commands) to read REVIEW-INPUT.md in the current folder, then follow its instructions."`
 - Docs updates can run with `--mode accept-edits --sandbox`; commit them from a short worker session after checking the diff.
 - Strip `file:///` links to local paths from review text before committing it to a public repository.
 - Details: [WINDOWS-AGENT-RUNTIME.md](WINDOWS-AGENT-RUNTIME.md#4-agy-in-headless-mode).

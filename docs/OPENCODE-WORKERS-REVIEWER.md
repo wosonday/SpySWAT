@@ -31,6 +31,8 @@ The workspace catalog confirms the two DeepSeek Go IDs below. Catalog presence i
 | `reviewer` | `opencode-go/deepseek-v4-pro` | Fresh independent session, one stage after Audit; different model family when Pro authored the code |
 <!-- harness:routing:end -->
 
+**Reviewer order (user decision 2026-11-24):** when `agy` has quota, the default review runs on `agy` `gemini-4-hydrogen-high`, hard or high-risk cases on `gemini-4-neon-high`, and Claude Opus only after Neon fails ([agy guide](AGY-GEMINI-OPUS.md#15-reviewer-routing-hydrogen-high--neon-high--claude)). The OpenCode `reviewer` row above is the fallback when `agy` quota is unavailable, and the choice for a second opinion from a different model family.
+
 NVIDIA stays off the critical path: see [NVIDIA-BACKGROUND.md](NVIDIA-BACKGROUND.md). It is neither a worker/reviewer nor a mandatory pre-review stage. Capable preapproved free/local sources are fallbacks when Go quota is unavailable; do not silently use Personal/API `opencode/deepseek-*` outside the plan.
 
 ### Capability, Latency and Qualification

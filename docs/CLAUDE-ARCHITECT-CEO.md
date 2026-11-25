@@ -32,14 +32,14 @@ claude --model claude-opus-5-5     # Opus 5.5 (or claude-fable-5-2 for overall A
 | Understand requirements, set plan/budget, analyze risks, split small branches (< ~400 diff lines) | Manually grep/read dozens of files before querying **Understand-Anything** (`.ua/` via `/understand-chat` or `/understand-diff`) |
 | **Shared Memory governance:** Approve, publish, and update `.agents/memory/published/` (`decisions.md`, `invariants.md`, `gotchas.md`) & `.agents/memory/HANDOFF.md`; clear `.agents/memory/inbox/` after review | Forward raw conversation history between agents (always pass standardized short briefs/reports) |
 | Define acceptance criteria (`saved` + `confirmed`), write briefs / `.agents/tasks/<ID>.md` | Write long code/tests instead of workers (`worker-fast` / `mid` / Codex / Agy) |
-| Reserve `wip` / mark `ready` in `BRANCHES.md` via `agm branch set ... --file <abs>/BRANCHES.md` or MCP `agm_branch_update` (agm locks internally; no manual `mkdir` lock; the `ready` guard checks git only, not that Audit/Review ran); trigger batch incremental `/understand` after structural merges | Review routine branches: qualified Pro Go, different family when Pro authored code; `agy` Opus High for hard cases |
+| Reserve `wip` / mark `ready` in `BRANCHES.md` via `agm branch set ... --file <abs>/BRANCHES.md` or MCP `agm_branch_update` (agm locks internally; no manual `mkdir` lock; the `ready` guard checks git only, not that Audit/Review ran); trigger batch incremental `/understand` after structural merges | Review routine branches: `agy` `gemini-4-hydrogen-high` by default, `gemini-4-neon-high` for hard or high-risk cases, OpenCode Pro Go as fallback; Claude only after Neon fails |
 | Escalate diagnosis after 2 failed review/fix rounds | Merge into `main`, push, or deploy (handled by `copilot-git`) |
 
 ## 4. Saving Tokens & Preventing Context Bloat
 
 **The CEO manages the AI budget.** Before dispatch, escalation or review, check `agm quota --refresh` (verifying Extra Usage in [Go Console](https://opencode.ai/console/go)) and task allocations. If quota is exhausted or unknown, use a capable approved source or mark the task blocked; never enable Extra Usage or raise limits yourself. See the [shared budget policy](../AGENTS-TUTORIAL.md#311-điều-phối-kinh-phí-ai).
 
-Routing: `opencode-go/deepseek-v4.1-flash` for fast/mid/explore; `opencode-go/deepseek-v4-pro` for qualified review/strong tasks. [Background NVIDIA](NVIDIA-BACKGROUND.md) is optional read-only background synthesis, never a merge gate.
+Routing: `opencode-go/deepseek-v4.1-flash` for fast/mid/explore; `opencode-go/deepseek-v4-pro` for qualified strong tasks and fallback review. Reviews go to `agy` first (Hydrogen High, then Neon High); keep the CEO's own reading small: short task files, no large diffs in the CEO context. [Background NVIDIA](NVIDIA-BACKGROUND.md) is optional read-only background synthesis, never a merge gate.
 
 1. **One lane = one dedicated BOT-CEO** ([BOT-CEO.md](../BOT-CEO.md)): never deep-read another lane's code unless they share a hotspot in `BRANCHES.md`.
 2. **Query Understand-Anything (`.ua/`) first:** run `/understand` once per main repository to build `.ua/knowledge-graph.json`, then query via `/understand-chat` / `/understand-diff` before reading targeted line ranges. Pass only scoped file lists (3–5 paths) into worker briefs.
