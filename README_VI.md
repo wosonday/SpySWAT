@@ -3,7 +3,7 @@
 **Thư viện Python cho hiệu chỉnh, kiểm định và phân tích độ nhạy mô hình SWAT**
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-464%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-721%20passed-brightgreen)]()
 [![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
@@ -1080,7 +1080,7 @@ SpySWAT/
 │       ├── run/        SWATRun (tiến trình con, timeout)
 │       └── visualization/ FigViewer
 ├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py
-├── tests/              475 tests (464 passed, 11 skipped trên Windows; không cần SWAT.exe)
+├── tests/              736 tests (721 passed, 15 skipped trên Windows; không cần SWAT.exe)
 ├── .agents/            sổ ghi chép theo đầu việc, commit cùng code (xem AGENTS.md)
 ├── AGENTS.md           hướng dẫn cho AI agent và người đóng góp (CLAUDE.md nạp tệp này)
 ├── ARCHITECTURE.md     Kiến trúc chi tiết + sơ đồ kết nối
@@ -1093,10 +1093,10 @@ SpySWAT/
 
 ```bash
 pytest tests/ -q
-# 464 passed, 11 skipped (~4 phút trên Windows)
+# 721 passed, 15 skipped (~4 phút trên Windows)
 ```
 
-Test bị bỏ qua trên Windows: test dùng script POSIX làm exe giả (`tests/test_run.py`) và test SALib khi chưa cài SALib.
+Test bị bỏ qua trên Windows: test dùng script POSIX làm exe giả (`tests/test_run.py`, `tests/test_working_folder.py`) và test SALib khi chưa cài SALib.
 
 ---
 

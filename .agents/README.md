@@ -2,7 +2,7 @@
 
 Committed together with the code on the working branch. Git records *what* changed; these
 files record *why* and *what was checked*. Rules: `AGENTS.md` → "Agent team workflow";
-full guide: `AGENTS-TUTORIAL.md` (v3.6, section 3.3) and `HERDR-CORE-BOT.md` at the repository
+full guide: `AGENTS-TUTORIAL.md` (sections 2.3 and 3.2) and `HERDR-CORE-BOT.md` at the repository
 root, optional multi-lane scaling in `BOT-CEO.md`, per-model guides in `docs/`.
 
 | Folder | File | Writer | Content |

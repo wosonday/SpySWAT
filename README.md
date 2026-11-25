@@ -3,7 +3,7 @@
 **Python library for SWAT model calibration, validation, and sensitivity analysis**
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-464%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-721%20passed-brightgreen)]()
 [![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
@@ -1115,12 +1115,23 @@ SpySWAT/
 │       ├── run/        SWATRun (subprocess, timeout)
 │       └── visualization/ FigViewer
 ├── docs/               sample_run_single.py, sample_run_parallel.py, sample_run_scenarios.py
-├── tests/              475 tests (464 passed, 11 skipped on Windows; no SWAT executable needed)
+├── tests/              736 tests (721 passed, 15 skipped on Windows; no SWAT executable needed)
 ├── .agents/            per-task notes kept with the code (see AGENTS.md)
 ├── AGENTS.md           guide for AI agents and contributors (CLAUDE.md imports it)
 ├── ARCHITECTURE.md     Architecture + connection diagrams
 └── pyproject.toml
 ```
+
+---
+
+## Tests
+
+```bash
+pytest tests/ -q
+# 721 passed, 15 skipped (~4 min on Windows)
+```
+
+Skipped on Windows: tests that use a POSIX script as a fake SWAT executable (`tests/test_run.py`, `tests/test_working_folder.py`) and SALib tests when SALib is not installed.
 
 ---
 
