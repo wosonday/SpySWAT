@@ -126,6 +126,12 @@ def _extract_dispatch(worker_dir: str, jobs: Dict[str, str], outputs: Dict[str, 
         evaluated = bool(rows)
         if not evaluated:
             note = "no overlap with observations"
+    for p in Path(worker_dir).iterdir():
+        if p.is_file() and (p.name.startswith("output.") or p.name == "watout.dat"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
     return {"n_rows": int(len(table)), "series_file": fname, "metrics": rows,
             "evaluated": evaluated, "eval_note": note}
 
@@ -364,7 +370,7 @@ class ScenarioBatch:
             observed: Optional[Dict[Tuple[str, int], pd.Series]] = None,
             metrics: Sequence[str] = ("nse", "kge", "pbias"),
             resume: bool = True, timeout_s: Optional[float] = None,
-            runner=None, log_queue=None) -> BatchResult:
+            runner=None, log_queue=None, cleanup: bool = False) -> BatchResult:
         """
         Args:
             outputs:  {variable: [reach ids]} read from output.rch.
@@ -383,6 +389,8 @@ class ScenarioBatch:
                       reach the main process; default (``None``) uses
                       ``Logger._log_queue`` when a listener is already running. No
                       listener is started here: the caller owns its lifetime.
+            cleanup:  remove this batch's worker folder under ``_scenario_batch`` after
+                      the batch completes normally (default ``False`` keeps slots for reuse).
         """
         if multiprocessing.parent_process() is not None:
             raise RuntimeError(
@@ -735,6 +743,8 @@ class ScenarioBatch:
                 executor.shutdown(wait=True)
 
         save(final=True)
+        if cleanup and work_dir.exists():
+            _rmtree(work_dir)
         ordered = [results[j.job_id] for j in jobs]
         ids = [r.job_id for r in ordered]
         out_summary = pd.DataFrame(

@@ -228,7 +228,7 @@ TB_ADJ.bsn       80              1              16            3         0.0     
 DEPIMP_BSN.bsn   81              1              16            3         0.0             Inf
 DDRAIN_BSN.bsn   82              1              16            3         0.0             Inf
 TDRAIN_BSN.bsn   83              1              16            3         0.0             Inf
-GDRAIN_BSN       84              1              16            3         0.0             Inf
+GDRAIN_BSN.bsn   84              1              16            3         0.0             Inf
 CN_FROZ.bsn      85              1              16            6         0.0             Inf
 DORM_HR.bsn      86              1              16            3         0.0             Inf
 SMXCO.bsn        87              1              16            3         0.0             Inf

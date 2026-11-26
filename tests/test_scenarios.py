@@ -925,3 +925,32 @@ def test_work_dir_is_keyed_by_results_dir(env, tmp_path):
     ScenarioBatch(proj, res_a).run([Scenario("base")], PARAMS[2:3], outputs=OUTS,
                                    runner=fake_runner)
     assert _batch_dirs(work_root) == dirs_b
+
+
+def heavy_outputs_runner(worker_dir: str) -> None:
+    fake_runner(worker_dir)
+    for name in ("output.hru", "output.sub", "watout.dat"):
+        Path(worker_dir, name).write_text("heavy\n")
+
+
+def test_extract_removes_heavy_outputs_and_cleanup_removes_work_dir(env, tmp_path):
+    proj = make_project(env, n=1)
+    work_root = _work_root(env)
+    res_keep = tmp_path / "res_keep"
+    ScenarioBatch(proj, res_keep).run([Scenario("base")], PARAMS[:1], outputs=OUTS,
+                                      runner=heavy_outputs_runner, cleanup=False)
+    dirs = _batch_dirs(work_root)
+    assert len(dirs) == 1
+    slot_dir = work_root / dirs[0] / "TxInOut1"
+    assert slot_dir.is_dir()
+    for name in ("output.rch", "output.hru", "output.sub", "watout.dat"):
+        assert not (slot_dir / name).exists()
+
+    res_clean = tmp_path / "res_clean"
+    out = ScenarioBatch(proj, res_clean).run([Scenario("base")], PARAMS[:1], outputs=OUTS,
+                                             runner=heavy_outputs_runner, cleanup=True)
+    assert not out.failed
+    assert _batch_dirs(work_root) == dirs
+    assert (res_clean / "summary.csv").is_file()
+    assert (res_clean / "series" / "base__p_none.csv").is_file()
+

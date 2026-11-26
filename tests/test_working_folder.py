@@ -363,3 +363,10 @@ def test_copy_over_leaves_no_temp_file_and_survives_readonly(tmp_path):
     wfm._copy_over(src, dst)
     assert dst.read_text() == "new"
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt", "b.txt"]
+
+
+def test_param_exts_ignores_extensionless_entries(tmp_path):
+    param = tmp_path / "swatParam.txt"
+    param.write_text(PARAM_TXT + "BARE_PARAM  1  1  16  3  0.0  1.0\n")
+    assert wfm._param_exts(str(param)) == [".gw", ".hru", ".mgt"]
+

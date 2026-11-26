@@ -49,11 +49,16 @@ class WorkerResult:
 #  File helpers (shared with calibration.calib_manager)
 # ══════════════════════════════════════════════════════════════════════
 
-def _rmtree(path: Path, **kw) -> None:
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_force_remove, **kw)
-    else:
-        shutil.rmtree(path, onerror=_force_remove, **kw)
+def _rmtree(path: Path, retries: int = 4, **kw) -> None:
+    path = Path(path)
+    for attempt in range(max(1, retries)):
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_force_remove, **kw)
+        else:
+            shutil.rmtree(path, onerror=_force_remove, **kw)
+        if not path.exists() or attempt == retries - 1:
+            return
+        time.sleep(0.2 * (attempt + 1))
 
 
 def _force_remove(func, path, _):
@@ -74,8 +79,10 @@ def _param_exts(param_path: Optional[str], names=None) -> List[str]:
     if not param_path:
         return []
     swat_param = SWATParam(param_path)
-    keys = swat_param.available_keys() if names is None else list(names)
-    exts = {_ext_with_dot(swat_param.get(k).ext) for k in keys}
+    if names is None:
+        exts = {_ext_with_dot(p.ext) for p in swat_param.params.values() if p.ext}
+    else:
+        exts = {_ext_with_dot(swat_param.get(k).ext) for k in names}
     return sorted(exts)
 
 
