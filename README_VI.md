@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-721%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
+[![Version](https://img.shields.io/badge/version-0.3.1-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > English version: [README.md](README.md) · Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md) · Lịch sử: [CHANGELOG.md](CHANGELOG.md) · Làm việc với AI agent: [AGENTS.md](AGENTS.md), [AGENTS-TUTORIAL.md](AGENTS-TUTORIAL.md)

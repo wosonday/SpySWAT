@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.3.1] – 2026-11-26
+
+Disk-space fix for long scenario batches (SCEN-CLEANUP-1).
+
+### Added
+
+- `ScenarioBatch.run(..., cleanup=False)`: with `cleanup=True`, the batch's worker folder
+  `<working_dir>/_scenario_batch/<key>` is removed after the batch finishes normally (after `summary.csv`,
+  metrics and series are saved). The default keeps the seeded slots for reuse.
+
+### Changed
+
+- Scenario worker slots no longer keep SWAT outputs: `output.*` and `watout.dat` are deleted as soon as the
+  job's series has been written to `series/<job>.csv`, so multi-decade daily runs no longer fill the disk.
+  Raw SWAT output files (for example `output.std`) are therefore not left in the slot after a scenario job.
+
+### Fixed
+
+- `src/swatParam.txt`: `GDRAIN_BSN` is now `GDRAIN_BSN.bsn`, like every other basin parameter.
+- `_param_exts()` no longer fails on parameter entries without a file extension.
+- Removing worker folders retries briefly when Windows still holds file locks.
+
+### Known limitations
+
+- A failed deletion of output files or worker folders is not reported yet (follow-up task).
+
+---
+
 ## [0.3.0] – 2026-11-25
 
 Standardised 0.3.0 public API across calibration, evaluation, sensitivity, and scenarios:

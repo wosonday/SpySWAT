@@ -1,6 +1,6 @@
 # SpySWAT — Agent Guide
 
-> Version: 0.3.0 | Updated: 2026-11-25 (team workflow v3.6)
+> Version: 0.3.1 | Updated: 2026-11-26 (team workflow v3.6)
 
 Orientation for AI agents (Claude Code, Codex, OpenCode, GitHub Copilot, Gemini via `agy`)
 and developers working in the SpySWAT codebase. **Project rules in this file win over the

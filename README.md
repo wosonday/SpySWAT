@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-721%20passed-brightgreen)]()
-[![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
+[![Version](https://img.shields.io/badge/version-0.3.1-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 > Vietnamese version: [README_VI.md](README_VI.md) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Changelog: [CHANGELOG.md](CHANGELOG.md) · Contributing with AI agents: [AGENTS.md](AGENTS.md)
@@ -1148,4 +1148,4 @@ Skipped on Windows: tests that use a POSIX script as a fake SWAT executable (`te
 
 ---
 
-*SpySWAT v0.3.0 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*
+*SpySWAT v0.3.1 · [CHANGELOG](CHANGELOG.md) · [Vietnamese](README_VI.md) · [Architecture](ARCHITECTURE.md) · [AGENTS](AGENTS.md)*
